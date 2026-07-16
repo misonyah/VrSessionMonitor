@@ -1,0 +1,14 @@
+# Build output
+bin/
+obj/
+
+# Real runtime settings (contains your actual IPs/MACs/paths) — copy
+# appsettings.example.json to appsettings.json and fill it in yourself.
+appsettings.json
+
+# Logs — verbose by design, and full of your own network/usage activity.
+logs/
+*.log
+
+# Visual Studio user-specific
+*.user
