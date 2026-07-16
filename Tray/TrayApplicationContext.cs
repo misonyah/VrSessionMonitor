@@ -145,7 +145,12 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            // Pulls the icon straight off this exe's own embedded resource (set via
+            // <ApplicationIcon>icon.ico</ApplicationIcon> in the csproj) rather than shipping a
+            // second copy of the file — one source of truth for both the taskbar/Explorer icon
+            // and the tray icon. Falls back to the generic system icon on the off chance
+            // extraction fails for some reason (e.g. running from a path Windows can't resolve).
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? System.Drawing.SystemIcons.Application,
             Text = "VR Session Monitor",
             ContextMenuStrip = _menu,
             Visible = true,
