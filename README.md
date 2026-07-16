@@ -37,9 +37,10 @@ read the code and adjust things for your own setup.
 - **SteamVR + VRChat presence monitoring**, logged on every state change.
 - **SteamVR in-headset toast notifications** for key auto-fix events (only when SteamVR is
   actually running).
-- **Auto-detect trackers/cameras** — a tray action that queries SlimeVR's own local API and reads
-  Baballonia's camera address fields directly, instead of requiring manual IP/MAC entry. See the
-  note below — this piece hasn't been verified against a live server yet.
+- **Auto-detect headset/trackers/cameras** — a tray action that ping-sweeps the LAN for a
+  Meta/Oculus MAC OUI prefix, queries SlimeVR's own local API, and reads Baballonia's camera
+  address fields directly, instead of requiring manual IP/MAC entry. See the note below for what
+  is and isn't verified yet.
 - **Start with Windows** toggle, and a single-instance lock so a second launch can't collide with
   the first.
 - Everything is toggleable from the tray menu, with live status for headset/trackers/eye+face
@@ -59,7 +60,7 @@ read the code and adjust things for your own setup.
    don't match the defaults (most third-party paths default to their usual Steam/Program Files
    location — only your own trackers/cameras/headset and anything installed somewhere unusual
    needs editing). Alternatively, run the app once and use the tray menu's **"Auto-detect
-   trackers/cameras"** action with SlimeVR and Baballonia running.
+   headset/trackers/cameras"** action.
 3. `dotnet build`, then run `bin/Debug/net10.0-windows/VrSessionMonitor.exe`.
 
 `appsettings.json` is gitignored — it holds your real network layout and is never meant to be
@@ -67,14 +68,29 @@ committed. `appsettings.example.json` (fake placeholder values) is the one that'
 
 ## A note on the auto-discovery feature
 
-SlimeVR's discovery goes over its local SolarXR WebSocket API (`ws://127.0.0.1:21110`), which
-turned out to be FlatBuffers-based rather than JSON — the bindings are vendored under
-`Modules/SolarXR/Generated/` (generated with `flatc` from
-[SolarXR-Protocol](https://github.com/SlimeVR/SolarXR-Protocol); regenerate from there if the
-protocol ever changes). The Baballonia half reads its camera-address textboxes via Windows UI
-Automation. Both were built from real protocol/UI research, not guesses — but neither has been
-exercised against a live running instance yet. If it doesn't find anything, check the log; the
-underlying calls are meant to fail gracefully and report why.
+Three independent sources feed this, each with a different confidence level:
+
+- **Headset** (`Modules/HeadsetDiscovery.cs`) — ping-sweeps your local /23-or-smaller subnet to
+  populate Windows' ARP cache, then matches `arp -a` entries against known Meta/Oculus MAC OUI
+  prefixes (verified against the IEEE-sourced vendor registry, not guessed — `2C:26:17` is
+  independently confirmed real, it matches this rig's own Quest 2). **Verified working live**:
+  ran it against the real LAN with the headset powered off, correctly found 0 matches among 54
+  real ARP entries, confirming the whole pipeline (subnet detection → sweep → parse → match)
+  without a false positive. The true-positive case (an actual Meta device present) is still
+  unverified — should just work, but hasn't been observed directly. If more than one Meta device
+  is found on the network, this won't guess which one is the headset; it logs every candidate
+  and leaves `HeadsetIp` for you to set by hand.
+- **SlimeVR** — over its local SolarXR WebSocket API (`ws://127.0.0.1:21110`), which turned out
+  to be FlatBuffers-based rather than JSON — the bindings are vendored under
+  `Modules/SolarXR/Generated/` (generated with `flatc` from
+  [SolarXR-Protocol](https://github.com/SlimeVR/SolarXR-Protocol); regenerate from there if the
+  protocol ever changes). Built from the real protocol schema, not a guess, but **not yet
+  exercised against a live server** — SlimeVR wasn't running when this was written.
+- **Baballonia** — reads its camera-address textboxes via Windows UI Automation. Built from real
+  UI research, but likewise **not yet exercised live**.
+
+If a source finds nothing, check the log — every call here is meant to fail gracefully and
+report why rather than silently doing nothing.
 
 ## Config reference
 

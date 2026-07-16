@@ -138,7 +138,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Force run now", null, (_, _) => _ = _orchestrator.RunSessionStartAsync());
         _menu.Items.Add("Recheck trackers", null, (_, _) => _ = _trackers.CheckAllAsync());
-        _menu.Items.Add("Auto-detect trackers/cameras (SlimeVR + Baballonia)", null, (_, _) => _ = AutoDetectAsync());
+        _menu.Items.Add("Auto-detect headset/trackers/cameras", null, (_, _) => _ = AutoDetectAsync());
         _menu.Items.Add("Open logs folder", null, (_, _) => OpenLogsFolder());
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Exit", null, (_, _) => ExitApp());
@@ -267,18 +267,39 @@ public sealed class TrayApplicationContext : ApplicationContext
         span.TotalHours < 1 ? $"{(int)span.TotalMinutes}m" :
         $"{(int)span.TotalHours}h{span.Minutes}m";
 
-    /// <summary>Queries SlimeVR's own SolarXR API for its current device list (see
-    /// SlimeVrDiscovery's doc for the full protocol story) and reads Baballonia's camera address
-    /// fields via UI Automation (see BaballoniaAutomation.TryReadCameraAddress), merging
-    /// anything found into config by MAC (trackers) so re-running this doesn't create
-    /// duplicates. Matches existing trackers by MAC and updates their IP if it changed; adds new
-    /// entries for MACs not already configured. Eye camera IPs are simply overwritten per
-    /// configured camera, since there's no MAC to match on for those. Neither source is required
-    /// to be running — each degrades to "found nothing from that source" on its own, already
-    /// logged by the underlying call, so this only needs to report the combined tally.</summary>
+    /// <summary>Ping-sweeps the LAN for a Meta/Oculus MAC (see HeadsetDiscovery), queries
+    /// SlimeVR's own SolarXR API for its current device list (see SlimeVrDiscovery's doc for the
+    /// full protocol story), and reads Baballonia's camera address fields via UI Automation (see
+    /// BaballoniaAutomation.TryReadCameraAddress), merging anything found into config. Trackers
+    /// are matched by MAC so re-running this doesn't create duplicates — updates the IP if it
+    /// changed, adds a new entry for MACs not already configured. The headset IP is only ever
+    /// auto-filled when exactly one Meta/Oculus device is found; with more than one, this
+    /// doesn't guess which is "the" headset, it just logs every candidate for you to pick
+    /// manually. Eye camera IPs are simply overwritten per configured camera, since there's no
+    /// MAC to match on for those. None of the three sources are required to be running/present —
+    /// each degrades to "found nothing" on its own, already logged by the underlying call, so
+    /// this only needs to report the combined tally.</summary>
     private async Task AutoDetectAsync()
     {
-        Log.Info("Tray", "Auto-detect (SlimeVR + Baballonia) requested from tray menu.");
+        Log.Info("Tray", "Auto-detect (headset/SlimeVR/Baballonia) requested from tray menu.");
+
+        var headsetCandidates = await HeadsetDiscovery.DiscoverAsync().ConfigureAwait(false);
+        var headsetUpdated = false;
+        if (headsetCandidates.Count == 1)
+        {
+            var found = headsetCandidates[0];
+            if (_config.Network.HeadsetIp != found.Ip)
+            {
+                _config.Network.HeadsetIp = found.Ip;
+                headsetUpdated = true;
+                Log.Info("Tray", $"Auto-detected headset at {found.Ip} (MAC {found.Mac}).");
+            }
+        }
+        else if (headsetCandidates.Count > 1)
+        {
+            Log.Warn("Tray", $"Found {headsetCandidates.Count} Meta/Oculus devices on the network — not guessing which is the headset, pick one manually: " +
+                              string.Join(", ", headsetCandidates.Select(c => $"{c.Ip} ({c.Mac})")));
+        }
 
         var discovered = await new SlimeVrDiscovery().DiscoverTrackersAsync().ConfigureAwait(false);
 
@@ -319,7 +340,10 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _config.Save(_configPath);
 
-        var summary = $"Auto-detect: {trackersAdded} tracker(s) added, {trackersUpdated} updated, {camsUpdated} camera(s) updated.";
+        var headsetNote = headsetUpdated ? "headset IP set, "
+            : headsetCandidates.Count > 1 ? $"{headsetCandidates.Count} possible headsets (see log), "
+            : "";
+        var summary = $"Auto-detect: {headsetNote}{trackersAdded} tracker(s) added, {trackersUpdated} updated, {camsUpdated} camera(s) updated.";
         Log.Info("Tray", summary);
         _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", summary, ToolTipIcon.Info);
     }
