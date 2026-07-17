@@ -80,11 +80,16 @@ public sealed class SessionOrchestrator
 
             SetState(SessionState.WaitingForStream);
             var streaming = await WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-            if (!streaming)
-                Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset. Continuing anyway — VRChat launch may be premature.");
 
             SetState(SessionState.LaunchingVrChat);
-            await LaunchVrChatAsync().ConfigureAwait(false);
+            if (streaming)
+            {
+                await LaunchVrChatAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — skipping VRChat auto-launch.");
+            }
 
             SetState(SessionState.LaunchingSlimeVr);
             await LaunchSlimeVrAsync().ConfigureAwait(false);
