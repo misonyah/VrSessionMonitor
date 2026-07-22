@@ -36,6 +36,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         _config = MonitorConfig.LoadOrCreateDefault(_configPath);
 
         Log.Init(_config.Paths.LogDirectory);
+
+        // Logged after a live incident where the running tray process was 4 days older than the
+        // latest committed fix — it had never been rebuilt/restarted, so none of several days'
+        // worth of fixes were actually active. Compare this against `git log` to catch that early
+        // instead of having to check Get-Process/file mtimes by hand.
+        var buildTime = File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
+        Log.Info("Tray", $"Build timestamp: {buildTime:yyyy-MM-dd HH:mm:ss} (exe last written then — compare against `git log` if behavior seems stale)");
+
         Log.Info("Tray", $"Config loaded from {_configPath}");
         Log.Info("Tray", $"Headset target: {_config.Network.HeadsetIp} ({_config.Network.HeadsetName})");
         Log.Info("Tray", $"Trackers configured: {_config.Trackers.Count}");
@@ -70,6 +78,18 @@ public sealed class TrayApplicationContext : ApplicationContext
             _config.SessionFlow.AutoLaunchVrChat = autoLaunchVrChatItem.Checked;
             _config.Save(_configPath);
             Log.Info("Tray", $"Auto-start VRChat toggled {(_config.SessionFlow.AutoLaunchVrChat ? "ON" : "OFF")} via tray menu.");
+        };
+
+        var autoLaunchOvrToolkitItem = new ToolStripMenuItem("Auto-start OVR Toolkit")
+        {
+            CheckOnClick = true,
+            Checked = _config.SessionFlow.AutoLaunchOvrToolkit,
+        };
+        autoLaunchOvrToolkitItem.Click += (_, _) =>
+        {
+            _config.SessionFlow.AutoLaunchOvrToolkit = autoLaunchOvrToolkitItem.Checked;
+            _config.Save(_configPath);
+            Log.Info("Tray", $"Auto-start OVR Toolkit toggled {(_config.SessionFlow.AutoLaunchOvrToolkit ? "ON" : "OFF")} via tray menu.");
         };
 
         var lowPowerVrChatItem = new ToolStripMenuItem("VRChat: low-power window")
@@ -131,12 +151,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_firmwareItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(autoLaunchVrChatItem);
+        _menu.Items.Add(autoLaunchOvrToolkitItem);
         _menu.Items.Add(lowPowerVrChatItem);
         _menu.Items.Add(autoManageBaballoniaItem);
         _menu.Items.Add(autoManageVrcFtItem);
         _menu.Items.Add(startWithWindowsItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Force run now", null, (_, _) => _ = _orchestrator.RunSessionStartAsync());
+        _menu.Items.Add("Restart VRChat now", null, (_, _) => _ = _orchestrator.RestartVrChatAsync());
         _menu.Items.Add("Recheck trackers", null, (_, _) => _ = _trackers.CheckAllAsync());
         _menu.Items.Add("Auto-detect headset/trackers/cameras", null, (_, _) => _ = AutoDetectAsync());
         _menu.Items.Add("Open logs folder", null, (_, _) => OpenLogsFolder());

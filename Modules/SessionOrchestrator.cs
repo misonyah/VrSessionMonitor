@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using VrSessionMonitor.Config;
@@ -5,7 +6,7 @@ using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Modules;
 
-public enum SessionState { Idle, HeadsetDetected, PreflightChecks, LaunchingApps, WaitingForStream, LaunchingVrChat, LaunchingSlimeVr, Complete, Failed }
+public enum SessionState { Idle, HeadsetDetected, PreflightChecks, LaunchingApps, WaitingForStream, LaunchingVrChat, LaunchingSlimeVr, LaunchingOvrToolkit, Complete, Failed }
 
 /// <summary>
 /// Ties the individual monitors/launchers into the actual session-start sequence, replacing
@@ -76,23 +77,30 @@ public sealed class SessionOrchestrator
             await RunPreflightChecksAsync().ConfigureAwait(false);
 
             SetState(SessionState.LaunchingApps);
-            await LaunchCoreAppsAsync().ConfigureAwait(false);
+            await LaunchVdStreamerAsync().ConfigureAwait(false);
 
             SetState(SessionState.WaitingForStream);
             var streaming = await WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
-            SetState(SessionState.LaunchingVrChat);
-            if (streaming)
+            if (!streaming)
             {
-                await LaunchVrChatAsync().ConfigureAwait(false);
+                Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — " +
+                                          "skipping Steam/VRChat/SlimeVR launch. Only VD Streamer itself was started, so it's ready to accept a connection whenever you actually open Virtual Desktop.");
             }
             else
             {
-                Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — skipping VRChat auto-launch.");
-            }
+                SetState(SessionState.LaunchingApps);
+                await LaunchSteamAsync().ConfigureAwait(false);
 
-            SetState(SessionState.LaunchingSlimeVr);
-            await LaunchSlimeVrAsync().ConfigureAwait(false);
+                SetState(SessionState.LaunchingVrChat);
+                await LaunchVrChatAsync().ConfigureAwait(false);
+
+                SetState(SessionState.LaunchingSlimeVr);
+                await LaunchSlimeVrAsync().ConfigureAwait(false);
+
+                SetState(SessionState.LaunchingOvrToolkit);
+                await LaunchOvrToolkitAsync().ConfigureAwait(false);
+            }
 
             SetState(SessionState.Complete);
             Log.Info("Orchestrator", "=== Session-start flow complete ===");
@@ -140,12 +148,24 @@ public sealed class SessionOrchestrator
         }
     }
 
-    private async Task LaunchCoreAppsAsync()
+    /// <summary>
+    /// VD Streamer has to be running before the headset can ever establish a stream to it, so
+    /// this one launch stays eager (fired on mere ping-reachability, same as before). Everything
+    /// downstream of it (Steam, VRChat, SlimeVR) now waits for WaitForHeadsetStreamAsync to
+    /// confirm an actual connection first — see RunSessionStartAsync. Before this split, Steam
+    /// launched eagerly here too, which on this machine auto-starts SteamVR; with a headset that
+    /// merely responds to ping (powered on, not actually streaming) that meant SteamVR launching
+    /// and erroring with no real HMD attached, confirmed live on 2026-07-20.
+    /// </summary>
+    private async Task LaunchVdStreamerAsync()
     {
         await _launcher.EnsureRunningAsync(
             "VirtualDesktop.Streamer", _config.Paths.VirtualDesktopStreamerExe, null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+    }
 
+    private async Task LaunchSteamAsync()
+    {
         await _launcher.EnsureRunningAsync(
             "steam", _config.Paths.SteamExe, "-no-browser",
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
@@ -191,6 +211,41 @@ public sealed class SessionOrchestrator
             return;
         }
 
+        await DoLaunchVrChatAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Manual restart path for the tray menu — bypasses the AutoLaunchVrChat toggle (a manual
+    /// click is an explicit request, not the automatic flow that toggle governs) and always
+    /// builds launch args from the CURRENT config. Added after a live incident where a manual
+    /// relaunch was hand-typed with the wrong (non-low-power) args, overriding the user's actual
+    /// configured preference and popping an unwanted maximized window.
+    /// </summary>
+    public async Task RestartVrChatAsync()
+    {
+        Log.Info("Orchestrator", "Manual VRChat restart requested via tray menu.");
+        foreach (var proc in Process.GetProcessesByName("VRChat"))
+        {
+            try
+            {
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(5000);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("Orchestrator", $"Killing existing VRChat process failed: {ex.Message}");
+            }
+            finally
+            {
+                proc.Dispose();
+            }
+        }
+
+        await DoLaunchVrChatAsync().ConfigureAwait(false);
+    }
+
+    private async Task DoLaunchVrChatAsync()
+    {
         if (ProcessLauncher.IsRunning("VRChat"))
         {
             Log.Debug("Orchestrator", "VRChat already running, skipping launch.");
@@ -217,8 +272,48 @@ public sealed class SessionOrchestrator
 
     private async Task LaunchSlimeVrAsync()
     {
+        var delayMs = _config.SessionFlow.SlimeVrLaunchDelayMs;
+        if (delayMs > 0)
+        {
+            Log.Debug("Orchestrator", $"Waiting {delayMs}ms before checking SlimeVR — gives SteamVR's own driver-triggered auto-launch a chance to land first.");
+            await Task.Delay(delayMs).ConfigureAwait(false);
+        }
+
         await _launcher.EnsureRunningAsync(
             "SlimeVR", _config.Paths.SlimeVrExe, null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Launched via steam://rungameid/&lt;OvrToolkitSteamAppId&gt; rather than through
+    /// ProcessLauncher (which requires the target to be a real file — a URL isn't one) or its exe
+    /// path directly. Confirmed live 2026-07-22: launching "OVR Toolkit.exe" directly skips
+    /// whatever elevation handshake Steam normally does for it, and it dies shortly after starting
+    /// with "Process is not running as admin or has failed to get the right elevation level!"
+    /// followed by its bridge process and WebSocket server failing. Going through Steam's own
+    /// launch protocol (same mechanism already used for the SteamVR stuck-session restart in
+    /// SteamVrMonitor.cs) avoided that entirely.
+    /// </summary>
+    private Task LaunchOvrToolkitAsync()
+    {
+        if (!_config.SessionFlow.AutoLaunchOvrToolkit) return Task.CompletedTask;
+
+        if (ProcessLauncher.IsRunning("OVR Toolkit"))
+        {
+            Log.Debug("Orchestrator", "OVR Toolkit already running, skipping launch.");
+            return Task.CompletedTask;
+        }
+
+        Log.Info("Orchestrator", $"Launching OVR Toolkit via steam://rungameid/{_config.Paths.OvrToolkitSteamAppId}.");
+        try
+        {
+            Process.Start(new ProcessStartInfo($"steam://rungameid/{_config.Paths.OvrToolkitSteamAppId}") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Orchestrator", "Failed to launch OVR Toolkit via the steam:// protocol", ex);
+        }
+
+        return Task.CompletedTask;
     }
 }

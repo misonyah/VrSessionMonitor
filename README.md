@@ -16,8 +16,11 @@ read the code and adjust things for your own setup.
   Virtual Desktop connection, which turned out to false-positive on VD's own outbound WAN traffic
   before the headset was even connected.
 - **Session-start orchestration** — once the headset comes online: pre-flight checks your SlimeVR
-  trackers, confirms the actual VD video stream (not just a port match), then launches VRChat and
-  SlimeVR through a launcher that serializes on process name so nothing gets double-started.
+  trackers, launches VD Streamer (needed to receive the connection), then confirms an actual VD
+  video stream (not just a port match) before launching anything else — Steam, VRChat, SlimeVR, and
+  OVR Toolkit all wait for that confirmation, so nothing spins up on a headset that's merely powered
+  on but not actually streaming. Every launch goes through a launcher that serializes on process
+  name so nothing gets double-started.
 - **SlimeVR tracker monitoring** — pings every tracker board directly, independent of whether the
   SlimeVR server is even running, so a dead tracker shows up before you're already in a world.
 - **Eye tracking (Baballonia)** — detects camera presence/streaming via real TCP connection state
@@ -35,6 +38,23 @@ read the code and adjust things for your own setup.
 - **VRCFaceTracking / eye-tracking lifecycle** — starts VRCFaceTracking the moment a tracker or
   eye camera is detected, shuts it down after a delay once neither is present.
 - **SteamVR + VRChat presence monitoring**, logged on every state change.
+- **SteamVR stuck-session detection** — vrserver/vrcompositor can come up as live OS processes
+  while never actually producing real log output (a black view in the headset, confirmed live
+  2026-07-21). Detected by checking whether their log files have been written to since the process
+  started, and auto-restarted (kill + relaunch via `steam://rungameid/250820`) with a give-up
+  cooldown so a persistently broken SteamVR doesn't get restart-looped forever.
+- **VRCFaceTracking refresh on VRChat restart** — if VRChat restarts while VRCFaceTracking is
+  already running, its OSC/OSCQuery handshake can go stale against the new instance even though
+  every other health signal still looks fine. Detected by comparing process start times; restarts
+  VRCFaceTracking automatically so the next poll cycle relaunches it fresh.
+- **SlimeVR launch delay** — SteamVR auto-launches SlimeVR's own GUI itself (via its OpenVR driver
+  bridge) a few seconds after it loads, independent of this app. Launching SlimeVR immediately
+  raced that and produced two real GUI windows (confirmed live 2026-07-22); a configurable delay
+  before this app's own launch attempt lets the driver's auto-launch land first.
+- **OVR Toolkit auto-launch** — launched via `steam://rungameid/<PathsConfig.OvrToolkitSteamAppId>`
+  rather than its exe path directly. A direct exe launch was found to skip OVR Toolkit's own
+  admin-elevation handshake and crash shortly after starting; going through Steam's launch protocol
+  avoids that.
 - **SteamVR in-headset toast notifications** for key auto-fix events (only when SteamVR is
   actually running).
 - **Auto-detect headset/trackers/cameras** — a tray action that ping-sweeps the LAN for a
@@ -43,6 +63,13 @@ read the code and adjust things for your own setup.
   is and isn't verified yet.
 - **Start with Windows** toggle, and a single-instance lock so a second launch can't collide with
   the first.
+- **Manual "Restart VRChat now" tray action** — kills any running VRChat and relaunches it through
+  the same code path (and current config) as the automatic flow, so a manual restart can't drift
+  from your configured low-power/fullscreen preference (a real mistake made once during live
+  debugging, hand-typing the wrong args).
+- Logs its own build timestamp on startup — compare against `git log` to catch a stale running
+  build before chasing a "fixed" bug that's actually just not deployed yet (also confirmed live:
+  a build ran unrestarted for 4 days across 3 subsequent fixes).
 - Everything is toggleable from the tray menu, with live status for headset/trackers/eye+face
   pipeline/SteamVR/VRChat/last firmware self-heal event.
 
@@ -97,10 +124,10 @@ report why rather than silently doing nothing.
 `appsettings.json` is a plain JSON tree, loaded via `Microsoft.Extensions.Configuration` (saved
 back out with `System.Text.Json`, since `IConfiguration` itself is read-only). Top-level
 sections: `Network`, `Polling`, `Paths`, `Updates`, `Adb`, `EyeCameraAutoRestart`,
-`BaballoniaLifecycle`, `FaceTrackingAutoFix`, `VrcFaceTrackingLifecycle`, `SessionFlow`,
-`Trackers` (a list), `EyeCameras` (a list). Every field has a doc comment on its C# property in
-`Config/MonitorConfig.cs` explaining what it does and, where relevant, why it has the default
-value it does.
+`BaballoniaLifecycle`, `FaceTrackingAutoFix`, `SteamVrStuckSession`, `VrcFaceTrackingLifecycle`,
+`SessionFlow`, `Trackers` (a list), `EyeCameras` (a list). Every field has a doc comment on its
+C# property in `Config/MonitorConfig.cs` explaining what it does and, where relevant, why it has
+the default value it does.
 
 ## License
 

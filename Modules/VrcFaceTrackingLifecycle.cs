@@ -30,6 +30,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
 
     private DateTime? _noTrackerSinceUtc;
     private bool _lastAnyTrackerPresent;
+    private DateTime? _lastVrChatStartTime;
 
     public VrcFaceTrackingLifecycleManager(MonitorConfig config, EyeTrackingMonitor eyeTracking, FaceTrackingMonitor faceTracking)
     {
@@ -73,6 +74,8 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
     private async Task CheckOnceAsync()
     {
         if (!_config.VrcFaceTrackingLifecycle.Enabled) return;
+
+        CheckVrChatRestart();
 
         var anyEyeCameraOnline = _eyeTracking.Current.Any(c => c.Online);
         var viveTrackerPresent = _faceTracking.Current.ViveCameraDevicePresent;
@@ -142,6 +145,66 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         }
 
         _noTrackerSinceUtc = null;
+    }
+
+    /// <summary>
+    /// Restarts VRCFaceTracking when VRChat has restarted more recently than VRCFaceTracking
+    /// itself. Found live on 2026-07-21: VRCFaceTracking started, connected fine to SRanipal, and
+    /// reported healthy on every signal this app checks — but VRChat then restarted (SteamVR had
+    /// to be force-restarted that session) and face/eye tracking never resumed, because
+    /// VRCFaceTracking's OSC/OSCQuery handshake was still pointed at the old, now-dead VRChat
+    /// instance. A manual VRCFaceTracking restart fixed it. Compares OS-reported process start
+    /// times (not our own bookkeeping) so this stays correct regardless of what started either
+    /// process.
+    /// </summary>
+    private void CheckVrChatRestart()
+    {
+        Process? vrChatProc = null;
+        try
+        {
+            vrChatProc = Process.GetProcessesByName("VRChat").FirstOrDefault();
+            if (vrChatProc is null)
+            {
+                _lastVrChatStartTime = null;
+                return;
+            }
+
+            var vrChatStart = vrChatProc.StartTime;
+            var isNewVrChatInstance = _lastVrChatStartTime.HasValue && vrChatStart > _lastVrChatStartTime.Value;
+            _lastVrChatStartTime = vrChatStart;
+            if (!isNewVrChatInstance) return;
+
+            using var vrcft = Process.GetProcessesByName("VRCFaceTracking").FirstOrDefault();
+            if (vrcft is null || vrcft.StartTime >= vrChatStart) return;
+
+            Log.Warn("VrcFtLifecycle", $"VRChat restarted (new instance at {vrChatStart:HH:mm:ss}) after VRCFaceTracking was already running (started {vrcft.StartTime:HH:mm:ss}) — its OSC handshake is likely stale against the new instance. Restarting it.");
+            SteamVrNotifier.TryNotify(_config, "Restarting VRCFaceTracking (VRChat restarted)");
+
+            foreach (var proc in Process.GetProcessesByName("VRCFaceTracking"))
+            {
+                try
+                {
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(5000);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("VrcFtLifecycle", $"Killing VRCFaceTracking.exe for VRChat-restart refresh threw: {ex.Message}");
+                }
+                finally
+                {
+                    proc.Dispose();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("VrcFtLifecycle", $"VRChat-restart check threw: {ex.Message}");
+        }
+        finally
+        {
+            vrChatProc?.Dispose();
+        }
     }
 
     /// <summary>See VrcFaceTrackingLifecycleConfig.MaxContinuousUptimeMs for why this exists.
