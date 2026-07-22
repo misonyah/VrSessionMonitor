@@ -83,6 +83,27 @@ public sealed class FaceTrackingAutoFixConfig
     public int GiveUpCooldownMs { get; set; } = 300000;
 }
 
+/// <summary>Detects the exact SteamVR failure mode found live on 2026-07-21: vrserver.exe and
+/// vrcompositor.exe come up and stay running as OS processes, but never produce any real log
+/// output (vrserver.txt/vrcompositor.txt stayed 0 bytes / untouched since the previous day) —
+/// a stuck/zombie session that showed up in the headset as a solid black view and prevented
+/// SlimeVR's SteamVR driver from registering. The manual fix was killing vrserver/vrmonitor/
+/// vrcompositor and relaunching via the steam://rungameid/250820 protocol; this automates that.</summary>
+public sealed class SteamVrStuckSessionConfig
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>How long to wait after vrserver+vrcompositor are BOTH first seen running before
+    /// judging whether they ever wrote real log output — a fresh, healthy SteamVR needs a few
+    /// seconds to start logging, so checking immediately would false-positive.</summary>
+    public int GracePeriodMs { get; set; } = 45000;
+    /// <summary>Safety valve matching the pattern in FaceTrackingAutoFixConfig: after this many
+    /// consecutive restart attempts still end up stuck, stop and back off for
+    /// <see cref="GiveUpCooldownMs"/> instead of endlessly relaunching a SteamVR that isn't going
+    /// to come up healthy no matter how many times it's kicked.</summary>
+    public int GiveUpAfterAttempts { get; set; } = 2;
+    public int GiveUpCooldownMs { get; set; } = 300000;
+}
+
 public sealed class VrcFaceTrackingLifecycleConfig
 {
     /// <summary>VRCFaceTracking is launched whenever the Vive Facial Tracker or either eye
@@ -129,6 +150,20 @@ public sealed class PathsConfig
     public string VirtualHereClientExe { get; set; } = @"C:\Programs\vhui64.exe";
     public string SRanipalExe { get; set; } = @"C:\Programs\SRanipal\sr_runtime.exe";
     public string OpenVrApiDllPath { get; set; } = @"C:\Program Files (x86)\Steam\steamapps\common\SteamVR\bin\win64\openvr_api.dll";
+    /// <summary>SteamVR's actual log directory — read from this machine's
+    /// %LOCALAPPDATA%\openvr\openvrpaths.vrpath ("log" entry) rather than assumed, since it can
+    /// differ from the SteamVR install path. Used only for the stuck-session check (see
+    /// SteamVrStuckSessionConfig) — vrserver.txt/vrcompositor.txt never getting written despite
+    /// the process running is exactly the black-screen bug found live on 2026-07-21.</summary>
+    public string SteamVrLogDirectory { get; set; } = @"C:\Program Files (x86)\Steam\logs";
+    /// <summary>OVR Toolkit's Steam App ID (confirmed live 2026-07-22 via its appmanifest_*.acf —
+    /// also matches the `steam.overlay.1068820` references seen in VRChat's own log). Launched via
+    /// steam://rungameid/&lt;this&gt; rather than its exe path directly — a direct exe launch was
+    /// found to silently skip OVR Toolkit's own admin-elevation handshake ("Process is not running
+    /// as admin or has failed to get the right elevation level!"), causing its bridge process and
+    /// WebSocket server to fail and the whole app to exit shortly after starting. Launching through
+    /// Steam avoids that (Steam handles the elevation per its own per-app compatibility settings).</summary>
+    public string OvrToolkitSteamAppId { get; set; } = "1068820";
     /// <summary>Wherever your ADB install puts it — e.g. SideQuest bundles its own under
     /// "...\SideQuest\resources\app.asar.unpacked\build\platform-tools\adb.exe". Left blank by
     /// default; ADB integration is entirely best-effort and degrades gracefully if unset (see
@@ -203,6 +238,11 @@ public sealed class SessionFlowConfig
     /// else (VD Streamer, Steam, SlimeVR) but skips launching VRChat itself.</summary>
     public bool AutoLaunchVrChat { get; set; } = true;
 
+    /// <summary>Toggled live from the tray menu ("Auto-start OVR Toolkit"). Launched via
+    /// steam://rungameid/&lt;PathsConfig.OvrToolkitSteamAppId&gt; — see that field's doc for why a
+    /// direct exe launch doesn't work.</summary>
+    public bool AutoLaunchOvrToolkit { get; set; } = true;
+
     /// <summary>Toggled live from the tray menu ("VRChat: low-power window"). When true, VRChat
     /// launches windowed at a small resolution with a lower FPS target instead of fullscreen —
     /// for when you're not actually going to view it through Virtual Desktop and just want it
@@ -212,6 +252,15 @@ public sealed class SessionFlowConfig
     public int VrChatLowPowerHeight { get; set; } = 768;
     public int VrChatLowPowerFps { get; set; } = 45;
     public int VrChatLowPowerMonitor { get; set; } = 1;
+
+    /// <summary>Confirmed live 2026-07-22: once SteamVR loads SlimeVR's own OpenVR driver
+    /// (SlimeVR-Bindings-Provider.exe), that driver auto-launches the full SlimeVR.exe GUI itself
+    /// (with a `-- --steam` arg) roughly 25s later — entirely independent of this app. Launching
+    /// SlimeVR immediately (the old behavior) raced that auto-launch and produced two real GUI
+    /// windows. Waiting this long before our own launch attempt gives the driver's auto-launch a
+    /// chance to land first, so our own EnsureRunningAsync's "already running" check just skips —
+    /// while still launching it ourselves as a safety net if that auto-launch doesn't happen.</summary>
+    public int SlimeVrLaunchDelayMs { get; set; } = 35000;
 }
 
 public sealed class AdbConfig
@@ -231,6 +280,7 @@ public sealed class MonitorConfig
     public EyeCameraAutoRestartConfig EyeCameraAutoRestart { get; set; } = new();
     public BaballoniaLifecycleConfig BaballoniaLifecycle { get; set; } = new();
     public FaceTrackingAutoFixConfig FaceTrackingAutoFix { get; set; } = new();
+    public SteamVrStuckSessionConfig SteamVrStuckSession { get; set; } = new();
     public VrcFaceTrackingLifecycleConfig VrcFaceTrackingLifecycle { get; set; } = new();
     public SessionFlowConfig SessionFlow { get; set; } = new();
     public List<TrackerConfig> Trackers { get; set; } = new();
