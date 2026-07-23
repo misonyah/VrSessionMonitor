@@ -16,6 +16,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly FaceTrackingMonitor _faceTracking;
     private readonly EyeTrackingMonitor _eyeTracking;
     private readonly VrcFaceTrackingLifecycleManager _vrcFtLifecycle;
+    private readonly VrcOscLifecycleManager _vrcOscLifecycle;
     private readonly FirmwareNotificationListener _firmwareNotify;
     private readonly UpdateChecker _updateChecker;
     private readonly AdbController _adb;
@@ -55,6 +56,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _faceTracking = new FaceTrackingMonitor(_config);
         _eyeTracking = new EyeTrackingMonitor(_config);
         _vrcFtLifecycle = new VrcFaceTrackingLifecycleManager(_config, _eyeTracking, _faceTracking);
+        _vrcOscLifecycle = new VrcOscLifecycleManager(_config, _vrChat);
         _firmwareNotify = new FirmwareNotificationListener(_config);
         _updateChecker = new UpdateChecker(_config);
         _adb = new AdbController(_config);
@@ -128,6 +130,18 @@ public sealed class TrayApplicationContext : ApplicationContext
             Log.Info("Tray", $"Auto-start/stop VRCFaceTracking toggled {(_config.VrcFaceTrackingLifecycle.Enabled ? "ON" : "OFF")} via tray menu.");
         };
 
+        var autoManageVrcOscItem = new ToolStripMenuItem("Auto-start/stop VRCOSC")
+        {
+            CheckOnClick = true,
+            Checked = _config.VrcOscLifecycle.Enabled,
+        };
+        autoManageVrcOscItem.Click += (_, _) =>
+        {
+            _config.VrcOscLifecycle.Enabled = autoManageVrcOscItem.Checked;
+            _config.Save(_configPath);
+            Log.Info("Tray", $"Auto-start/stop VRCOSC toggled {(_config.VrcOscLifecycle.Enabled ? "ON" : "OFF")} via tray menu.");
+        };
+
         // Checked state reads the actual registry Run key, not a config flag, so this can never
         // drift from what Windows will really do — the registry key IS the source of truth.
         var startWithWindowsItem = new ToolStripMenuItem("Start with Windows")
@@ -155,6 +169,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(lowPowerVrChatItem);
         _menu.Items.Add(autoManageBaballoniaItem);
         _menu.Items.Add(autoManageVrcFtItem);
+        _menu.Items.Add(autoManageVrcOscItem);
         _menu.Items.Add(startWithWindowsItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Force run now", null, (_, _) => _ = _orchestrator.RunSessionStartAsync());
@@ -190,6 +205,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _faceTracking.Start();
         _eyeTracking.Start();
         _vrcFtLifecycle.Start();
+        _vrcOscLifecycle.Start();
         _firmwareNotify.Start();
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
@@ -279,6 +295,8 @@ public sealed class TrayApplicationContext : ApplicationContext
             _steamVrItem.Text += $" — next: {steamVrPending}";
 
         _vrChatItem.Text = $"VRChat: {(_vrChat.Current.Running ? "running" : "not running")}";
+        if (_vrcOscLifecycle.DescribePendingAction() is string vrcOscPending)
+            _vrChatItem.Text += $" — next: {vrcOscPending}";
 
         UpdateFirmwareItem();
 
@@ -417,6 +435,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _faceTracking.Dispose();
         _eyeTracking.Dispose();
         _vrcFtLifecycle.Dispose();
+        _vrcOscLifecycle.Dispose();
         _firmwareNotify.Dispose();
         Log.Shutdown();
         Application.Exit();
