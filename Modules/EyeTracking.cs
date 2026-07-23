@@ -433,6 +433,7 @@ public sealed class EyeTrackingMonitor : IDisposable
 
     private readonly Dictionary<string, DateTime> _lastRestartAttemptUtc = new();
     private readonly Dictionary<string, int> _consecutivePingFailures = new();
+    private readonly HashSet<string> _everConfirmedOnline = new();
     private DateTime? _allCamerasOfflineSinceUtc;
     private bool _closedForCurrentOutage;
 
@@ -517,11 +518,20 @@ public sealed class EyeTrackingMonitor : IDisposable
 
             // Debounce online->offline only (see PollingConfig.EyeCameraOfflineDebounceFailures).
             // Recovery stays instant: any successful ping resets the counter and online=true.
+            // The grace period only applies once a camera has been genuinely confirmed online at
+            // least once — otherwise a monitor restart starts every camera's failure counter at 0
+            // and a real, ongoing failure gets mistaken for "just flapped", misreporting online=true
+            // for the first few checks after every restart (confirmed live 2026-07-24, mid-fix for
+            // the same in-memory-state-vs-restart bug class as SessionOrchestrator's VD-PID gate).
             var failureThreshold = _config.Polling.EyeCameraOfflineDebounceFailures;
             var consecutiveFailures = _consecutivePingFailures.GetValueOrDefault(cam.Ip);
             consecutiveFailures = pingSucceeded ? 0 : consecutiveFailures + 1;
             _consecutivePingFailures[cam.Ip] = consecutiveFailures;
-            var online = pingSucceeded || consecutiveFailures < failureThreshold;
+
+            if (pingSucceeded)
+                _everConfirmedOnline.Add(cam.Ip);
+
+            var online = pingSucceeded || (_everConfirmedOnline.Contains(cam.Ip) && consecutiveFailures < failureThreshold);
 
             if (!pingSucceeded && online)
                 Log.Debug("EyeTracking", $"Eye camera '{cam.Name}' ({cam.Ip}): ping failed ({consecutiveFailures}/{failureThreshold} consecutive) — within debounce grace period, still counted online.");
