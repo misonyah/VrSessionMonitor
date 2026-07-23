@@ -481,6 +481,36 @@ public sealed class FaceTrackingMonitor : IDisposable
         }
     }
 
+    /// <summary>Surfaces the stalled-connection sustained/cooldown/backoff timers for the tray —
+    /// previously only visible at Trace log level, so an sr_runtime restart (or the escalation to
+    /// also restarting VRCFaceTracking) looked unprompted unless you were watching the log.</summary>
+    public string? DescribePendingAction()
+    {
+        if (!_config.FaceTrackingAutoFix.Enabled) return null;
+
+        var now = DateTime.UtcNow;
+
+        if (_autoFixBackoffUntilUtc is DateTime backoffUntil && now < backoffUntil)
+            return $"auto-fix paused {(backoffUntil - now).TotalSeconds:F0}s (too many failed attempts)";
+
+        if (_disconnectedSinceUtc is DateTime since)
+        {
+            var sustained = now - since;
+            var sustainedThreshold = TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.SustainedDisconnectMs);
+            if (sustained < sustainedThreshold)
+                return $"sr_runtime restart in {(sustainedThreshold - sustained).TotalSeconds:F0}s if still stalled";
+
+            if (_lastSRanipalFixAttemptUtc is DateTime lastAttempt)
+            {
+                var remaining = TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.CooldownMs) - (now - lastAttempt);
+                if (remaining > TimeSpan.Zero)
+                    return $"next stalled-connection fix in {remaining.TotalSeconds:F0}s";
+            }
+        }
+
+        return null;
+    }
+
     public void Dispose()
     {
         Stop();
