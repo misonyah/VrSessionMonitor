@@ -30,6 +30,19 @@ public sealed class SessionOrchestrator
 
     private readonly SemaphoreSlim _runGate = new(1, 1);
 
+    /// <summary>
+    /// PID of the VD Streamer instance the launch chain (Steam/VRChat/SlimeVR/OVR Toolkit) last
+    /// completed for. Found necessary live 2026-07-24: a bare headset ping flap (Quest briefly
+    /// dropping Wi-Fi for a few seconds, VD Streamer never touched) re-fires
+    /// OnHeadsetStateChanged's offline-&gt;online edge and re-ran this whole flow — including
+    /// relaunching VRChat — a few minutes after VRChat and SteamVR had both been closed on
+    /// purpose, because VD Streamer keeps its stream connection to the headset alive the entire
+    /// time regardless of whether anything is actually being worn. The launch chain should only
+    /// re-run for a genuinely new VD Streamer instance (fresh PID), not for every ping flap of an
+    /// already-running one.
+    /// </summary>
+    private int? _launchChainCompletedForVdPid;
+
     public SessionState State { get; private set; } = SessionState.Idle;
     public event EventHandler<SessionState>? StateChanged;
 
@@ -79,27 +92,39 @@ public sealed class SessionOrchestrator
             SetState(SessionState.LaunchingApps);
             await LaunchVdStreamerAsync().ConfigureAwait(false);
 
-            SetState(SessionState.WaitingForStream);
-            var streaming = await WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+            var vdPid = ProcessLauncher.GetProcessId("VirtualDesktop.Streamer");
 
-            if (!streaming)
+            if (vdPid.HasValue && vdPid == _launchChainCompletedForVdPid)
             {
-                Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — " +
-                                          "skipping Steam/VRChat/SlimeVR launch. Only VD Streamer itself was started, so it's ready to accept a connection whenever you actually open Virtual Desktop.");
+                Log.Info("Orchestrator", $"Launch chain already completed for this VD Streamer instance (PID {vdPid}) — " +
+                                          "this is a headset ping flap, not a new VD session. Skipping Steam/VRChat/SlimeVR/OVR Toolkit relaunch.");
             }
             else
             {
-                SetState(SessionState.LaunchingApps);
-                await LaunchSteamAsync().ConfigureAwait(false);
+                SetState(SessionState.WaitingForStream);
+                var streaming = await WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
-                SetState(SessionState.LaunchingVrChat);
-                await LaunchVrChatAsync().ConfigureAwait(false);
+                if (!streaming)
+                {
+                    Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — " +
+                                              "skipping Steam/VRChat/SlimeVR launch. Only VD Streamer itself was started, so it's ready to accept a connection whenever you actually open Virtual Desktop.");
+                }
+                else
+                {
+                    SetState(SessionState.LaunchingApps);
+                    await LaunchSteamAsync().ConfigureAwait(false);
 
-                SetState(SessionState.LaunchingSlimeVr);
-                await LaunchSlimeVrAsync().ConfigureAwait(false);
+                    SetState(SessionState.LaunchingVrChat);
+                    await LaunchVrChatAsync().ConfigureAwait(false);
 
-                SetState(SessionState.LaunchingOvrToolkit);
-                await LaunchOvrToolkitAsync().ConfigureAwait(false);
+                    SetState(SessionState.LaunchingSlimeVr);
+                    await LaunchSlimeVrAsync().ConfigureAwait(false);
+
+                    SetState(SessionState.LaunchingOvrToolkit);
+                    await LaunchOvrToolkitAsync().ConfigureAwait(false);
+
+                    _launchChainCompletedForVdPid = vdPid;
+                }
             }
 
             SetState(SessionState.Complete);

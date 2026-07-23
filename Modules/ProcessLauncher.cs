@@ -141,4 +141,18 @@ public sealed class ProcessLauncher
             return false;
         }
     }
+
+    public static int? GetProcessId(string processName)
+    {
+        try
+        {
+            using var proc = Process.GetProcessesByName(processName).FirstOrDefault();
+            return proc?.Id;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("ProcessLauncher", $"GetProcessesByName({processName}) threw: {ex.Message}");
+            return null;
+        }
+    }
 }
