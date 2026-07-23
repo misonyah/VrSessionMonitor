@@ -139,6 +139,22 @@ public sealed class VrcFaceTrackingLifecycleConfig
     public int MaxContinuousUptimeMs { get; set; } = 10800000; // 3 hours
 }
 
+/// <summary>Replaces VRCOSC.exe's old manual launch/kill in vd.cmd/kill.cmd with presence-based
+/// lifecycle management: launched the moment VRChat.exe is seen running, closed entirely
+/// (not just its internal "stop running" state — the whole process) after VRChat has been gone
+/// for ShutdownDelayMs. This is independent of VRCOSC's own internal "start when VRChat is
+/// detected" setting, which only governs whether its modules start doing work once VRCOSC is
+/// already open — it says nothing about whether the VRCOSC.exe process itself is alive, which is
+/// what this class actually owns.</summary>
+public sealed class VrcOscLifecycleConfig
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Mirrors VrcFaceTrackingLifecycleConfig.ShutdownDelayMs — avoids killing (and then
+    /// relaunching) VRCOSC across a quick VRChat restart, which would otherwise bounce its OSC
+    /// connection for no reason.</summary>
+    public int ShutdownDelayMs { get; set; } = 30000;
+}
+
 public sealed class PathsConfig
 {
     public string SteamExe { get; set; } = @"C:\Program Files (x86)\Steam\steam.exe";
@@ -146,6 +162,9 @@ public sealed class PathsConfig
     public string VrChatLaunchExe { get; set; } = @"C:\Program Files (x86)\Steam\steamapps\common\VRChat\launch.exe";
     public string SlimeVrExe { get; set; } = @"C:\Program Files (x86)\Steam\steamapps\common\SlimeVR\slimevr.exe";
     public string VrcFaceTrackingExe { get; set; } = @"C:\Program Files (x86)\Steam\steamapps\common\VRCFaceTracking\VRCFaceTracking.exe";
+    /// <summary>Confirmed live 2026-07-24 — this is where the installer actually puts it on this
+    /// machine, previously only launched/killed by hand via vd.cmd/kill.cmd.</summary>
+    public string VrcOscExe { get; set; } = @"C:\Users\darkf\AppData\Local\VRCOSC\VRCOSC.exe";
     public string BaballoniaExe { get; set; } = @"C:\Program Files (x86)\Steam\steamapps\common\Baballonia\Baballonia.Desktop.exe";
     public string VirtualHereClientExe { get; set; } = @"C:\Programs\vhui64.exe";
     public string SRanipalExe { get; set; } = @"C:\Programs\SRanipal\sr_runtime.exe";
@@ -282,6 +301,7 @@ public sealed class MonitorConfig
     public FaceTrackingAutoFixConfig FaceTrackingAutoFix { get; set; } = new();
     public SteamVrStuckSessionConfig SteamVrStuckSession { get; set; } = new();
     public VrcFaceTrackingLifecycleConfig VrcFaceTrackingLifecycle { get; set; } = new();
+    public VrcOscLifecycleConfig VrcOscLifecycle { get; set; } = new();
     public SessionFlowConfig SessionFlow { get; set; } = new();
     public List<TrackerConfig> Trackers { get; set; } = new();
     public List<EyeCameraConfig> EyeCameras { get; set; } = new();
