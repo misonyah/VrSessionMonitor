@@ -214,7 +214,8 @@ public sealed class SteamVrMonitor : IDisposable
     }
 
     /// <summary>Surfaces the stuck-session timers for the tray so a restart's timing isn't a
-    /// surprise — previously only visible at Debug/Trace log level.</summary>
+    /// surprise — previously only visible at Debug/Trace log level. Falls back to explaining what
+    /// it's waiting for when nothing is actively counting down, rather than going silent.</summary>
     public string? DescribePendingAction()
     {
         if (!_config.SteamVrStuckSession.Enabled) return null;
@@ -224,6 +225,9 @@ public sealed class SteamVrMonitor : IDisposable
         if (_giveUpUntilUtc is DateTime giveUpUntil && now < giveUpUntil)
             return $"stuck-session recovery paused {(giveUpUntil - now).TotalSeconds:F0}s (too many failed attempts)";
 
+        if (!_last.VrServerRunning || !_last.VrCompositorRunning)
+            return "waiting for vrserver+vrcompositor to both be running before watching for a stuck session";
+
         if (_bothRunningSinceUtc is DateTime since && !_alreadyCheckedThisWindow)
         {
             var remaining = TimeSpan.FromMilliseconds(_config.SteamVrStuckSession.GracePeriodMs) - (now - since);
@@ -231,7 +235,7 @@ public sealed class SteamVrMonitor : IDisposable
                 return $"stuck-session check in {remaining.TotalSeconds:F0}s";
         }
 
-        return null;
+        return "session confirmed healthy — no further check until this SteamVR session ends";
     }
 
     public void Dispose()

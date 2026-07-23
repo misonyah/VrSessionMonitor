@@ -483,7 +483,9 @@ public sealed class FaceTrackingMonitor : IDisposable
 
     /// <summary>Surfaces the stalled-connection sustained/cooldown/backoff timers for the tray —
     /// previously only visible at Trace log level, so an sr_runtime restart (or the escalation to
-    /// also restarting VRCFaceTracking) looked unprompted unless you were watching the log.</summary>
+    /// also restarting VRCFaceTracking) looked unprompted unless you were watching the log. Falls
+    /// back to naming the missing prerequisite when the pipeline isn't even in a state this watches
+    /// (e.g. VRCFaceTracking not running yet), rather than going silent.</summary>
     public string? DescribePendingAction()
     {
         if (!_config.FaceTrackingAutoFix.Enabled) return null;
@@ -508,7 +510,21 @@ public sealed class FaceTrackingMonitor : IDisposable
             }
         }
 
-        return null;
+        if (_last.ModuleConnectedToSRanipal) return null; // healthy — main status line already says so
+
+        // VrcFaceTrackingLifecycleManager already explains "VRCFaceTracking isn't running" (it owns
+        // that process's start/stop lifecycle) — don't restate it here, just what's missing once
+        // VRCFaceTracking is actually up.
+        if (!_last.VrcFaceTrackingRunning) return null;
+
+        var missing = new List<string>();
+        if (!_last.SRanipalRunning) missing.Add("sr_runtime");
+        else if (_last.ModuleProcessCount == 0) missing.Add("a loaded tracking module");
+        if (!_last.ViveCameraDevicePresent) missing.Add("the Vive tracker");
+
+        return missing.Count > 0
+            ? $"waiting for {string.Join(", ", missing)} before it can watch for a stalled connection"
+            : null;
     }
 
     public void Dispose()
