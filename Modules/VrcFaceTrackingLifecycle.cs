@@ -290,6 +290,9 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
             }
         }
 
+        if (!_lastAnyTrackerPresent && !ProcessLauncher.IsRunning("VRCFaceTracking"))
+            return "waiting for an eye camera or Vive tracker to launch VRCFaceTracking";
+
         return null;
     }
 

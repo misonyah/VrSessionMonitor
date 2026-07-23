@@ -693,6 +693,19 @@ public sealed class EyeTrackingMonitor : IDisposable
                 pending.Add($"Baballonia auto-close in {remaining.TotalSeconds:F0}s");
         }
 
+        if (pending.Count > 0) return pending;
+
+        // Nothing actively counting down — explain what would trigger the next change instead of
+        // going silent (a healthy "all running" state needs no explanation, so this only fires
+        // when at least one camera is offline).
+        var offlineCams = _last.Where(c => !c.Online).ToList();
+        if (offlineCams.Count > 0)
+        {
+            pending.Add(!ProcessLauncher.IsRunning("Baballonia.Desktop")
+                ? "waiting for a camera to respond to ping to launch Baballonia"
+                : $"waiting for {string.Join("/", offlineCams.Select(c => c.Camera.Name))} to respond to ping");
+        }
+
         return pending;
     }
 

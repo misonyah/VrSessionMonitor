@@ -281,6 +281,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrChatItem.Text = $"VRChat: {(_vrChat.Current.Running ? "running" : "not running")}";
 
         UpdateFirmwareItem();
+
+        Log.Trace("Tray", $"{_headsetItem.Text} | {_trackerItem.Text} | {_peripheralItem.Text} | {_steamVrItem.Text} | {_vrChatItem.Text}");
     }
 
     /// <summary>Called both from UpdateStatusItems (UI thread, no marshaling needed) and directly
