@@ -213,6 +213,27 @@ public sealed class SteamVrMonitor : IDisposable
         }
     }
 
+    /// <summary>Surfaces the stuck-session timers for the tray so a restart's timing isn't a
+    /// surprise — previously only visible at Debug/Trace log level.</summary>
+    public string? DescribePendingAction()
+    {
+        if (!_config.SteamVrStuckSession.Enabled) return null;
+
+        var now = DateTime.UtcNow;
+
+        if (_giveUpUntilUtc is DateTime giveUpUntil && now < giveUpUntil)
+            return $"stuck-session recovery paused {(giveUpUntil - now).TotalSeconds:F0}s (too many failed attempts)";
+
+        if (_bothRunningSinceUtc is DateTime since && !_alreadyCheckedThisWindow)
+        {
+            var remaining = TimeSpan.FromMilliseconds(_config.SteamVrStuckSession.GracePeriodMs) - (now - since);
+            if (remaining > TimeSpan.Zero)
+                return $"stuck-session check in {remaining.TotalSeconds:F0}s";
+        }
+
+        return null;
+    }
+
     public void Dispose()
     {
         Stop();

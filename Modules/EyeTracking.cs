@@ -667,6 +667,35 @@ public sealed class EyeTrackingMonitor : IDisposable
         });
     }
 
+    /// <summary>Surfaces per-camera restart cooldowns and the Baballonia auto-close countdown for
+    /// the tray — previously only visible at Trace log level, which made an auto-close look like
+    /// it came out of nowhere unless you were watching the log at the exact moment.</summary>
+    public IReadOnlyList<string> DescribePendingActions()
+    {
+        var pending = new List<string>();
+        var now = DateTime.UtcNow;
+
+        if (_config.EyeCameraAutoRestart.Enabled)
+        {
+            var cooldown = TimeSpan.FromMilliseconds(_config.EyeCameraAutoRestart.CooldownMs);
+            foreach (var (name, last) in _lastRestartAttemptUtc)
+            {
+                var remaining = cooldown - (now - last);
+                if (remaining > TimeSpan.Zero)
+                    pending.Add($"{name} restart cooldown {remaining.TotalSeconds:F0}s");
+            }
+        }
+
+        if (_config.BaballoniaLifecycle.Enabled && _allCamerasOfflineSinceUtc is DateTime offlineSince && !_closedForCurrentOutage)
+        {
+            var remaining = TimeSpan.FromMilliseconds(_config.EyeCameraAutoRestart.AutoCloseAfterAllOfflineMs) - (now - offlineSince);
+            if (remaining > TimeSpan.Zero)
+                pending.Add($"Baballonia auto-close in {remaining.TotalSeconds:F0}s");
+        }
+
+        return pending;
+    }
+
     public void Dispose()
     {
         Stop();

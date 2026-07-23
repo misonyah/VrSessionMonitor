@@ -251,6 +251,17 @@ public sealed class TrayApplicationContext : ApplicationContext
             ? $"Eye/Face tracking: all running ({p.ModuleProcessCount} module(s), {cams.Count(c => c.Streaming)}/{cams.Count} cameras streaming)"
             : $"Eye/Face tracking: {string.Join(", ", parts)}";
 
+        // Surfaces scheduled auto-start/stop timers (restart cooldowns, shutdown/close countdowns,
+        // escalation backoffs) that were previously only visible by watching the log at the right
+        // moment — added 2026-07-24 after an unprompted-looking VRCFaceTracking launch turned out
+        // to have a perfectly logged reason once checked after the fact.
+        var pending = new List<string>();
+        pending.AddRange(_eyeTracking.DescribePendingActions());
+        if (_faceTracking.DescribePendingAction() is string faceTrackingPending) pending.Add(faceTrackingPending);
+        if (_vrcFtLifecycle.DescribePendingAction() is string vrcFtPending) pending.Add(vrcFtPending);
+        if (pending.Count > 0)
+            _peripheralItem.Text += $" — next: {string.Join(", ", pending)}";
+
         var sv = _steamVr.Current;
         if (sv.VrServerRunning && sv.VrMonitorRunning && sv.VrCompositorRunning)
             _steamVrItem.Text = "SteamVR: running";
@@ -264,6 +275,8 @@ public sealed class TrayApplicationContext : ApplicationContext
             if (!sv.VrCompositorRunning) down.Add("vrcompositor");
             _steamVrItem.Text = $"SteamVR: partial (down: {string.Join(", ", down)})";
         }
+        if (_steamVr.DescribePendingAction() is string steamVrPending)
+            _steamVrItem.Text += $" — next: {steamVrPending}";
 
         _vrChatItem.Text = $"VRChat: {(_vrChat.Current.Running ? "running" : "not running")}";
 

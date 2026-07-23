@@ -261,6 +261,41 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         }
     }
 
+    /// <summary>Surfaces the shutdown-after-no-tracker countdown and the preventive-restart-due
+    /// countdown for the tray — previously the only way to know either was imminent was to already
+    /// be watching the log, which is exactly what made the 2026-07-24 VRCFaceTracking pop-up look
+    /// unprompted until the log was checked after the fact.</summary>
+    public string? DescribePendingAction()
+    {
+        if (!_config.VrcFaceTrackingLifecycle.Enabled) return null;
+
+        var now = DateTime.UtcNow;
+
+        if (_noTrackerSinceUtc is DateTime since)
+        {
+            var remaining = TimeSpan.FromMilliseconds(_config.VrcFaceTrackingLifecycle.ShutdownDelayMs) - (now - since);
+            if (remaining > TimeSpan.Zero)
+                return $"VRCFaceTracking shutdown in {remaining.TotalSeconds:F0}s";
+        }
+
+        var maxUptimeMs = _config.VrcFaceTrackingLifecycle.MaxContinuousUptimeMs;
+        if (maxUptimeMs > 0 && _lastAnyTrackerPresent)
+        {
+            using var proc = Process.GetProcessesByName("VRCFaceTracking").FirstOrDefault();
+            if (proc is not null)
+            {
+                var remaining = TimeSpan.FromMilliseconds(maxUptimeMs) - (DateTime.Now - proc.StartTime);
+                if (remaining > TimeSpan.Zero)
+                    return $"preventive restart due in {FormatDuration(remaining)}";
+            }
+        }
+
+        return null;
+    }
+
+    private static string FormatDuration(TimeSpan span) =>
+        span.TotalHours >= 1 ? $"{span.TotalHours:F1}h" : $"{span.TotalMinutes:F0}m";
+
     public void Dispose()
     {
         Stop();
