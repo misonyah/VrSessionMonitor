@@ -301,6 +301,36 @@ public sealed class AdbConfig
     public string VirtualDesktopPackageName { get; set; } = "com.virtualdesktop.vr";
 }
 
+#if INCLUDE_HOME_ASSISTANT
+public enum LightAction { NoChange, On, Off }
+
+public static class LightActionExtensions
+{
+    public static LightAction ParseOrDefault(this string? value) =>
+        Enum.TryParse<LightAction>(value, ignoreCase: true, out var parsed) ? parsed : LightAction.NoChange;
+
+    public static string ToConfigString(this LightAction action) => action.ToString();
+}
+
+/// <summary>See docs/superpowers/specs/2026-07-26-home-assistant-lights-design.md. Three
+/// independent tri-state light maps (entityId -> On/Off/NoChange), one per trigger event:
+/// headset coming online (also re-applied when AFK ends), headset going offline, and AFK
+/// starting (HMD proximity OR VRChat's own AFK OSC parameter, OR'd — see
+/// HomeAssistantLightsManager).</summary>
+public sealed class HomeAssistantConfig
+{
+    public bool Enabled { get; set; } = false;
+    public string BaseUrl { get; set; } = "";
+    public string AccessToken { get; set; } = "";
+    public string SelectedAreaId { get; set; } = "";
+    public Dictionary<string, string> HeadsetOnActions { get; set; } = new();
+    public Dictionary<string, string> HeadsetOffActions { get; set; } = new();
+    public Dictionary<string, string> AfkActions { get; set; } = new();
+    public int AfkConsecutiveReadsBeforeFlip { get; set; } = 3;
+    public int AfkPollIntervalMs { get; set; } = 2000;
+}
+#endif
+
 public sealed class MonitorConfig
 {
     public NetworkConfig Network { get; set; } = new();
@@ -308,6 +338,9 @@ public sealed class MonitorConfig
     public PathsConfig Paths { get; set; } = new();
     public UpdateCheckConfig Updates { get; set; } = new();
     public AdbConfig Adb { get; set; } = new();
+#if INCLUDE_HOME_ASSISTANT
+    public HomeAssistantConfig HomeAssistant { get; set; } = new();
+#endif
     public EyeCameraAutoRestartConfig EyeCameraAutoRestart { get; set; } = new();
     public BaballoniaLifecycleConfig BaballoniaLifecycle { get; set; } = new();
     public FaceTrackingAutoFixConfig FaceTrackingAutoFix { get; set; } = new();

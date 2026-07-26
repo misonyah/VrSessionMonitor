@@ -10,6 +10,17 @@
     <ApplicationIcon>icon.ico</ApplicationIcon>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- Gates the entire Home Assistant lights feature (see docs/superpowers/specs/2026-07-26-home-assistant-lights-design.md).
+         Override with `dotnet build -p:IncludeHomeAssistant=false` to compile it — and its two
+         extra NuGet dependencies — out entirely. -->
+    <IncludeHomeAssistant Condition="'$(IncludeHomeAssistant)'==''">true</IncludeHomeAssistant>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IncludeHomeAssistant)'=='true'">
+    <DefineConstants>$(DefineConstants);INCLUDE_HOME_ASSISTANT</DefineConstants>
+  </PropertyGroup>
+
   <!-- UseWPF changes the SDK's default implicit-usings set (its template doesn't include
        System.IO/System.Net.Http the way the WinForms/console one does); restore them
        explicitly rather than hunting down every file that relied on them. -->
@@ -23,6 +34,11 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.10" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
     <PackageReference Include="System.Management" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IncludeHomeAssistant)'=='true'">
+    <PackageReference Include="VRChat.OSCQuery" Version="0.0.7" />
+    <PackageReference Include="LucHeart.CoreOSC" Version="1.6.0" />
   </ItemGroup>
 
 </Project>
