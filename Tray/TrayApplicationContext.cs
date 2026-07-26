@@ -1,6 +1,9 @@
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 using VrSessionMonitor.Modules;
+#if INCLUDE_HOME_ASSISTANT
+using VrSessionMonitor.Modules.HomeAssistant;
+#endif
 
 namespace VrSessionMonitor.Tray;
 
@@ -30,6 +33,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _vrChatItem;
     private readonly ToolStripMenuItem _firmwareItem;
     private readonly ContextMenuStrip _menu;
+#if INCLUDE_HOME_ASSISTANT
+    private readonly HomeAssistantClient _homeAssistantClient;
+    private readonly ToolStripMenuItem _homeAssistantMenu;
+    private readonly ToolStripMenuItem _homeAssistantStatusItem;
+#endif
 
     public TrayApplicationContext()
     {
@@ -61,6 +69,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _updateChecker = new UpdateChecker(_config);
         _adb = new AdbController(_config);
         _orchestrator = new SessionOrchestrator(_config, _trackers, _updateChecker, _adb);
+#if INCLUDE_HOME_ASSISTANT
+        _homeAssistantClient = new HomeAssistantClient(_config);
+#endif
 
         _headsetItem = new ToolStripMenuItem($"Headset: {(_headset.IsOnline ? "online" : "offline")}") { Enabled = false };
         _statusItem = new ToolStripMenuItem("Status: idle") { Enabled = false };
@@ -163,6 +174,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_steamVrItem);
         _menu.Items.Add(_vrChatItem);
         _menu.Items.Add(_firmwareItem);
+#if INCLUDE_HOME_ASSISTANT
+        _homeAssistantStatusItem = new ToolStripMenuItem("Home Assistant: disconnected") { Enabled = false };
+        _homeAssistantMenu = new ToolStripMenuItem("Home Assistant");
+        _homeAssistantMenu.DropDownItems.Add(_homeAssistantStatusItem);
+        _menu.Items.Add(_homeAssistantMenu);
+#endif
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(autoLaunchVrChatItem);
         _menu.Items.Add(autoLaunchOvrToolkitItem);
@@ -207,6 +224,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrcFtLifecycle.Start();
         _vrcOscLifecycle.Start();
         _firmwareNotify.Start();
+#if INCLUDE_HOME_ASSISTANT
+        _homeAssistantClient.Start();
+#endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
         statusTimer.Tick += (_, _) => UpdateStatusItems();
@@ -299,6 +319,9 @@ public sealed class TrayApplicationContext : ApplicationContext
             _vrChatItem.Text += $" — next: {vrcOscPending}";
 
         UpdateFirmwareItem();
+#if INCLUDE_HOME_ASSISTANT
+        _homeAssistantStatusItem.Text = $"Home Assistant: {(_homeAssistantClient.IsConnected ? "connected" : "disconnected")}";
+#endif
 
         Log.Trace("Tray", $"{_headsetItem.Text} | {_trackerItem.Text} | {_peripheralItem.Text} | {_steamVrItem.Text} | {_vrChatItem.Text}");
     }
@@ -437,6 +460,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrcFtLifecycle.Dispose();
         _vrcOscLifecycle.Dispose();
         _firmwareNotify.Dispose();
+#if INCLUDE_HOME_ASSISTANT
+        _homeAssistantClient.Dispose();
+#endif
         Log.Shutdown();
         Application.Exit();
     }
