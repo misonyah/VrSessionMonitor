@@ -36,9 +36,9 @@
     <PackageReference Include="System.Management" Version="10.0.10" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(IncludeHomeAssistant)'=='true'">
-    <PackageReference Include="VRChat.OSCQuery" Version="0.0.7" />
-    <PackageReference Include="LucHeart.CoreOSC" Version="1.6.0" />
+  <ItemGroup>
+    <PackageReference Include="VRChat.OSCQuery" Version="0.0.7" Condition="'$(IncludeHomeAssistant)'=='true'" />
+    <PackageReference Include="LucHeart.CoreOSC" Version="1.6.0" Condition="'$(IncludeHomeAssistant)'=='true'" />
   </ItemGroup>
 
 </Project>
