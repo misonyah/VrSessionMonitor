@@ -12,3 +12,6 @@ logs/
 
 # Visual Studio user-specific
 *.user
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/
