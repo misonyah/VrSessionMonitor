@@ -42,6 +42,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private List<string> _homeAssistantLightsInSelectedArea = new();
     private HomeAssistantLightsManager? _homeAssistantManager;
     private HmdActivityMonitor? _hmdActivity;
+    private VrChatOscAfkListener? _vrChatOscAfk;
     private ToolStripMenuItem? _homeAssistantOnLightsMenu;
     private ToolStripMenuItem? _homeAssistantOffLightsMenu;
     private ToolStripMenuItem? _homeAssistantAfkLightsMenu;
@@ -82,6 +83,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantDiscovery = new HomeAssistantAreaDiscovery(_homeAssistantClient);
         _homeAssistantManager = new HomeAssistantLightsManager(_config, _homeAssistantClient, _headset);
         _hmdActivity = new HmdActivityMonitor(_config);
+        _vrChatOscAfk = new VrChatOscAfkListener(_config);
 #endif
 
         _headsetItem = new ToolStripMenuItem($"Headset: {(_headset.IsOnline ? "online" : "offline")}") { Enabled = false };
@@ -249,6 +251,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantManager!.Start();
         _hmdActivity!.PresenceChanged += (_, present) => _homeAssistantManager!.OnHmdPresenceChanged(present);
         _hmdActivity.Start();
+        _vrChatOscAfk!.AfkChanged += (_, afk) => _homeAssistantManager!.OnOscAfkChanged(afk);
+        _vrChatOscAfk.Start();
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
@@ -583,6 +587,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantManager?.Dispose();
         _hmdActivity?.Dispose();
+        _vrChatOscAfk?.Dispose();
         _homeAssistantClient.Dispose();
 #endif
         Log.Shutdown();
