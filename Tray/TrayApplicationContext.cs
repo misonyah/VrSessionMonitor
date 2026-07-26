@@ -35,8 +35,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ContextMenuStrip _menu;
 #if INCLUDE_HOME_ASSISTANT
     private readonly HomeAssistantClient _homeAssistantClient;
+    private readonly HomeAssistantAreaDiscovery _homeAssistantDiscovery;
     private readonly ToolStripMenuItem _homeAssistantMenu;
     private readonly ToolStripMenuItem _homeAssistantStatusItem;
+    private readonly ToolStripMenuItem _homeAssistantAreaMenu;
+    private List<string> _homeAssistantLightsInSelectedArea = new();
 #endif
 
     public TrayApplicationContext()
@@ -71,6 +74,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _orchestrator = new SessionOrchestrator(_config, _trackers, _updateChecker, _adb);
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient = new HomeAssistantClient(_config);
+        _homeAssistantDiscovery = new HomeAssistantAreaDiscovery(_homeAssistantClient);
 #endif
 
         _headsetItem = new ToolStripMenuItem($"Headset: {(_headset.IsOnline ? "online" : "offline")}") { Enabled = false };
@@ -176,8 +180,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_firmwareItem);
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantStatusItem = new ToolStripMenuItem("Home Assistant: disconnected") { Enabled = false };
+        _homeAssistantAreaMenu = new ToolStripMenuItem("Area: (none selected)");
         _homeAssistantMenu = new ToolStripMenuItem("Home Assistant");
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantStatusItem);
+        _homeAssistantMenu.DropDownItems.Add(_homeAssistantAreaMenu);
+        _homeAssistantMenu.DropDownItems.Add("Refresh areas/lights", null, (_, _) => _ = RefreshHomeAssistantAreasAsync());
         _menu.Items.Add(_homeAssistantMenu);
 #endif
         _menu.Items.Add(new ToolStripSeparator());
@@ -430,6 +437,63 @@ public sealed class TrayApplicationContext : ApplicationContext
         Log.Info("Tray", summary);
         _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", summary, ToolTipIcon.Info);
     }
+
+#if INCLUDE_HOME_ASSISTANT
+    private async Task RefreshHomeAssistantAreasAsync()
+    {
+        Log.Info("Tray", "Home Assistant area/light refresh requested from tray menu.");
+        List<AreaInfo> areas;
+        try
+        {
+            areas = await _homeAssistantDiscovery.DiscoverAreasAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Tray", $"Home Assistant area discovery failed: {ex.Message}");
+            return;
+        }
+
+        void Rebuild()
+        {
+            _homeAssistantAreaMenu.DropDownItems.Clear();
+            foreach (var area in areas)
+            {
+                var item = new ToolStripMenuItem(area.Name) { Checked = area.AreaId == _config.HomeAssistant.SelectedAreaId };
+                item.Click += (_, _) =>
+                {
+                    _config.HomeAssistant.SelectedAreaId = area.AreaId;
+                    _config.Save(_configPath);
+                    Log.Info("Tray", $"Home Assistant area selected: {area.Name} ({area.AreaId})");
+                    _homeAssistantAreaMenu.Text = $"Area: {area.Name}";
+                    foreach (ToolStripMenuItem sibling in _homeAssistantAreaMenu.DropDownItems)
+                        sibling.Checked = sibling == item;
+                    _ = RefreshHomeAssistantLightsAsync(area.AreaId);
+                };
+                _homeAssistantAreaMenu.DropDownItems.Add(item);
+            }
+
+            var selected = areas.FirstOrDefault(a => a.AreaId == _config.HomeAssistant.SelectedAreaId);
+            _homeAssistantAreaMenu.Text = selected is not null ? $"Area: {selected.Name}" : "Area: (none selected)";
+        }
+
+        if (_menu.InvokeRequired) _menu.Invoke(Rebuild); else Rebuild();
+
+        if (!string.IsNullOrEmpty(_config.HomeAssistant.SelectedAreaId))
+            await RefreshHomeAssistantLightsAsync(_config.HomeAssistant.SelectedAreaId).ConfigureAwait(false);
+    }
+
+    private async Task RefreshHomeAssistantLightsAsync(string areaId)
+    {
+        try
+        {
+            _homeAssistantLightsInSelectedArea = await _homeAssistantDiscovery.DiscoverLightsInAreaAsync(areaId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Tray", $"Home Assistant light discovery for area '{areaId}' failed: {ex.Message}");
+        }
+    }
+#endif
 
     private static void OpenLogsFolder()
     {
