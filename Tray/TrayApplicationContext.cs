@@ -40,6 +40,9 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _homeAssistantStatusItem;
     private readonly ToolStripMenuItem _homeAssistantAreaMenu;
     private List<string> _homeAssistantLightsInSelectedArea = new();
+    private HomeAssistantLightsManager? _homeAssistantManager;
+    private ToolStripMenuItem? _homeAssistantOnLightsMenu;
+    private ToolStripMenuItem? _homeAssistantOffLightsMenu;
 #endif
 
     public TrayApplicationContext()
@@ -75,6 +78,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient = new HomeAssistantClient(_config);
         _homeAssistantDiscovery = new HomeAssistantAreaDiscovery(_homeAssistantClient);
+        _homeAssistantManager = new HomeAssistantLightsManager(_config, _homeAssistantClient, _headset);
 #endif
 
         _headsetItem = new ToolStripMenuItem($"Headset: {(_headset.IsOnline ? "online" : "offline")}") { Enabled = false };
@@ -185,6 +189,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantStatusItem);
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantAreaMenu);
         _homeAssistantMenu.DropDownItems.Add("Refresh areas/lights", null, (_, _) => _ = RefreshHomeAssistantAreasAsync());
+        _homeAssistantOnLightsMenu = new ToolStripMenuItem("Headset On lights");
+        _homeAssistantOffLightsMenu = new ToolStripMenuItem("Headset Off lights");
+        _homeAssistantMenu.DropDownItems.Add(_homeAssistantOnLightsMenu);
+        _homeAssistantMenu.DropDownItems.Add(_homeAssistantOffLightsMenu);
         _menu.Items.Add(_homeAssistantMenu);
 #endif
         _menu.Items.Add(new ToolStripSeparator());
@@ -233,6 +241,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _firmwareNotify.Start();
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient.Start();
+        _homeAssistantManager!.Start();
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
@@ -491,6 +500,45 @@ public sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             Log.Warn("Tray", $"Home Assistant light discovery for area '{areaId}' failed: {ex.Message}");
+            return;
+        }
+
+        void Rebuild()
+        {
+            RebuildLightActionMenu(_homeAssistantOnLightsMenu!, _config.HomeAssistant.HeadsetOnActions);
+            RebuildLightActionMenu(_homeAssistantOffLightsMenu!, _config.HomeAssistant.HeadsetOffActions);
+        }
+
+        if (_menu.InvokeRequired) _menu.Invoke(Rebuild); else Rebuild();
+    }
+
+    /// <summary>Builds one "light name -> On/Off/No change" radio submenu per light in the
+    /// currently-selected area, persisting the choice into the given tri-state map. Shared by
+    /// every trigger's light list (Headset On/Off here; AFK added in a later task) — each map is
+    /// independent, so the same light can have a different action per trigger.</summary>
+    private void RebuildLightActionMenu(ToolStripMenuItem menu, Dictionary<string, string> actions)
+    {
+        menu.DropDownItems.Clear();
+        foreach (var entityId in _homeAssistantLightsInSelectedArea)
+        {
+            var lightMenu = new ToolStripMenuItem(entityId);
+            var current = actions.GetValueOrDefault(entityId, LightAction.NoChange.ToConfigString()).ParseOrDefault();
+
+            foreach (var option in new[] { LightAction.On, LightAction.Off, LightAction.NoChange })
+            {
+                var optionItem = new ToolStripMenuItem(option.ToConfigString()) { Checked = option == current };
+                optionItem.Click += (_, _) =>
+                {
+                    actions[entityId] = option.ToConfigString();
+                    _config.Save(_configPath);
+                    foreach (ToolStripMenuItem sibling in lightMenu.DropDownItems)
+                        sibling.Checked = sibling.Text == option.ToConfigString();
+                    Log.Info("Tray", $"Home Assistant: {entityId} set to {option} for this trigger.");
+                };
+                lightMenu.DropDownItems.Add(optionItem);
+            }
+
+            menu.DropDownItems.Add(lightMenu);
         }
     }
 #endif
@@ -525,6 +573,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrcOscLifecycle.Dispose();
         _firmwareNotify.Dispose();
 #if INCLUDE_HOME_ASSISTANT
+        _homeAssistantManager?.Dispose();
         _homeAssistantClient.Dispose();
 #endif
         Log.Shutdown();
