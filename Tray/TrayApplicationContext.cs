@@ -41,8 +41,10 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _homeAssistantAreaMenu;
     private List<string> _homeAssistantLightsInSelectedArea = new();
     private HomeAssistantLightsManager? _homeAssistantManager;
+    private HmdActivityMonitor? _hmdActivity;
     private ToolStripMenuItem? _homeAssistantOnLightsMenu;
     private ToolStripMenuItem? _homeAssistantOffLightsMenu;
+    private ToolStripMenuItem? _homeAssistantAfkLightsMenu;
 #endif
 
     public TrayApplicationContext()
@@ -79,6 +81,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantClient = new HomeAssistantClient(_config);
         _homeAssistantDiscovery = new HomeAssistantAreaDiscovery(_homeAssistantClient);
         _homeAssistantManager = new HomeAssistantLightsManager(_config, _homeAssistantClient, _headset);
+        _hmdActivity = new HmdActivityMonitor(_config);
 #endif
 
         _headsetItem = new ToolStripMenuItem($"Headset: {(_headset.IsOnline ? "online" : "offline")}") { Enabled = false };
@@ -191,8 +194,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantMenu.DropDownItems.Add("Refresh areas/lights", null, (_, _) => _ = RefreshHomeAssistantAreasAsync());
         _homeAssistantOnLightsMenu = new ToolStripMenuItem("Headset On lights");
         _homeAssistantOffLightsMenu = new ToolStripMenuItem("Headset Off lights");
+        _homeAssistantAfkLightsMenu = new ToolStripMenuItem("AFK lights");
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantOnLightsMenu);
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantOffLightsMenu);
+        _homeAssistantMenu.DropDownItems.Add(_homeAssistantAfkLightsMenu);
         _menu.Items.Add(_homeAssistantMenu);
 #endif
         _menu.Items.Add(new ToolStripSeparator());
@@ -242,6 +247,8 @@ public sealed class TrayApplicationContext : ApplicationContext
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient.Start();
         _homeAssistantManager!.Start();
+        _hmdActivity!.PresenceChanged += (_, present) => _homeAssistantManager!.OnHmdPresenceChanged(present);
+        _hmdActivity.Start();
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
@@ -507,6 +514,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             RebuildLightActionMenu(_homeAssistantOnLightsMenu!, _config.HomeAssistant.HeadsetOnActions);
             RebuildLightActionMenu(_homeAssistantOffLightsMenu!, _config.HomeAssistant.HeadsetOffActions);
+            RebuildLightActionMenu(_homeAssistantAfkLightsMenu!, _config.HomeAssistant.AfkActions);
         }
 
         if (_menu.InvokeRequired) _menu.Invoke(Rebuild); else Rebuild();
@@ -574,6 +582,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _firmwareNotify.Dispose();
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantManager?.Dispose();
+        _hmdActivity?.Dispose();
         _homeAssistantClient.Dispose();
 #endif
         Log.Shutdown();
