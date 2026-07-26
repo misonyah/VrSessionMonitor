@@ -7,8 +7,11 @@ namespace VrSessionMonitor.Modules.HomeAssistant;
 /// <summary>
 /// Orchestrates the three trigger events from docs/superpowers/specs/2026-07-26-home-assistant-lights-design.md.
 /// Headset On/Off come directly from the existing HeadsetMonitor.StateChanged event — this class
-/// adds no new headset-presence detection of its own. AFK (HMD proximity OR VRChat OSC) is wired
-/// in by Task 5/6 via OnHmdPresenceChanged/OnOscAfkChanged.
+/// adds no new headset-presence detection of its own. AFK has two independent sources, both wired
+/// up: HmdActivityMonitor's SteamVR proximity signal (via OnHmdPresenceChanged) and VRChat's own
+/// /avatar/parameters/AFK OSC parameter (via OnOscAfkChanged). SetAfkSource ORs them together —
+/// either source alone counts as AFK, and the lights only return to the Headset-On map once both
+/// have cleared. AFK is ignored entirely while the headset is offline (see SetAfkSource).
 /// </summary>
 public sealed class HomeAssistantLightsManager : IDisposable
 {
@@ -34,6 +37,10 @@ public sealed class HomeAssistantLightsManager : IDisposable
 
     private void OnHeadsetStateChanged(object? sender, HeadsetStateChangedEventArgs e)
     {
+        // A session boundary clears any AFK state, so the next session starts from "not AFK"
+        // rather than inheriting whatever the lights were doing when the headset dropped.
+        if (!e.IsOnline) _effectiveAfk = false;
+
         _ = e.IsOnline ? ApplyHeadsetOnActionsAsync() : ApplyActionsAsync(_config.HomeAssistant.HeadsetOffActions);
     }
 
@@ -46,6 +53,13 @@ public sealed class HomeAssistantLightsManager : IDisposable
     private void SetAfkSource(bool isHmdSource, bool value)
     {
         if (isHmdSource) _hmdAfk = value; else _oscAfk = value;
+
+        // AFK means nothing once the headset is off: SteamVR lingers for 10-20s after the headset
+        // drops off the network, so its HMD activity level falls to Idle and — a few polls later —
+        // the AFK map would land on top of the Headset-Off map that just ran, leaving the lights
+        // in the wrong state after the session has actually ended. Sources are still tracked above
+        // so they're accurate when the next session starts.
+        if (!_headset.IsOnline) return;
 
         var afk = _hmdAfk || _oscAfk;
         if (afk == _effectiveAfk) return;

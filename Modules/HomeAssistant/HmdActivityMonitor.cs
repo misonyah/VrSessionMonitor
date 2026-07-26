@@ -10,16 +10,23 @@ namespace VrSessionMonitor.Modules.HomeAssistant;
 /// business logic) to tell "headset on your face" apart from "headset present but not worn" —
 /// e.g. AFK via taking the headset off without closing VRChat. Reuses the exact interop pattern
 /// already proven in Modules/SteamVrNotifier.cs (same VR_InitInternal2/VR_GetGenericInterface/
-/// VR_ShutdownInternal DllImports), but unlike that class's one-shot-per-call lifecycle, this
-/// holds ONE OpenVR session open for the life of the poll loop, since we're reading state on an
-/// interval rather than firing an isolated one-off notification.
+/// VR_ShutdownInternal DllImports), including that class's stateless one-shot-per-call lifecycle:
+/// every poll does its own full Init -> GetGenericInterface -> read -> Shutdown cycle rather than
+/// caching a session across polls. That is deliberate and load-bearing — OpenVR's
+/// VR_InitInternal2/VR_ShutdownInternal act on a single PROCESS-GLOBAL context that is not
+/// reference-counted per caller, and SteamVrNotifier.TryNotify (13 call sites across 6 monitors,
+/// all of which fire during a live VR session) ends every call with VR_ShutdownInternal. A cached
+/// fn table would therefore be left pointing at a torn-down interface with no way to notice, and
+/// calling through those stale native thunks corrupts process state rather than throwing a
+/// catchable exception. Per-poll Init/Shutdown costs a little more per read and removes the whole
+/// failure mode.
 ///
 /// IVRSystem's real FnTable has 80+ functions; GetTrackedDeviceActivityLevel is confirmed to be
-/// the 15th, verified against a real, working reference already on this machine
+/// the 16th, verified against a real, working reference already on this machine
 /// (C:\Users\<user>\git\Baballonia\src\Baballonia\SteamVR\openvr_api.cs — Baballonia is part of
 /// this same VR stack). Marshal.PtrToStructure only cares about each field's marshaled SIZE —
 /// every FunctionPtr field is IntPtr-sized regardless of the delegate's own parameter types — so
-/// the 14 preceding functions (never invoked here) are typed with one shared no-op delegate
+/// the 15 preceding functions (never invoked here) are typed with one shared no-op delegate
 /// purely to occupy the right number of pointer-sized slots in the right order, rather than
 /// porting a dozen unrelated OpenVR struct/enum types into this codebase just to satisfy
 /// signatures nothing calls. IVRSystem_Version ("IVRSystem_023") was read directly from that
@@ -92,8 +99,6 @@ public sealed class HmdActivityMonitor : IDisposable
     private Task? _loopTask;
     private bool _dllLoadAttempted;
     private bool _dllLoaded;
-    private bool _sessionOpen;
-    private IVRSystemFnTable _fnTable;
     private int _consecutiveReadsAtCurrentLevel;
 
     public bool IsUserPresent { get; private set; } = true; // assume present until proven otherwise — never fire a false AFK before the first real read
@@ -106,6 +111,12 @@ public sealed class HmdActivityMonitor : IDisposable
 
     public void Start()
     {
+        if (!_config.HomeAssistant.Enabled)
+        {
+            Log.Info("HmdActivity", "Home Assistant disabled in config — not polling HMD activity.");
+            return;
+        }
+
         _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => LoopAsync(_cts.Token));
         Log.Info("HmdActivity", "Started HMD proximity polling.");
@@ -123,20 +134,8 @@ public sealed class HmdActivityMonitor : IDisposable
 
     private void CheckOnce()
     {
-        if (!_sessionOpen && !TryOpenSession())
-            return; // SteamVR not running (or DLL missing) — leave IsUserPresent at its last known value
-
-        EDeviceActivityLevel level;
-        try
-        {
-            level = _fnTable.GetTrackedDeviceActivityLevel(HmdDeviceIndex);
-        }
-        catch (Exception ex)
-        {
-            Log.Debug("HmdActivity", $"GetTrackedDeviceActivityLevel threw: {ex.Message} — closing session, will retry.");
-            CloseSession();
-            return;
-        }
+        if (!TryReadActivityLevel(out var level))
+            return; // SteamVR not running, DLL missing, or a transient read failure — leave IsUserPresent at its last known value
 
         // UserInteraction is the only level meaning "actually being worn and used right now" —
         // Idle/*_Timeout/Standby/Unknown all mean the runtime judged the headset not actively in
@@ -162,8 +161,13 @@ public sealed class HmdActivityMonitor : IDisposable
         PresenceChanged?.Invoke(this, present);
     }
 
-    private bool TryOpenSession()
+    /// <summary>One complete, self-contained OpenVR session: Init -> fetch IVRSystem -> read the
+    /// activity level -> Shutdown, with nothing cached across calls (see the class doc for why the
+    /// process-global OpenVR context makes a cached session unsafe here). Never throws; returns
+    /// false for every "couldn't read it this time" case so the caller keeps its last known state.</summary>
+    private bool TryReadActivityLevel(out EDeviceActivityLevel level)
     {
+        level = EDeviceActivityLevel.Unknown;
         if (!EnsureDllLoaded()) return false;
 
         var initError = EVRInitError_None;
@@ -190,26 +194,29 @@ public sealed class HmdActivityMonitor : IDisposable
             return false;
         }
 
-        var ifaceError = EVRInitError_None;
-        var pInterface = GetGenericInterface(FnTablePrefix + IVRSystem_Version, ref ifaceError);
-        if (pInterface == IntPtr.Zero || ifaceError != EVRInitError_None)
+        try
         {
-            Log.Warn("HmdActivity", $"Could not get IVRSystem interface (error {ifaceError}) — if this persists after a SteamVR update, {IVRSystem_Version} may need bumping to match the installed openvr_api.dll.");
-            try { ShutdownInternal(); } catch { /* best effort */ }
+            var ifaceError = EVRInitError_None;
+            var pInterface = GetGenericInterface(FnTablePrefix + IVRSystem_Version, ref ifaceError);
+            if (pInterface == IntPtr.Zero || ifaceError != EVRInitError_None)
+            {
+                Log.Warn("HmdActivity", $"Could not get IVRSystem interface (error {ifaceError}) — if this persists after a SteamVR update, {IVRSystem_Version} may need bumping to match the installed openvr_api.dll.");
+                return false;
+            }
+
+            var fnTable = (IVRSystemFnTable)Marshal.PtrToStructure(pInterface, typeof(IVRSystemFnTable))!;
+            level = fnTable.GetTrackedDeviceActivityLevel(HmdDeviceIndex);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("HmdActivity", $"GetTrackedDeviceActivityLevel threw: {ex.Message} — will retry next poll.");
             return false;
         }
-
-        _fnTable = (IVRSystemFnTable)Marshal.PtrToStructure(pInterface, typeof(IVRSystemFnTable))!;
-        _sessionOpen = true;
-        Log.Info("HmdActivity", "OpenVR session opened for HMD activity polling.");
-        return true;
-    }
-
-    private void CloseSession()
-    {
-        if (!_sessionOpen) return;
-        try { ShutdownInternal(); } catch { /* best effort */ }
-        _sessionOpen = false;
+        finally
+        {
+            try { ShutdownInternal(); } catch { /* best effort */ }
+        }
     }
 
     private bool EnsureDllLoaded()
@@ -236,7 +243,7 @@ public sealed class HmdActivityMonitor : IDisposable
         _cts?.Cancel();
         try { _loopTask?.Wait(2000); } catch { /* ignore */ }
         _cts?.Dispose();
-        CloseSession();
+        // No session to close — each poll opens and shuts down its own (see class doc).
     }
 }
 #endif

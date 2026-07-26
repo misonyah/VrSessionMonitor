@@ -525,9 +525,9 @@ public sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>Builds one "light name -> On/Off/No change" radio submenu per light in the
-    /// currently-selected area, persisting the choice into the given tri-state map. Shared by
-    /// every trigger's light list (Headset On/Off here; AFK added in a later task) — each map is
-    /// independent, so the same light can have a different action per trigger.</summary>
+    /// currently-selected area, persisting the choice into the given tri-state map. Shared by all
+    /// three trigger light lists (Headset On, Headset Off, AFK) — each map is independent, so the
+    /// same light can have a different action per trigger.</summary>
     private void RebuildLightActionMenu(ToolStripMenuItem menu, Dictionary<string, string> actions)
     {
         menu.DropDownItems.Clear();

@@ -44,6 +44,12 @@ public sealed class VrChatOscAfkListener : IDisposable
 
     public void Start()
     {
+        if (!_config.HomeAssistant.Enabled)
+        {
+            Log.Info("VrChatOscAfk", "Home Assistant disabled in config — not advertising an OSCQuery service.");
+            return;
+        }
+
         _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => RunAsync(_cts.Token));
         Log.Info("VrChatOscAfk", "Started.");
@@ -62,6 +68,10 @@ public sealed class VrChatOscAfkListener : IDisposable
             _oscQuery.StartHttpServer();
             _oscQuery.AdvertiseOSCQueryService(serviceName, tcpPort);
             _oscQuery.AdvertiseOSCService(serviceName, udpPort);
+            // The "/avatar" root node is registered first, matching the reference implementation —
+            // VRChat's OSCQuery discovery expects that root to be present to treat this service as
+            // a valid avatar-parameter consumer, and without it the AFK parameter may never arrive.
+            _oscQuery.AddEndpoint("/avatar", "N", Attributes.AccessValues.WriteOnly);
             _oscQuery.AddEndpoint("/avatar/parameters/AFK", "T", Attributes.AccessValues.WriteOnly);
 
             // Receive-only: the "send" endpoint is never actually used (SendAsync is never
@@ -95,17 +105,27 @@ public sealed class VrChatOscAfkListener : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Warn("VrChatOscAfk", $"Listener stopped unexpectedly: {ex.Message}");
+            // Dispose() cancels the token and then tears the socket down specifically to unblock
+            // the receive above, so a fault here with cancellation already requested is an
+            // expected part of shutdown rather than something worth warning about.
+            if (token.IsCancellationRequested)
+                Log.Debug("VrChatOscAfk", $"Listener stopped during shutdown: {ex.Message}");
+            else
+                Log.Warn("VrChatOscAfk", $"Listener stopped unexpectedly: {ex.Message}");
         }
     }
 
     public void Dispose()
     {
+        // Order matters: the loop parks in ReceiveMessageAsync(), which takes no cancellation
+        // token, so cancelling alone cannot unblock it and the Wait below would burn its full
+        // 2s timeout on every exit (VRChat usually isn't streaming to this socket when quitting).
+        // Disposing the socket first faults that pending receive, so the loop returns immediately.
         _cts?.Cancel();
-        try { _loopTask?.Wait(2000); } catch { /* ignore */ }
-        _cts?.Dispose();
         _osc?.Dispose();
         _oscQuery?.Dispose();
+        try { _loopTask?.Wait(2000); } catch { /* ignore */ }
+        _cts?.Dispose();
     }
 }
 #endif

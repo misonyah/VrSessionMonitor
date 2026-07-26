@@ -119,12 +119,37 @@ Three independent sources feed this, each with a different confidence level:
 If a source finds nothing, check the log — every call here is meant to fail gracefully and
 report why rather than silently doing nothing.
 
+## Home Assistant lights
+
+Switches your Home Assistant lights automatically as the VR session changes state, with a separate
+configurable light map per trigger — headset on, headset off, and AFK — each light set to On, Off,
+or No change from the tray menu. AFK comes from two independent sources OR'd together: SteamVR's
+own HMD activity level (headset taken off your face) and VRChat's own `/avatar/parameters/AFK`
+parameter over OSC (AFK toggled from the quick menu while still wearing the headset).
+
+It's gated twice, and both gates have to be open for anything to happen:
+
+- **`IncludeHomeAssistant`** — a compile-time MSBuild property, **on by default**. Build with
+  `dotnet build -p:IncludeHomeAssistant=false` to compile the feature out entirely: no HA client,
+  no OpenVR activity polling, no OSCQuery service advertised to VRChat, no tray menu entries.
+- **`HomeAssistant.Enabled`** — the runtime flag in `appsettings.json`, **off by default**. While
+  it's false nothing connects, polls, or advertises itself, even in a build that includes the
+  feature. Set it true (along with a base URL and a long-lived access token from your Home
+  Assistant user profile) to actually use it.
+
+**Caveat before changing the compile flag on an existing install:** `MonitorConfig.Save()` does a
+full-object rewrite, and a build made with `-p:IncludeHomeAssistant=false` has no `HomeAssistant`
+property to write out. The first time any tray toggle triggers a config save, that whole section —
+access token, selected area, and all three light maps — is silently dropped from
+`appsettings.json`. Back the file up first if you care about those settings.
+
 ## Config reference
 
 `appsettings.json` is a plain JSON tree, loaded via `Microsoft.Extensions.Configuration` (saved
 back out with `System.Text.Json`, since `IConfiguration` itself is read-only). Top-level
-sections: `Network`, `Polling`, `Paths`, `Updates`, `Adb`, `EyeCameraAutoRestart`,
-`BaballoniaLifecycle`, `FaceTrackingAutoFix`, `SteamVrStuckSession`, `VrcFaceTrackingLifecycle`,
+sections: `Network`, `Polling`, `Paths`, `Updates`, `Adb`, `HomeAssistant` (only in builds that
+include the feature — see above), `EyeCameraAutoRestart`, `BaballoniaLifecycle`,
+`FaceTrackingAutoFix`, `SteamVrStuckSession`, `VrcFaceTrackingLifecycle`, `VrcOscLifecycle`,
 `SessionFlow`, `Trackers` (a list), `EyeCameras` (a list). Every field has a doc comment on its
 C# property in `Config/MonitorConfig.cs` explaining what it does and, where relevant, why it has
 the default value it does.
