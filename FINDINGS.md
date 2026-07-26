@@ -87,6 +87,31 @@ needs an explicit time bound — "the PID didn't change" only proves "no crash h
 real session boundary occurred," whenever that companion process can outlive the session it's
 nominally tied to.
 
+### 6. VRCFaceTracking's stale-handshake detection missed the "launched during VRChat's absence" case (confirmed 2026-07-25, re-confirmed 2026-07-26)
+`VrcFaceTrackingLifecycle.cs`'s `CheckVrChatRestart` (added 2026-07-21 to catch VRChat restarting
+while VRCFaceTracking was already running) tracked only the previous poll's VRChat start time, and
+reset that tracking to `null` the instant VRChat wasn't running. Real incident 2026-07-25: VRChat
+was closed for ~18 hours (`03:27:22` → `21:31:48`); VRCFaceTracking launched via tracker-presence
+detection at `21:23:23`/`21:27:05` during that gap; when VRChat finally restarted at `21:31:48`,
+the reset-to-null wiped out the only reference point the check needed, so the restart was never
+flagged. Every other health signal (`moduleConnectedToSRanipal=True`, module processes alive,
+SRanipal connected) kept reading perfectly healthy for the next ~20 minutes regardless, because
+none of them check *which* VRChat instance the OSC handshake actually points at — face tracking
+was silently dead in-game the whole time.
+
+**Fix**: replaced the previous-poll comparison with `_refreshedForVrChatStartTime`, tracking the
+specific VRChat instance (by `StartTime`) already handled — this can't be wiped out by a gap since
+it's only ever compared against whichever VRChat instance is actually running right now. Confirmed
+working live twice: once at `21:52:10` on 2026-07-25 (the moment the patched build first ran, it
+immediately caught and restarted the already-stale VRCFaceTracking), and again on 2026-07-26 at
+`11:24:16` — mid-session, no monitor restart involved — when VRCFaceTracking (launched `11:19:07`)
+was correctly flagged stale 5 seconds after VRChat started at `11:24:11` and restarted on its own.
+
+**Lesson**: same failure class as finding #5 — a "have I already handled this" guard needs to key
+on the identity of the specific instance being compared against, not on "did the last poll see a
+change," whenever the state being watched can disappear and reappear with no comparison basis left
+in between.
+
 ## False leads (worth remembering so they don't get re-chased)
 
 ### `VrChatLowPowerMode` does not control VR vs. desktop rendering
