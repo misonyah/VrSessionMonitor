@@ -280,6 +280,18 @@ public sealed class SessionFlowConfig
     /// chance to land first, so our own EnsureRunningAsync's "already running" check just skips —
     /// while still launching it ourselves as a safety net if that auto-launch doesn't happen.</summary>
     public int SlimeVrLaunchDelayMs { get; set; } = 35000;
+
+    /// <summary>Guards SessionOrchestrator's VD-Streamer-PID "already completed the launch chain
+    /// for this instance" skip (see _launchChainCompletedForVdPid) — that skip only makes sense
+    /// for a genuine short ping flap (Quest's Wi-Fi blipping for a few seconds while VD Streamer
+    /// itself is never touched), not a real new session after the headset was off for a while.
+    /// Confirmed live 2026-07-26: VD Streamer survived an entire ~11-hour overnight gap without
+    /// restarting, so the PID-match skip fired on the next morning's genuine "headset online" and
+    /// silently skipped launching VRChat entirely. If the headset was offline for at least this
+    /// long before coming back, the launch chain reruns regardless of whether VD Streamer's PID
+    /// is unchanged. Comfortably above every observed real flap (~5s in practice) and comfortably
+    /// below any gap that represents an actual new session.</summary>
+    public int MinHeadsetOfflineDurationForNewSessionMs { get; set; } = 90000;
 }
 
 public sealed class AdbConfig

@@ -63,6 +63,30 @@ in this case) independently launching the same exe. Check full command lines
 (`Get-CimInstance Win32_Process`) before concluding a second process cluster is "just a driver
 helper."
 
+### 5. VD-Streamer-PID ping-flap guard skipped an entire overnight session start (confirmed 2026-07-26)
+Commit `a2ad10c` (2026-07-24) added `_launchChainCompletedForVdPid` to stop a genuine ping flap
+(Quest's Wi-Fi blipping for a few seconds) from re-running the whole launch chain when VD Streamer
+itself was never touched. The guard matches purely on VD Streamer's PID being unchanged, with no
+time bound — but VD Streamer can legitimately keep running for hours across a real headset-off
+period without crashing. This morning the headset went offline at `00:34:50` and didn't come back
+online until `11:20:05` — an 11-hour real overnight gap — but VD Streamer's PID (10592) never
+changed, so the orchestrator logged "this is a headset ping flap, not a new VD session" and
+silently skipped launching Steam/VRChat/SlimeVR/OVR Toolkit for a genuinely new session. Confirmed
+via `Get-Process` (VD Streamer PID unchanged since before midnight) cross-referenced against
+`monitor_2026-07-26.log`'s `HeadsetMonitor`/`Orchestrator` lines.
+
+**Fix**: added `SessionFlowConfig.MinHeadsetOfflineDurationForNewSessionMs` (default 90000ms).
+`SessionOrchestrator` now tracks when the headset was last seen going offline
+(`_headsetWentOfflineAtUtc`) and only treats a same-PID match as "just a flap" if that gap was
+shorter than the threshold — otherwise it reruns the full launch chain regardless of VD Streamer's
+PID. 90s is comfortably above every observed real flap (~5s in this machine's logs) and comfortably
+below any gap that represents an actual new session.
+
+**Lesson**: a "same instance, skip re-run" guard keyed on a long-lived companion process's PID
+needs an explicit time bound — "the PID didn't change" only proves "no crash happened," not "no
+real session boundary occurred," whenever that companion process can outlive the session it's
+nominally tied to.
+
 ## False leads (worth remembering so they don't get re-chased)
 
 ### `VrChatLowPowerMode` does not control VR vs. desktop rendering

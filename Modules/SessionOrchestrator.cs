@@ -43,6 +43,11 @@ public sealed class SessionOrchestrator
     /// </summary>
     private int? _launchChainCompletedForVdPid;
 
+    /// <summary>When the headset was last seen going offline — used to tell a genuine short ping
+    /// flap apart from a real new session when deciding whether _launchChainCompletedForVdPid's
+    /// PID match still applies. See MinHeadsetOfflineDurationForNewSessionMs.</summary>
+    private DateTime? _headsetWentOfflineAtUtc;
+
     public SessionState State { get; private set; } = SessionState.Idle;
     public event EventHandler<SessionState>? StateChanged;
 
@@ -69,6 +74,7 @@ public sealed class SessionOrchestrator
         }
         else
         {
+            _headsetWentOfflineAtUtc = DateTime.UtcNow;
             Log.Info("Orchestrator", "Headset went offline. Not auto-stopping anything — leaving session as-is.");
         }
     }
@@ -94,13 +100,22 @@ public sealed class SessionOrchestrator
 
             var vdPid = ProcessLauncher.GetProcessId("VirtualDesktop.Streamer");
 
-            if (vdPid.HasValue && vdPid == _launchChainCompletedForVdPid)
+            var offlineDuration = _headsetWentOfflineAtUtc.HasValue ? DateTime.UtcNow - _headsetWentOfflineAtUtc.Value : (TimeSpan?)null;
+            var wasBriefFlap = offlineDuration.HasValue &&
+                                offlineDuration.Value.TotalMilliseconds < _config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs;
+
+            if (vdPid.HasValue && vdPid == _launchChainCompletedForVdPid && wasBriefFlap)
             {
-                Log.Info("Orchestrator", $"Launch chain already completed for this VD Streamer instance (PID {vdPid}) — " +
-                                          "this is a headset ping flap, not a new VD session. Skipping Steam/VRChat/SlimeVR/OVR Toolkit relaunch.");
+                Log.Info("Orchestrator", $"Launch chain already completed for this VD Streamer instance (PID {vdPid}) and the headset was only offline for " +
+                                          $"{offlineDuration!.Value.TotalSeconds:F0}s — this is a headset ping flap, not a new VD session. Skipping Steam/VRChat/SlimeVR/OVR Toolkit relaunch.");
             }
             else
             {
+                if (vdPid.HasValue && vdPid == _launchChainCompletedForVdPid)
+                    Log.Info("Orchestrator", $"VD Streamer PID {vdPid} is unchanged, but the headset was offline for " +
+                                              $"{(offlineDuration.HasValue ? $"{offlineDuration.Value.TotalMinutes:F0}m" : "an unknown duration")} " +
+                                              $"(>= {_config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs}ms threshold) — treating as a genuine new session, not a ping flap.");
+
                 SetState(SessionState.WaitingForStream);
                 var streaming = await WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
