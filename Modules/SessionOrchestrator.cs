@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
@@ -308,6 +309,41 @@ public sealed class SessionOrchestrator
         if (!result.Success)
             Log.Warn("Orchestrator", $"VRChat launch did not confirm success: {result.Error}. " +
                                       "This mirrors a transient 'system cannot find the drive specified' error seen during testing — it may self-heal; check tasklist manually.");
+        else if (sf.VrChatLowPowerMode)
+            await MinimizeVrChatWindowAsync().ConfigureAwait(false);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    private const int SW_MINIMIZE = 6;
+
+    /// <summary>VRChat is launched as a grandchild of VD Streamer (VD Streamer wraps VRChat's own
+    /// launcher — see the comment above), so ProcessLauncher's WindowStyle=Minimized hint on the
+    /// STARTUPINFO only ever applies to VD Streamer's own process; Windows doesn't propagate that
+    /// hint to processes a launched process spawns internally. Confirmed live 2026-07-28: VRChat's
+    /// low-power windowed instance showed up fully visible instead of minimized. Only low-power
+    /// mode gets this treatment — full mode is fullscreen on a second monitor and is meant to
+    /// actually be seen (spectating/streaming), so it's left alone.</summary>
+    private static async Task MinimizeVrChatWindowAsync()
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            using var proc = Process.GetProcessesByName("VRChat").FirstOrDefault();
+            if (proc is null) return; // exited already, nothing to minimize
+
+            var hwnd = proc.MainWindowHandle;
+            if (hwnd != IntPtr.Zero)
+            {
+                ShowWindow(hwnd, SW_MINIMIZE);
+                Log.Debug("Orchestrator", "Minimized VRChat's low-power window.");
+                return;
+            }
+
+            await Task.Delay(500).ConfigureAwait(false);
+        }
+
+        Log.Debug("Orchestrator", "VRChat's main window never appeared within 10s — couldn't minimize it.");
     }
 
     private async Task LaunchSlimeVrAsync()

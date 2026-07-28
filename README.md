@@ -154,6 +154,38 @@ include the feature — see above), `EyeCameraAutoRestart`, `BaballoniaLifecycle
 C# property in `Config/MonitorConfig.cs` explaining what it does and, where relevant, why it has
 the default value it does.
 
+## Known issues / TODO
+
+- **Steam overlay never attaches to VRChat, breaking in-game payment UI (e.g. gift-subbing VRC+).**
+  VRChat is launched directly via its own `launch.exe` (wrapped by VD Streamer, so the low-power
+  windowed args — `-monitor`, `-screen-width`, etc. — can be passed), never through
+  `steam://rungameid/438100`. Steam's overlay injection only happens at the moment *it* creates a
+  game's process, so it never attaches here — confirmed live 2026-07-28 via `RunningAppID` staying
+  pinned to OVR Toolkit's app ID (which *is* launched via `steam://rungameid/`) the entire time
+  VRChat was running, and pinging `steam://rungameid/438100` at an already-running VRChat did
+  nothing (no retroactive attach). Same root category as the OVR Toolkit elevation-handshake fix
+  from 2026-07-22, just never noticed for VRChat's own overlay. Real fix needs a way to launch
+  through Steam's own protocol while still carrying the custom low-power args — maybe via Steam's
+  per-game "launch options" property instead of passing them on our own command line. Unsolved.
+
+- **VRChat's low-power window now gets explicitly minimized via `ShowWindow`/`SW_MINIMIZE`**
+  (`SessionOrchestrator.MinimizeVrChatWindowAsync`, added 2026-07-28) — `ProcessLauncher`'s
+  `WindowStyle=Minimized` hint never reached VRChat's actual window since VRChat is a grandchild of
+  VD Streamer (STARTUPINFO hints don't propagate to processes a launched process spawns
+  internally). Written and compiles clean, but not yet deployed/tested live — verify the window
+  actually minimizes on the next real low-power launch.
+
+- **Root cause of the 2026-07-27 face-tracking outage was never conclusively found.** Restarting
+  VRCFaceTracking.exe alone didn't fix it; physically replugging the USB tracker didn't either; only
+  the legacy `ft.cmd` script's full kill-and-cold-restart did. The `SRanipalService` Windows Service
+  angle turned out to be a dead lead (orphaned registration, binary doesn't exist on this machine —
+  disabled in config). Current best theory: `ModuleConnectedToSRanipal`'s TCP-ESTABLISHED check can
+  read true against a zombie connection (same class of blind spot already documented for
+  `EyeCameraStatus.Streaming`), so `HandleStalledConnectionAsync`'s escalation ladder never
+  triggered. The "Restart face-tracking pipeline" tray action (kills + explicitly re-orders
+  sr_runtime.exe before VRCFaceTracking.exe) is the current manual workaround; nothing detects this
+  automatically yet.
+
 ## License
 
 MIT.

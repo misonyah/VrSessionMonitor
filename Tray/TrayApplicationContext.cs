@@ -197,6 +197,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantAreaMenu = new ToolStripMenuItem("Area: (none selected)");
         _homeAssistantMenu = new ToolStripMenuItem("Home Assistant");
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantStatusItem);
+        _homeAssistantMenu.DropDownItems.Add("Get access token...", null, (_, _) => OpenHomeAssistantTokenPage());
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantAreaMenu);
         _homeAssistantMenu.DropDownItems.Add("Refresh areas/lights", null, (_, _) => _ = RefreshHomeAssistantAreasAsync());
         _homeAssistantOnLightsMenu = new ToolStripMenuItem("Headset On lights");
@@ -466,6 +467,32 @@ public sealed class TrayApplicationContext : ApplicationContext
     }
 
 #if INCLUDE_HOME_ASSISTANT
+    /// <summary>Jumps straight to HA's Long-Lived Access Tokens section instead of making the user
+    /// find profile -> Security -> scroll to it by hand. Only needs BaseUrl set (not a working
+    /// token yet — getting the token is the whole point), so this works even before HomeAssistant
+    /// is fully configured.</summary>
+    private void OpenHomeAssistantTokenPage()
+    {
+        var baseUrl = _config.HomeAssistant.BaseUrl;
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            Log.Warn("Tray", "Home Assistant BaseUrl isn't set yet — add it to appsettings.json first (e.g. http://homeassistant.local:8123), then use this again.");
+            _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", "Set HomeAssistant.BaseUrl in appsettings.json first, then try this again.", ToolTipIcon.Warning);
+            return;
+        }
+
+        var url = $"{baseUrl.TrimEnd('/')}/profile/security";
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            Log.Info("Tray", $"Opened Home Assistant token page: {url}");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Tray", $"Failed to open Home Assistant token page: {ex.Message}");
+        }
+    }
+
     private async Task RefreshHomeAssistantAreasAsync()
     {
         Log.Info("Tray", "Home Assistant area/light refresh requested from tray menu.");
