@@ -134,14 +134,28 @@ It's gated twice, and both gates have to be open for anything to happen:
   no OpenVR activity polling, no OSCQuery service advertised to VRChat, no tray menu entries.
 - **`HomeAssistant.Enabled`** — the runtime flag in `appsettings.json`, **off by default**. While
   it's false nothing connects, polls, or advertises itself, even in a build that includes the
-  feature. Set it true (along with a base URL and a long-lived access token from your Home
-  Assistant user profile) to actually use it.
+  feature. The setup flow below sets this to `true` for you.
 
 **Caveat before changing the compile flag on an existing install:** `MonitorConfig.Save()` does a
 full-object rewrite, and a build made with `-p:IncludeHomeAssistant=false` has no `HomeAssistant`
 property to write out. The first time any tray toggle triggers a config save, that whole section —
 access token, selected area, and all three light maps — is silently dropped from
 `appsettings.json`. Back the file up first if you care about those settings.
+
+### Connecting it (all from the tray, no JSON editing required)
+
+1. Tray icon → **Home Assistant** → **"Set up connection..."**.
+2. Type your Home Assistant Base URL (e.g. `http://homeassistant.local:8123`).
+3. Click **"Create token"** — opens that URL's `/profile/security` page in your browser using
+   whatever you just typed (doesn't need anything saved yet). Scroll down to **"Long-lived access
+   tokens"** on that page to create one.
+4. Paste the token back into the dialog, click **Connect**.
+
+That one click saves both values, sets `HomeAssistant.Enabled` to `true`, (re)starts the WebSocket
+connection live — no app restart needed — and automatically runs area/light discovery once
+connected. The **Area** picker and the three per-trigger light lists (**Headset On / Headset Off /
+AFK**) populate right after; each light gets its own On / Off / No change choice, independently per
+trigger. Use **"Refresh areas/lights"** later if you rearrange anything in Home Assistant itself.
 
 ## Config reference
 

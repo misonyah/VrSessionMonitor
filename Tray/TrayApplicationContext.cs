@@ -197,7 +197,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantAreaMenu = new ToolStripMenuItem("Area: (none selected)");
         _homeAssistantMenu = new ToolStripMenuItem("Home Assistant");
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantStatusItem);
-        _homeAssistantMenu.DropDownItems.Add("Get access token...", null, (_, _) => OpenHomeAssistantTokenPage());
+        _homeAssistantMenu.DropDownItems.Add("Set up connection...", null, (_, _) => _ = SetUpHomeAssistantConnectionAsync());
         _homeAssistantMenu.DropDownItems.Add(_homeAssistantAreaMenu);
         _homeAssistantMenu.DropDownItems.Add("Refresh areas/lights", null, (_, _) => _ = RefreshHomeAssistantAreasAsync());
         _homeAssistantOnLightsMenu = new ToolStripMenuItem("Headset On lights");
@@ -471,25 +471,47 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// find profile -> Security -> scroll to it by hand. Only needs BaseUrl set (not a working
     /// token yet — getting the token is the whole point), so this works even before HomeAssistant
     /// is fully configured.</summary>
-    private void OpenHomeAssistantTokenPage()
+    /// <summary>Completes the "get token -> connect -> pick area" flow without touching
+    /// appsettings.json by hand or restarting the app: saves Base URL/Access Token from a small
+    /// dialog, restarts the (already-constructed) HomeAssistantClient's connection loop in place
+    /// so it picks up the new values immediately, then auto-runs the area/light discovery once
+    /// connected — the same "Refresh areas/lights" click, just chained automatically.</summary>
+    private async Task SetUpHomeAssistantConnectionAsync()
     {
-        var baseUrl = _config.HomeAssistant.BaseUrl;
-        if (string.IsNullOrWhiteSpace(baseUrl))
+        using var dialog = new HomeAssistantSetupDialog(_config.HomeAssistant.BaseUrl, _config.HomeAssistant.AccessToken);
+        if (dialog.ShowDialog() != DialogResult.OK) return;
+
+        if (string.IsNullOrWhiteSpace(dialog.BaseUrl) || string.IsNullOrWhiteSpace(dialog.AccessToken))
         {
-            Log.Warn("Tray", "Home Assistant BaseUrl isn't set yet — add it to appsettings.json first (e.g. http://homeassistant.local:8123), then use this again.");
-            _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", "Set HomeAssistant.BaseUrl in appsettings.json first, then try this again.", ToolTipIcon.Warning);
+            Log.Warn("Tray", "Home Assistant setup cancelled — Base URL and Access Token both need a value.");
+            _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", "Base URL and Access Token both need a value.", ToolTipIcon.Warning);
             return;
         }
 
-        var url = $"{baseUrl.TrimEnd('/')}/profile/security";
-        try
+        _config.HomeAssistant.BaseUrl = dialog.BaseUrl;
+        _config.HomeAssistant.AccessToken = dialog.AccessToken;
+        _config.HomeAssistant.Enabled = true;
+        _config.Save(_configPath);
+        Log.Info("Tray", $"Home Assistant connection configured via tray dialog (BaseUrl: {dialog.BaseUrl}).");
+
+        _homeAssistantClient.Stop();
+        _homeAssistantClient.Start();
+        _notifyIcon.ShowBalloonTip(3000, "VR Session Monitor", "Connecting to Home Assistant...", ToolTipIcon.Info);
+
+        for (var i = 0; i < 10; i++)
         {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            Log.Info("Tray", $"Opened Home Assistant token page: {url}");
+            await Task.Delay(500).ConfigureAwait(false);
+            if (_homeAssistantClient.IsConnected) break;
         }
-        catch (Exception ex)
+
+        if (_homeAssistantClient.IsConnected)
         {
-            Log.Warn("Tray", $"Failed to open Home Assistant token page: {ex.Message}");
+            await RefreshHomeAssistantAreasAsync().ConfigureAwait(false);
+        }
+        else
+        {
+            Log.Warn("Tray", "Home Assistant didn't connect within 5s of the new settings — check Base URL/Access Token and the log for the actual connection error.");
+            _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", "Couldn't connect to Home Assistant — check Base URL/Access Token and the log.", ToolTipIcon.Warning);
         }
     }
 
