@@ -1,7 +1,9 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.ServiceProcess;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
@@ -17,6 +19,12 @@ public sealed class FaceTrackingStatus
 {
     public bool VirtualHereRunning { get; set; }
     public bool SRanipalRunning { get; set; }
+    /// <summary>Distinct from SRanipalRunning (the sr_runtime.exe process) — this is the
+    /// "SRanipalService" Windows Service that actually backs it. Found live 2026-07-27: sr_runtime.exe
+    /// can keep running as an orphaned shell after this service dies, with the loopback TCP
+    /// connection to it staying "ESTABLISHED" as a zombie link. See SRanipalServiceConfig's doc for
+    /// the full incident.</summary>
+    public bool SRanipalServiceRunning { get; set; }
     public bool VrcFaceTrackingRunning { get; set; }
     public int ModuleProcessCount { get; set; }
     public List<ModuleActivity> Modules { get; set; } = new();
@@ -82,6 +90,7 @@ public sealed class FaceTrackingMonitor : IDisposable
     private DateTime? _lastSRanipalFixAttemptUtc;
     private int _consecutiveFailedFixes;
     private DateTime? _autoFixBackoffUntilUtc;
+    private DateTime? _lastSRanipalServiceStartAttemptUtc;
 
     public FaceTrackingStatus Current => _last;
 
@@ -127,10 +136,16 @@ public sealed class FaceTrackingMonitor : IDisposable
         status.ModuleProcessCount = status.Modules.Count;
         status.ModuleConnectedToSRanipal = CheckModuleConnectedToSRanipal();
         status.ViveCameraDevicePresent = CheckViveCameraDevicePresent();
+        status.SRanipalServiceRunning = CheckSRanipalServiceRunning();
 
         LogTransition("vhui64.exe (VirtualHere client)", _last.VirtualHereRunning, status.VirtualHereRunning);
         LogTransition("sr_runtime.exe (SRanipal)", _last.SRanipalRunning, status.SRanipalRunning);
         LogTransition("VRCFaceTracking.exe", _last.VrcFaceTrackingRunning, status.VrcFaceTrackingRunning);
+
+        if (_last.SRanipalServiceRunning != status.SRanipalServiceRunning)
+            Log.Info("FaceTracking", status.SRanipalServiceRunning
+                ? $"'{_config.SRanipalService.ServiceName}' Windows Service is now running."
+                : $"'{_config.SRanipalService.ServiceName}' Windows Service is NOT running — sr_runtime.exe may be an orphaned shell with no real backing service.");
 
         if (status.VrcFaceTrackingRunning)
         {
@@ -170,6 +185,7 @@ public sealed class FaceTrackingMonitor : IDisposable
         }
 
         Log.Trace("FaceTracking", $"vhui64={status.VirtualHereRunning} sr_runtime={status.SRanipalRunning} " +
+                                   $"sranipalService={status.SRanipalServiceRunning} " +
                                    $"vrcFaceTracking={status.VrcFaceTrackingRunning} moduleProcesses={status.ModuleProcessCount} " +
                                    $"moduleConnectedToSRanipal={status.ModuleConnectedToSRanipal} " +
                                    $"viveCameraDevicePresent={status.ViveCameraDevicePresent}");
@@ -177,6 +193,7 @@ public sealed class FaceTrackingMonitor : IDisposable
         _last = status;
 
         await HandleCrashRecoveryAsync(status).ConfigureAwait(false);
+        await HandleSRanipalServiceRecoveryAsync(status).ConfigureAwait(false);
         await HandleStalledConnectionAsync(status).ConfigureAwait(false);
 
         return status;
@@ -222,13 +239,95 @@ public sealed class FaceTrackingMonitor : IDisposable
         }
     }
 
-    /// <summary>sr_runtime.exe and vhui64.exe get unconditional crash-recovery here.
-    /// VRCFaceTracking.exe does NOT — its start/stop lifecycle is owned by
-    /// VrcFaceTrackingLifecycleManager (launched on tracker presence, shut down after a delay
-    /// with none present), which would otherwise fight with unconditional relaunching here.</summary>
+    private bool CheckSRanipalServiceRunning()
+    {
+        try
+        {
+            using var sc = new ServiceController(_config.SRanipalService.ServiceName);
+            sc.Refresh();
+            return sc.Status == ServiceControllerStatus.Running;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("FaceTracking", $"Checking '{_config.SRanipalService.ServiceName}' service status threw: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Starts the SRanipalService Windows Service when it's not running — see
+    /// SRanipalServiceConfig's doc for why sr_runtime.exe's own process presence can't be trusted
+    /// to mean this service is alive too. Cooldown-gated (rather than unconditional like
+    /// HandleCrashRecoveryAsync's process relaunches) because a Start() failure here is much more
+    /// likely to be persistent — wrong privilege level or a Disabled service — so retrying every
+    /// ~5s would just spam identical failures instead of fixing anything.</summary>
+    private async Task HandleSRanipalServiceRecoveryAsync(FaceTrackingStatus status)
+    {
+        if (!_config.SRanipalService.Enabled || status.SRanipalServiceRunning) return;
+
+        var now = DateTime.UtcNow;
+        var cooldown = TimeSpan.FromMilliseconds(_config.SRanipalService.RestartCooldownMs);
+        if (_lastSRanipalServiceStartAttemptUtc is DateTime last && now - last < cooldown)
+        {
+            Log.Trace("FaceTracking", $"'{_config.SRanipalService.ServiceName}' start attempt on cooldown ({(cooldown - (now - last)).TotalSeconds:F0}s remaining).");
+            return;
+        }
+
+        _lastSRanipalServiceStartAttemptUtc = now;
+        var serviceName = _config.SRanipalService.ServiceName;
+        Log.Warn("FaceTracking", $"'{serviceName}' Windows Service is not running — attempting to start it.");
+
+        await Task.Run(() =>
+        {
+            try
+            {
+                using var sc = new ServiceController(serviceName);
+                sc.Refresh();
+
+                if (sc.Status == ServiceControllerStatus.Running) return; // raced with an external start
+
+                if (sc.StartType == ServiceStartMode.Disabled)
+                {
+                    Log.Warn("FaceTracking", $"'{serviceName}' is Disabled at the Service Control Manager level — can't start it automatically. Check services.msc.");
+                    return;
+                }
+
+                sc.Start();
+                sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(10));
+                Log.Info("FaceTracking", $"'{serviceName}' started successfully.");
+                SteamVrNotifier.TryNotify(_config, $"Started {serviceName} (was stopped)");
+            }
+            catch (InvalidOperationException ex) when (ex.InnerException is Win32Exception { NativeErrorCode: 5 })
+            {
+                Log.Warn("FaceTracking", $"Starting '{serviceName}' failed: access denied. This app likely needs to run elevated to control Windows Services.");
+            }
+            catch (System.ServiceProcess.TimeoutException)
+            {
+                Log.Warn("FaceTracking", $"'{serviceName}' didn't reach the Running state within 10s of Start() — it may still be starting slowly, will re-check next cycle.");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("FaceTracking", $"Starting '{serviceName}' failed: {ex.Message}");
+            }
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>vhui64.exe gets unconditional crash-recovery — it's the prerequisite that makes the
+    /// Vive Facial Tracker's PnP device (and therefore ViveCameraDevicePresent below) ever appear
+    /// at all, so gating it on that same signal would be circular.
+    ///
+    /// sr_runtime.exe is different: confirmed live 2026-07-28, it crashed and got unconditionally
+    /// relaunched at 4:12am while the headset was completely off (no tracker, no eye camera, no
+    /// VRChat/SteamVR session) — burning real CPU (127s of CPU time within ~2 minutes) for a
+    /// runtime nothing needed. Unlike vhui64, ViveCameraDevicePresent doesn't depend on sr_runtime
+    /// itself being alive (only on vhui64 having shared the device), so gating sr_runtime's
+    /// recovery on it is safe and precise: it still crash-recovers instantly mid-session (the
+    /// device stays present the whole time), but stops pointlessly relaunching when nothing is
+    /// plugged in. VRCFaceTracking.exe gets no crash-recovery here at all — its start/stop
+    /// lifecycle is owned by VrcFaceTrackingLifecycleManager (launched on tracker presence, shut
+    /// down after a delay with none present), which would otherwise fight with relaunching here.</summary>
     private async Task HandleCrashRecoveryAsync(FaceTrackingStatus status)
     {
-        if (!status.SRanipalRunning)
+        if (!status.SRanipalRunning && status.ViveCameraDevicePresent)
             // suppressUacPrompt: sr_runtime.exe's manifest requests requestedExecutionLevel
             // "highestAvailable", which triggers a UAC consent prompt on every launch on an
             // admin-capable account — fine for a human, fatal for this unattended auto-relaunch

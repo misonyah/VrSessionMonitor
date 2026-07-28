@@ -177,6 +177,10 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
             var vrChatStart = vrChatProc.StartTime;
             if (_refreshedForVrChatStartTime == vrChatStart) return; // already handled this exact VRChat instance
 
+            var vrChatUptime = DateTime.Now - vrChatStart;
+            var minUptime = TimeSpan.FromMilliseconds(_config.VrcFaceTrackingLifecycle.MinVrChatUptimeBeforeRestartMs);
+            if (vrChatUptime < minUptime) return; // give VRChat's own OSC service time to come up before forcing a handshake retry
+
             using var vrcft = Process.GetProcessesByName("VRCFaceTracking").FirstOrDefault();
             if (vrcft is null) return; // nothing running to be stale; leave unmarked so a later launch still gets checked
 

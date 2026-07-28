@@ -83,6 +83,37 @@ public sealed class FaceTrackingAutoFixConfig
     public int GiveUpCooldownMs { get; set; } = 300000;
 }
 
+/// <summary>Confirmed live 2026-07-27: the "SRanipalService" Windows Service (Automatic start
+/// type) was found Stopped while sr_runtime.exe (a separate process) kept running as an orphaned
+/// shell — this monitor's only SRanipal health checks are sr_runtime.exe's process presence and
+/// an ESTABLISHED TCP connection to it, neither of which has any visibility into this service at
+/// all. A dead SRanipalService with sr_runtime.exe still alive is indistinguishable, from this
+/// monitor's existing checks, from a genuinely healthy pipeline — the loopback TCP connection to
+/// sr_runtime can stay "ESTABLISHED" as a zombie link (TCP has no way to notice a dead peer
+/// without traffic/keepalives, same caveat already documented for EyeCameraStatus.Streaming, just
+/// never applied to this hop). Restarting VRCFaceTracking.exe or sr_runtime.exe alone can't fix a
+/// dead backing service; only the legacy ft.cmd's full kill-and-cold-start ritual did, which
+/// restarts sr_runtime.exe from an environment where the service happens to come back too. This
+/// config adds a direct, explicit health check + restart for the service itself instead of relying
+/// on that side effect.</summary>
+public sealed class SRanipalServiceConfig
+{
+    public bool Enabled { get; set; } = true;
+    public string ServiceName { get; set; } = "SRanipalService";
+    /// <summary>Minimum time between automated service-start attempts, so a service that's
+    /// Disabled or fails to start under the current (possibly unprivileged) account doesn't get
+    /// hammered every ~5s poll cycle — an access-denied failure is logged once per cooldown window
+    /// instead of on every check.</summary>
+    public int RestartCooldownMs { get; set; } = 60000;
+    /// <summary>On startup, checks whether the current Windows user already has an explicit ACE on
+    /// this service and, if not, requests one elevation (a single UAC prompt) to grant Start/Stop
+    /// rights via `sc sdset` — see SRanipalServicePermissions. This is what lets the recovery above
+    /// actually succeed while this app itself keeps running unelevated. Once granted it persists in
+    /// the service's own security descriptor, so this only ever prompts once (or again if declined
+    /// last time).</summary>
+    public bool GrantStartStopPermissionOnStartup { get; set; } = true;
+}
+
 /// <summary>Detects the exact SteamVR failure mode found live on 2026-07-21: vrserver.exe and
 /// vrcompositor.exe come up and stay running as OS processes, but never produce any real log
 /// output (vrserver.txt/vrcompositor.txt stayed 0 bytes / untouched since the previous day) —
@@ -137,6 +168,17 @@ public sealed class VrcFaceTrackingLifecycleConfig
     /// point, so the default has real margin below the 3h26m failure and may need tuning if it
     /// either fires too eagerly or turns out too conservative. 0 disables it.</summary>
     public int MaxContinuousUptimeMs { get; set; } = 10800000; // 3 hours
+    /// <summary>Confirmed live 2026-07-27: the VRChat-restart staleness refresh (see
+    /// VrcFaceTrackingLifecycleManager.CheckVrChatRestart) fired 1-2s after a new VRChat instance's
+    /// process object first appeared — long before VRChat's own OSC service is actually up. The
+    /// fresh VRCFaceTracking that came back immediately after made a one-shot OSC handshake attempt
+    /// against a VRChat that wasn't listening yet, and (matching the same "never retries" behavior
+    /// documented for the SRanipal side) silently never established real output — every health
+    /// signal this monitor has stayed green (SRanipal-side connection, module count, Vive tracker)
+    /// the entire time, since none of them observe the VRChat-facing hop at all. Requiring the new
+    /// VRChat instance to have been running at least this long before triggering the refresh gives
+    /// its OSC service realistic time to come up first.</summary>
+    public int MinVrChatUptimeBeforeRestartMs { get; set; } = 20000;
 }
 
 /// <summary>Replaces VRCOSC.exe's old manual launch/kill in vd.cmd/kill.cmd with presence-based
@@ -344,6 +386,7 @@ public sealed class MonitorConfig
     public EyeCameraAutoRestartConfig EyeCameraAutoRestart { get; set; } = new();
     public BaballoniaLifecycleConfig BaballoniaLifecycle { get; set; } = new();
     public FaceTrackingAutoFixConfig FaceTrackingAutoFix { get; set; } = new();
+    public SRanipalServiceConfig SRanipalService { get; set; } = new();
     public SteamVrStuckSessionConfig SteamVrStuckSession { get; set; } = new();
     public VrcFaceTrackingLifecycleConfig VrcFaceTrackingLifecycle { get; set; } = new();
     public VrcOscLifecycleConfig VrcOscLifecycle { get; set; } = new();

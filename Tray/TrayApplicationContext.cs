@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 using VrSessionMonitor.Modules;
@@ -65,6 +66,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         Log.Info("Tray", $"Config loaded from {_configPath}");
         Log.Info("Tray", $"Headset target: {_config.Network.HeadsetIp} ({_config.Network.HeadsetName})");
         Log.Info("Tray", $"Trackers configured: {_config.Trackers.Count}");
+
+        // Fire-and-forget: may pop a single UAC prompt on first run (or again if declined) — see
+        // SRanipalServicePermissions' doc for why this is a one-time grant, not a recurring ask.
+        _ = SRanipalServicePermissions.EnsureStartStopPermissionAsync(_config);
 
         _headset = new HeadsetMonitor(_config);
         _trackers = new SlimeVrTrackerMonitor(_config);
@@ -213,6 +218,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Force run now", null, (_, _) => _ = _orchestrator.RunSessionStartAsync());
         _menu.Items.Add("Restart VRChat now", null, (_, _) => _ = _orchestrator.RestartVrChatAsync());
+        _menu.Items.Add("Restart face-tracking pipeline", null, (_, _) => _ = RestartFaceTrackingPipelineAsync());
         _menu.Items.Add("Recheck trackers", null, (_, _) => _ = _trackers.CheckAllAsync());
         _menu.Items.Add("Auto-detect headset/trackers/cameras", null, (_, _) => _ = AutoDetectAsync());
         _menu.Items.Add("Open logs folder", null, (_, _) => OpenLogsFolder());
@@ -301,6 +307,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         var parts = new List<string>();
         if (!p.VirtualHereRunning) parts.Add("VirtualHere down");
         if (!p.SRanipalRunning) parts.Add("SRanipal down");
+        else if (!p.SRanipalServiceRunning) parts.Add("SRanipalService down (zombie sr_runtime?)");
         if (p.VirtualHereRunning && !p.ViveCameraDevicePresent) parts.Add("Vive tracker not attached");
         if (!p.VrcFaceTrackingRunning) parts.Add("VRCFaceTracking down");
         else if (p.ModuleProcessCount == 0) parts.Add("no tracking modules loaded");
@@ -554,6 +561,63 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 #endif
+
+    /// <summary>Manual recovery path added 2026-07-28 after a live incident where face tracking
+    /// silently stopped delivering real data while every automated health signal (module process
+    /// count, ModuleConnectedToSRanipal) kept reading healthy — the automated stalled-connection
+    /// watchdog (FaceTrackingMonitor.HandleStalledConnectionAsync) never fired because it depends
+    /// entirely on that same TCP-established check, and restarting VRCFaceTracking.exe alone did
+    /// nothing (matching the well-documented 2026-07-16 finding that VRCFaceTracking only attempts
+    /// its SRanipal connection once, at its own startup). The legacy ft.cmd script's kill-both-and-
+    /// cold-restart was the only thing that actually fixed it that night. This reproduces the
+    /// relevant half of that recipe on demand: sr_runtime.exe is explicitly relaunched and confirmed
+    /// running BEFORE VRCFaceTracking.exe, rather than killing both and hoping FaceTrackingMonitor's
+    /// and VrcFaceTrackingLifecycleManager's two independent ~5s polling loops happen to relaunch
+    /// them in a safe order.</summary>
+    private async Task RestartFaceTrackingPipelineAsync()
+    {
+        Log.Info("Tray", "Face-tracking pipeline restart requested via tray menu (sr_runtime.exe + VRCFaceTracking.exe).");
+
+        foreach (var name in new[] { "VRCFaceTracking", "sr_runtime" })
+        {
+            foreach (var proc in Process.GetProcessesByName(name))
+            {
+                try
+                {
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(5000);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("Tray", $"Killing {name}.exe for pipeline restart threw: {ex.Message}");
+                }
+                finally
+                {
+                    proc.Dispose();
+                }
+            }
+        }
+
+        var launcher = new ProcessLauncher();
+
+        // suppressUacPrompt: sr_runtime.exe's manifest requests highestAvailable elevation, which
+        // pops a UAC consent prompt on every launch with nothing there to click "Yes" — same fix
+        // FaceTrackingMonitor.RelaunchAsync already uses.
+        var srResult = await launcher.EnsureRunningAsync(
+            "sr_runtime", _config.Paths.SRanipalExe, null,
+            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
+            suppressUacPrompt: true).ConfigureAwait(false);
+        if (!srResult.Success)
+            Log.Warn("Tray", $"sr_runtime.exe restart did not confirm success: {srResult.Error}");
+
+        var vrcftResult = await launcher.EnsureRunningAsync(
+            "VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, null,
+            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+        if (!vrcftResult.Success)
+            Log.Warn("Tray", $"VRCFaceTracking.exe restart did not confirm success: {vrcftResult.Error}");
+
+        Log.Info("Tray", "Face-tracking pipeline restart complete.");
+    }
 
     private static void OpenLogsFolder()
     {
