@@ -256,10 +256,17 @@ public sealed class TrayApplicationContext : ApplicationContext
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient.Start();
         _homeAssistantManager!.Start();
-        _hmdActivity!.PresenceChanged += (_, present) => _homeAssistantManager!.OnHmdPresenceChanged(present);
-        _hmdActivity.Start();
+        // _hmdActivity intentionally NOT started: confirmed live 2026-07-29 (Windows Application
+        // Event Log, .NET Runtime event 1026) that its raw OpenVR IVRSystem function-table
+        // marshaling crashed the entire process with an unhandled access violation (0xc0000005) in
+        // coreclr.dll -- a native AV can't be caught by try/catch and takes down every other
+        // monitor with it. AFK detection still works via VrChatOscAfkListener below (VRChat's own
+        // /avatar/parameters/AFK over OSC, no native interop) -- only the "took the headset off
+        // without toggling AFK" half of detection is lost until this interop is fixed or replaced.
         _vrChatOscAfk!.AfkChanged += (_, afk) => _homeAssistantManager!.OnOscAfkChanged(afk);
         _vrChatOscAfk.Start();
+        if (_config.HomeAssistant.Enabled)
+            _ = WaitForHomeAssistantConnectionThenRefreshAsync(notifyOnFailure: false);
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
@@ -498,6 +505,17 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantClient.Start();
         _notifyIcon.ShowBalloonTip(3000, "VR Session Monitor", "Connecting to Home Assistant...", ToolTipIcon.Info);
 
+        await WaitForHomeAssistantConnectionThenRefreshAsync(notifyOnFailure: true).ConfigureAwait(false);
+    }
+
+    /// <summary>Shared by the setup dialog and by startup — added 2026-07-29 after the Area/light
+    /// tray menus were found still showing "(none selected)"/empty on a plain restart despite
+    /// SelectedAreaId being saved correctly: RefreshHomeAssistantAreasAsync (which actually builds
+    /// those menu items) was previously only ever called right after the setup dialog connects, or
+    /// by manually clicking "Refresh areas/lights" — never automatically when reconnecting to an
+    /// already-configured instance at startup.</summary>
+    private async Task WaitForHomeAssistantConnectionThenRefreshAsync(bool notifyOnFailure)
+    {
         for (var i = 0; i < 10; i++)
         {
             await Task.Delay(500).ConfigureAwait(false);
@@ -510,8 +528,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
         else
         {
-            Log.Warn("Tray", "Home Assistant didn't connect within 5s of the new settings — check Base URL/Access Token and the log for the actual connection error.");
-            _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", "Couldn't connect to Home Assistant — check Base URL/Access Token and the log.", ToolTipIcon.Warning);
+            Log.Warn("Tray", "Home Assistant didn't connect within 5s — check Base URL/Access Token and the log for the actual connection error.");
+            if (notifyOnFailure)
+                _notifyIcon.ShowBalloonTip(4000, "VR Session Monitor", "Couldn't connect to Home Assistant — check Base URL/Access Token and the log.", ToolTipIcon.Warning);
         }
     }
 

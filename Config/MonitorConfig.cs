@@ -37,6 +37,32 @@ public sealed class EyeCameraAutoRestartConfig
     public int AutoCloseAfterAllOfflineMs { get; set; } = 30000;
 }
 
+/// <summary>Confirmed live 2026-07-30: EyeTrackingMonitor's "streaming" check (an ESTABLISHED TCP
+/// connection from Baballonia to the camera) can read true for both eye cameras while VRChat's own
+/// eye-tracking OSC parameters (EyeLeftX/EyeRightX/EyeY/eyelids) sit completely frozen — verified
+/// directly via VRChat's own OSCQuery /avatar/parameters endpoint: zero of 31 eye parameters
+/// changed across two snapshots while 35 other avatar parameters (including face/mouth tracking
+/// from the separate SRanipal pipeline) changed in the same window. Same "TCP established doesn't
+/// mean data is flowing" blind spot already found for SRanipal's loopback connection and VRChat's
+/// own post-restart OSC readiness, just one hop further downstream this time — inside Baballonia's
+/// own camera-tracking loop, invisible to the network-level streaming check entirely. A manual
+/// Stop+Start Camera cycle on both eyes fixed it in under 10s once diagnosed; this automates that
+/// diagnosis + fix.</summary>
+public sealed class EyeTrackingOscFreshnessConfig
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>How often to actually query VRChat's OSCQuery endpoint — deliberately much less
+    /// frequent than the plain ping-based checks above, since this involves a real HTTP round trip
+    /// (and a netstat-based port lookup) rather than a cheap local check.</summary>
+    public int CheckIntervalMs { get; set; } = 10000;
+    /// <summary>How long EyeLeftX/EyeRightX/EyeY/EyeLidLeft/EyeLidRight must stay bit-for-bit
+    /// identical across checks (with both cameras still reporting online+streaming the whole time)
+    /// before treating it as frozen rather than a legitimately still gaze — a real human blinks
+    /// often enough that all five values staying frozen together for this long is a strong signal,
+    /// not a coincidence.</summary>
+    public int StaleThresholdMs { get; set; } = 25000;
+}
+
 public sealed class BaballoniaLifecycleConfig
 {
     /// <summary>Toggled live from the tray menu ("Auto-start/stop Baballonia") and persisted to
@@ -81,6 +107,20 @@ public sealed class FaceTrackingAutoFixConfig
     /// trying the whole escalation ladder again from scratch, in case conditions changed (replug,
     /// headset-side VirtualHere restart, etc.) without anyone toggling the monitor.</summary>
     public int GiveUpCooldownMs { get; set; } = 300000;
+    /// <summary>Same OSC ground-truth technique as EyeTrackingOscFreshnessConfig, applied to the
+    /// face/mouth side: ModuleConnectedToSRanipal is just a TCP-established check and can read true
+    /// while VRChat's own face-tracking parameters (JawOpen/JawX/MouthX/LipPucker) sit frozen. When
+    /// this fires, it's treated exactly like ModuleConnectedToSRanipal reading false — same
+    /// sustained-timer, cooldown, and escalation ladder above, just a better-informed trigger.</summary>
+    public bool OscFreshnessEnabled { get; set; } = true;
+    /// <summary>How often to actually query VRChat's OSCQuery endpoint — deliberately less frequent
+    /// than this monitor's own ~5s poll cycle, since this is a real HTTP round trip plus a netstat
+    /// port lookup, not a cheap local check.</summary>
+    public int OscFreshnessCheckIntervalMs { get; set; } = 10000;
+    /// <summary>How long JawOpen/JawX/MouthX/LipPucker/etc. must stay bit-for-bit identical across
+    /// checks before treating the face-tracking OSC output as frozen rather than a legitimately
+    /// neutral/resting face.</summary>
+    public int OscFreshnessStaleThresholdMs { get; set; } = 25000;
 }
 
 /// <summary>Confirmed live 2026-07-27: the "SRanipalService" Windows Service (Automatic start
@@ -384,6 +424,7 @@ public sealed class MonitorConfig
     public HomeAssistantConfig HomeAssistant { get; set; } = new();
 #endif
     public EyeCameraAutoRestartConfig EyeCameraAutoRestart { get; set; } = new();
+    public EyeTrackingOscFreshnessConfig EyeTrackingOscFreshness { get; set; } = new();
     public BaballoniaLifecycleConfig BaballoniaLifecycle { get; set; } = new();
     public FaceTrackingAutoFixConfig FaceTrackingAutoFix { get; set; } = new();
     public SRanipalServiceConfig SRanipalService { get; set; } = new();

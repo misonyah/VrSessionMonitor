@@ -4,6 +4,7 @@ using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.ServiceProcess;
+using System.Text.Json;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
@@ -91,6 +92,10 @@ public sealed class FaceTrackingMonitor : IDisposable
     private int _consecutiveFailedFixes;
     private DateTime? _autoFixBackoffUntilUtc;
     private DateTime? _lastSRanipalServiceStartAttemptUtc;
+
+    private static readonly string[] FaceOscParamNames = { "JawOpen", "JawX", "MouthClosed", "MouthX", "LipPucker", "TongueOut", "LipSuckLower", "LipSuckUpper" };
+    private readonly OscFreshnessTracker _faceOscTracker = new();
+    private DateTime? _lastFaceOscCheckAttemptUtc;
 
     public FaceTrackingStatus Current => _last;
 
@@ -399,17 +404,29 @@ public sealed class FaceTrackingMonitor : IDisposable
 
         var pipelineShouldBeConnected = status.SRanipalRunning && status.VrcFaceTrackingRunning &&
                                          status.ModuleProcessCount > 0 && status.ViveCameraDevicePresent;
-        if (!pipelineShouldBeConnected || status.ModuleConnectedToSRanipal)
+
+        // ModuleConnectedToSRanipal is just a TCP-established check and can read true while real
+        // data is frozen (see FaceTrackingAutoFixConfig.OscFreshnessEnabled's doc) — only worth the
+        // HTTP round trip when everything else already looks healthy, since a genuinely disconnected
+        // module already triggers the escalation below on its own.
+        var oscFrozen = pipelineShouldBeConnected && status.ModuleConnectedToSRanipal &&
+                         await CheckFaceOscFrozenAsync().ConfigureAwait(false);
+
+        if (!pipelineShouldBeConnected || (status.ModuleConnectedToSRanipal && !oscFrozen))
         {
             _disconnectedSinceUtc = null;
             // Only a genuine reconnect clears the escalation counter. A momentarily-not-applicable
             // pipeline (e.g. VRCFaceTracking briefly down because THIS method just killed it as
             // part of an escalated attempt) must not silently erase how many attempts already
             // failed, or escalation could loop forever without ever reaching GiveUpAfterAttempts.
-            if (status.ModuleConnectedToSRanipal)
+            if (status.ModuleConnectedToSRanipal && !oscFrozen)
                 _consecutiveFailedFixes = 0;
             return;
         }
+
+        if (oscFrozen)
+            Log.Warn("FaceTracking", "VRChat's own face-tracking OSC parameters (JawOpen/JawX/MouthX/LipPucker/etc.) haven't changed " +
+                                      "despite ModuleConnectedToSRanipal reading healthy — treating as a stalled connection.");
 
         _disconnectedSinceUtc ??= now;
 
@@ -496,6 +513,35 @@ public sealed class FaceTrackingMonitor : IDisposable
         }
 
         _disconnectedSinceUtc = null;
+    }
+
+    /// <summary>Ground-truth check alongside ModuleConnectedToSRanipal's TCP-established test — see
+    /// VrChatOscQueryClient's, OscFreshnessTracker's, and FaceTrackingAutoFixConfig.OscFreshnessEnabled's
+    /// docs for the 2026-07-30 incident this mirrors on the eye-tracking side (a connection that
+    /// looks fine while the real data is frozen). Uses per-parameter majority tracking rather than
+    /// whole-bundle equality — confirmed live the same night: JawOpen/MouthClosed/LipSuckLower sat
+    /// frozen for 15s+ while JawX/MouthX kept jittering, which whole-bundle equality would have
+    /// missed entirely. Rate-limited internally to OscFreshnessCheckIntervalMs regardless of how
+    /// often the caller checks, so a "not time to check yet" cycle correctly returns false (not
+    /// frozen) rather than false-triggering on the very first call.</summary>
+    private async Task<bool> CheckFaceOscFrozenAsync()
+    {
+        if (!_config.FaceTrackingAutoFix.OscFreshnessEnabled) return false;
+
+        var now = DateTime.UtcNow;
+        if (_lastFaceOscCheckAttemptUtc is DateTime lastAttempt &&
+            now - lastAttempt < TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.OscFreshnessCheckIntervalMs))
+            return false;
+        _lastFaceOscCheckAttemptUtc = now;
+
+        var current = await VrChatOscQueryClient.FetchParamsAsync(FaceOscParamNames).ConfigureAwait(false);
+        if (current is null || current.Count == 0)
+        {
+            _faceOscTracker.Reset();
+            return false; // couldn't check this cycle -- don't treat that as evidence of a freeze
+        }
+
+        return _faceOscTracker.Update(current, now, TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.OscFreshnessStaleThresholdMs));
     }
 
     private List<ModuleActivity> SampleModuleActivity()

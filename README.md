@@ -37,6 +37,18 @@ read the code and adjust things for your own setup.
   no other visible symptom.
 - **VRCFaceTracking / eye-tracking lifecycle** — starts VRCFaceTracking the moment a tracker or
   eye camera is detected, shuts it down after a delay once neither is present.
+- **OSC ground-truth freshness checks (eye + face)** — every check above only observes the
+  transport (TCP connections, process presence), never the actual data. Confirmed live
+  2026-07-30: both the eye-camera "streaming" check and the face-tracking "connected to SRanipal"
+  check can read perfectly healthy while VRChat's own tracking parameters sit completely frozen
+  (verified directly against VRChat's own OSCQuery `/avatar/parameters` endpoint — one incident had
+  eye gaze/eyelids frozen at exactly 0, another had `JawOpen`/`MouthClosed` frozen while unrelated
+  jitter channels kept moving, which is why this tracks each parameter's own change history and
+  votes on a majority rather than requiring the whole bundle to be identical). An eye-tracking
+  freeze forces a Stop+Start Camera cycle on both eyes; a face-tracking freeze feeds into the
+  existing SRanipal stalled-connection escalation ladder above, as a stronger signal than the TCP
+  check alone. Polls infrequently (every 10s by default) and only once the cheaper transport-level
+  checks already look healthy, so it's a second opinion, not a replacement.
 - **SteamVR + VRChat presence monitoring**, logged on every state change.
 - **SteamVR stuck-session detection** — vrserver/vrcompositor can come up as live OS processes
   while never actually producing real log output (a black view in the headset, confirmed live
@@ -162,8 +174,9 @@ trigger. Use **"Refresh areas/lights"** later if you rearrange anything in Home 
 `appsettings.json` is a plain JSON tree, loaded via `Microsoft.Extensions.Configuration` (saved
 back out with `System.Text.Json`, since `IConfiguration` itself is read-only). Top-level
 sections: `Network`, `Polling`, `Paths`, `Updates`, `Adb`, `HomeAssistant` (only in builds that
-include the feature — see above), `EyeCameraAutoRestart`, `BaballoniaLifecycle`,
-`FaceTrackingAutoFix`, `SteamVrStuckSession`, `VrcFaceTrackingLifecycle`, `VrcOscLifecycle`,
+include the feature — see above), `EyeCameraAutoRestart`, `EyeTrackingOscFreshness`,
+`BaballoniaLifecycle`, `FaceTrackingAutoFix` (includes the `OscFreshness*` fields),
+`SRanipalService`, `SteamVrStuckSession`, `VrcFaceTrackingLifecycle`, `VrcOscLifecycle`,
 `SessionFlow`, `Trackers` (a list), `EyeCameras` (a list). Every field has a doc comment on its
 C# property in `Config/MonitorConfig.cs` explaining what it does and, where relevant, why it has
 the default value it does.
@@ -189,16 +202,17 @@ the default value it does.
   internally). Written and compiles clean, but not yet deployed/tested live — verify the window
   actually minimizes on the next real low-power launch.
 
-- **Root cause of the 2026-07-27 face-tracking outage was never conclusively found.** Restarting
-  VRCFaceTracking.exe alone didn't fix it; physically replugging the USB tracker didn't either; only
-  the legacy `ft.cmd` script's full kill-and-cold-restart did. The `SRanipalService` Windows Service
-  angle turned out to be a dead lead (orphaned registration, binary doesn't exist on this machine —
-  disabled in config). Current best theory: `ModuleConnectedToSRanipal`'s TCP-ESTABLISHED check can
-  read true against a zombie connection (same class of blind spot already documented for
-  `EyeCameraStatus.Streaming`), so `HandleStalledConnectionAsync`'s escalation ladder never
-  triggered. The "Restart face-tracking pipeline" tray action (kills + explicitly re-orders
-  sr_runtime.exe before VRCFaceTracking.exe) is the current manual workaround; nothing detects this
-  automatically yet.
+- ~~Root cause of the 2026-07-27 face-tracking outage was never conclusively found~~ — **resolved
+  2026-07-30**, generalized rather than root-caused for that specific incident. The exact trigger
+  that night is still unconfirmed (the `SRanipalService` Windows Service angle was a dead lead —
+  orphaned registration, binary doesn't exist on this machine, disabled in config), but the
+  *mechanism* is now understood and monitored directly: `ModuleConnectedToSRanipal`'s TCP-ESTABLISHED
+  check (and `EyeCameraStatus.Streaming`'s equivalent) can read healthy against a zombie
+  connection while VRChat's own OSC output is actually frozen. Confirmed live twice more the same
+  night this was built (eye gaze/eyelids frozen at exactly 0; separately, `JawOpen`/`MouthClosed`
+  frozen while unrelated jitter channels kept moving) — see the OSC ground-truth freshness checks
+  above. The "Restart face-tracking pipeline" tray action remains available for manual use, but the
+  automated checks now catch this class of failure on their own.
 
 ## License
 

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Text.Json;
 using System.Windows.Automation;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
@@ -437,6 +438,10 @@ public sealed class EyeTrackingMonitor : IDisposable
     private DateTime? _allCamerasOfflineSinceUtc;
     private bool _closedForCurrentOutage;
 
+    private static readonly string[] EyeOscParamNames = { "EyeLeftX", "EyeRightX", "EyeY", "EyeLidLeft", "EyeLidRight" };
+    private readonly OscFreshnessTracker _eyeOscTracker = new();
+    private DateTime? _lastEyeOscCheckAttemptUtc;
+
     public IReadOnlyList<EyeCameraStatus> Current => _last;
 
     /// <summary>Exposes the shared BaballoniaAutomation instance's address-reading for the
@@ -580,7 +585,48 @@ public sealed class EyeTrackingMonitor : IDisposable
 
         _last = results;
         MaybeAutoCloseBaballonia(results);
+        await CheckEyeOscFreshnessAsync(results).ConfigureAwait(false);
         return results;
+    }
+
+    /// <summary>Detects a frozen eye-tracking OSC output by querying VRChat's own OSCQuery
+    /// /avatar/parameters endpoint directly (via VrChatOscQueryClient) — see
+    /// EyeTrackingOscFreshnessConfig's and OscFreshnessTracker's docs for the full 2026-07-30
+    /// incident this catches (both cameras "streaming", VRChat's eye parameters completely dead).
+    /// Uses per-parameter majority tracking rather than whole-bundle equality, matching
+    /// FaceTrackingMonitor's equivalent check, so a partial freeze (some channels still jittering
+    /// with noise while the visually-meaningful ones are stuck) isn't missed. Only runs once both
+    /// cameras already look transport-healthy; if either isn't online+streaming, the existing
+    /// per-camera restart logic above already owns fixing that more specific case.</summary>
+    private async Task CheckEyeOscFreshnessAsync(List<EyeCameraStatus> results)
+    {
+        if (!_config.EyeTrackingOscFreshness.Enabled) return;
+        if (results.Count == 0 || !results.All(c => c.Online && c.Streaming))
+        {
+            _eyeOscTracker.Reset();
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (_lastEyeOscCheckAttemptUtc is DateTime lastAttempt &&
+            now - lastAttempt < TimeSpan.FromMilliseconds(_config.EyeTrackingOscFreshness.CheckIntervalMs))
+            return;
+        _lastEyeOscCheckAttemptUtc = now;
+
+        var current = await VrChatOscQueryClient.FetchParamsAsync(EyeOscParamNames).ConfigureAwait(false);
+        if (current is null || current.Count == 0) return; // VRChat not running, or couldn't reach its OSCQuery endpoint this cycle
+
+        var frozen = _eyeOscTracker.Update(current, now, TimeSpan.FromMilliseconds(_config.EyeTrackingOscFreshness.StaleThresholdMs));
+        if (!frozen) return;
+
+        Log.Warn("EyeTracking", "A majority of VRChat's own eye-tracking OSC parameters (EyeLeftX/EyeRightX/EyeY/eyelids) haven't changed in a while " +
+                                 "despite both cameras reporting online+streaming — forcing a Stop+Start Camera cycle on both eyes.");
+        SteamVrNotifier.TryNotify(_config, "Eye tracking OSC frozen — restarting cameras");
+
+        foreach (var cam in _config.EyeCameras)
+            MaybeAutoRestart(cam, bypassCooldown: true);
+
+        _eyeOscTracker.Reset(); // don't re-fire every cycle while the cameras reinitialize
     }
 
     /// <summary>Fires a Stop+Start Camera UI-automation attempt for a camera that's on the
