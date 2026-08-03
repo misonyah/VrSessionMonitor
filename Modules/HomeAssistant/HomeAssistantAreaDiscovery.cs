@@ -5,6 +5,7 @@ namespace VrSessionMonitor.Modules.HomeAssistant;
 
 #if INCLUDE_HOME_ASSISTANT
 public sealed record AreaInfo(string AreaId, string Name);
+public sealed record LightInfo(string EntityId, string DisplayName);
 
 /// <summary>
 /// Resolves Home Assistant's area -> light.* entity map over an already-connected
@@ -38,34 +39,59 @@ public sealed class HomeAssistantAreaDiscovery
         return areas;
     }
 
-    public async Task<List<string>> DiscoverLightsInAreaAsync(string areaId, CancellationToken token = default)
+    public async Task<List<LightInfo>> DiscoverLightsInAreaAsync(string areaId, CancellationToken token = default)
     {
         var entitiesTask = _client.SendRegistryCommandAsync("config/entity_registry/list", token);
         var devicesTask = _client.SendRegistryCommandAsync("config/device_registry/list", token);
         await Task.WhenAll(entitiesTask, devicesTask).ConfigureAwait(false);
 
         var deviceAreas = new Dictionary<string, string?>();
+        // Prefers name_by_user (a user's own rename in HA's UI) over the device's default name,
+        // same precedence HA's own frontend uses when it doesn't have a more specific entity name.
+        var deviceNames = new Dictionary<string, string?>();
         foreach (var dev in devicesTask.Result.EnumerateArray())
         {
             var id = dev.GetProperty("id").GetString();
             var devAreaId = dev.TryGetProperty("area_id", out var a) && a.ValueKind != JsonValueKind.Null ? a.GetString() : null;
-            if (id is not null) deviceAreas[id] = devAreaId;
+            var devName = dev.TryGetProperty("name_by_user", out var nbu) ? nbu.GetString() : null;
+            if (string.IsNullOrWhiteSpace(devName))
+                devName = dev.TryGetProperty("name", out var dn) ? dn.GetString() : null;
+            if (id is null) continue;
+            deviceAreas[id] = devAreaId;
+            deviceNames[id] = devName;
         }
 
-        var lights = new List<string>();
+        var lights = new List<LightInfo>();
         foreach (var entity in entitiesTask.Result.EnumerateArray())
         {
             var entityId = entity.GetProperty("entity_id").GetString();
             if (entityId is null || !entityId.StartsWith("light.", StringComparison.Ordinal)) continue;
 
-            string? entityAreaId = entity.TryGetProperty("area_id", out var ea) && ea.ValueKind != JsonValueKind.Null ? ea.GetString() : null;
-            if (entityAreaId is null && entity.TryGetProperty("device_id", out var d) && d.ValueKind != JsonValueKind.Null)
-            {
-                var deviceId = d.GetString();
-                if (deviceId is not null) deviceAreas.TryGetValue(deviceId, out entityAreaId);
-            }
+            string? deviceId = entity.TryGetProperty("device_id", out var d) && d.ValueKind != JsonValueKind.Null ? d.GetString() : null;
 
-            if (entityAreaId == areaId) lights.Add(entityId);
+            string? entityAreaId = entity.TryGetProperty("area_id", out var ea) && ea.ValueKind != JsonValueKind.Null ? ea.GetString() : null;
+            if (entityAreaId is null && deviceId is not null)
+                deviceAreas.TryGetValue(deviceId, out entityAreaId);
+
+            if (entityAreaId != areaId) continue;
+
+            // Same precedence Home Assistant's own frontend uses to label an entity: a user's own
+            // rename of the entity first, then the integration's default entity name, then falling
+            // back to the owning device's name (many light entities have no name of their own at
+            // all — they're just "the light on this device" — so the device name is often the only
+            // human-meaningful label available), and only the raw entity_id as a last resort.
+            // Blank/whitespace strings (not just JSON null) are treated as "missing" at each step —
+            // HA can return "" for an unset name rather than omitting the field or using null,
+            // which would otherwise win an empty string over a real name further down the chain.
+            string? displayName = entity.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (string.IsNullOrWhiteSpace(displayName))
+                displayName = entity.TryGetProperty("original_name", out var on) ? on.GetString() : null;
+            if (string.IsNullOrWhiteSpace(displayName) && deviceId is not null)
+                deviceNames.TryGetValue(deviceId, out displayName);
+            if (string.IsNullOrWhiteSpace(displayName))
+                displayName = entityId;
+
+            lights.Add(new LightInfo(entityId, displayName));
         }
 
         Log.Info("HomeAssistant", $"Found {lights.Count} light(s) in area '{areaId}'.");

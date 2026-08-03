@@ -1,4 +1,8 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 using VrSessionMonitor.Modules;
@@ -10,6 +14,9 @@ namespace VrSessionMonitor.Tray;
 
 public sealed class TrayApplicationContext : ApplicationContext
 {
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
     private readonly NotifyIcon _notifyIcon;
     private readonly MonitorConfig _config;
     private readonly string _configPath;
@@ -33,14 +40,15 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _steamVrItem;
     private readonly ToolStripMenuItem _vrChatItem;
     private readonly ToolStripMenuItem _firmwareItem;
-    private readonly ContextMenuStrip _menu;
+    private ContextMenuStrip _menu;
+    private readonly Form _menuOwnerWindow;
 #if INCLUDE_HOME_ASSISTANT
     private readonly HomeAssistantClient _homeAssistantClient;
     private readonly HomeAssistantAreaDiscovery _homeAssistantDiscovery;
     private readonly ToolStripMenuItem _homeAssistantMenu;
     private readonly ToolStripMenuItem _homeAssistantStatusItem;
     private readonly ToolStripMenuItem _homeAssistantAreaMenu;
-    private List<string> _homeAssistantLightsInSelectedArea = new();
+    private List<LightInfo> _homeAssistantLightsInSelectedArea = new();
     private HomeAssistantLightsManager? _homeAssistantManager;
     private HmdActivityMonitor? _hmdActivity;
     private VrChatOscAfkListener? _vrChatOscAfk;
@@ -247,9 +255,27 @@ public sealed class TrayApplicationContext : ApplicationContext
             // extraction fails for some reason (e.g. running from a path Windows can't resolve).
             Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? System.Drawing.SystemIcons.Application,
             Text = "VR Session Monitor",
-            ContextMenuStrip = _menu,
             Visible = true,
         };
+
+        // A real, hidden Form to own the SetForegroundWindow call ShowTrayMenuWithRetry needs.
+        // NotifyIcon.ShowContextMenu() does this internally against its own hidden window before
+        // showing the ContextMenuStrip — without it, the menu opens and is treated as if it
+        // immediately lost focus, closing itself within the same frame (confirmed live 2026-08-03:
+        // MouseUp fired, Show() returned with no exception, but no menu window ever existed a
+        // moment later). NotifyIcon doesn't expose its own window handle publicly, hence a
+        // dedicated Form instead of reusing it.
+        _menuOwnerWindow = new Form
+        {
+            ShowInTaskbar = false,
+            FormBorderStyle = FormBorderStyle.None,
+            Size = new System.Drawing.Size(0, 0),
+            StartPosition = FormStartPosition.Manual,
+            Location = new System.Drawing.Point(-32000, -32000),
+            Opacity = 0,
+        };
+        _menuOwnerWindow.Show();
+        _menuOwnerWindow.Hide();
 
         // Logs the exception text that would otherwise only ever appear in a JIT-debugging popup
         // dialog (or nowhere at all, for a non-UI-thread exception) — added after several rounds of
@@ -259,6 +285,23 @@ public sealed class TrayApplicationContext : ApplicationContext
         // either fires (this is purely so the crash gets into the log before that happens).
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Error("Tray", $"UnhandledException: {e.ExceptionObject}");
         System.Windows.Forms.Application.ThreadException += (_, e) => Log.Error("Tray", $"ThreadException: {e.Exception}");
+
+        // Deliberately NOT using NotifyIcon.ContextMenuStrip's automatic show-on-right-click
+        // mechanism — confirmed 2026-08-02/03/2026-08-03 (extensive investigation, see git log
+        // around commit b96de71) that ToolStripDropDownMenu's internal scroll-arrow control
+        // intermittently fails Win32 CreateWindowEx ("Error creating window handle") when the menu
+        // becomes visible, a genuine timing-sensitive WinForms bug that reproduces even in a bare
+        // minimal repro once enough background Invoke() traffic competes for the UI thread's
+        // message queue at the same moment — not tied to any specific dependency, DPI mode, or
+        // menu content in the end. Showing the menu manually here means a failed attempt can just
+        // be retried immediately instead of silently doing nothing (the automatic mechanism has no
+        // such recovery — one failed CreateWindowEx and the click is simply swallowed).
+        _notifyIcon.MouseUp += (_, e) =>
+        {
+            Log.Trace("Tray", $"NotifyIcon.MouseUp button={e.Button}");
+            if (e.Button != MouseButtons.Right) return;
+            ShowTrayMenuWithRetry();
+        };
 
         _headset.StateChanged += OnHeadsetStateChanged;
         _headset.StateChanged += _orchestrator.OnHeadsetStateChanged;
@@ -296,6 +339,67 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         Log.Info("Tray", "VR Session Monitor started and all background monitors running.");
         _notifyIcon.ShowBalloonTip(3000, "VR Session Monitor", "Started. Waiting for headset...", ToolTipIcon.Info);
+    }
+
+    /// <summary>Shows the tray context menu manually (rather than via NotifyIcon.ContextMenuStrip's
+    /// automatic right-click handling) so a failed attempt can be retried instead of just doing
+    /// nothing. See the MouseUp wiring's doc in the constructor for why this exists: a genuine
+    /// WinForms bug in ToolStripDropDownMenu's internal scroll-arrow control can throw
+    /// Win32Exception 1400 ("Error creating window handle") when the menu becomes visible.
+    /// Confirmed live 2026-08-03 that once this fires for a given ContextMenuStrip instance, every
+    /// immediate retry against the SAME instance fails identically within milliseconds — the
+    /// scroll-arrow control's handle-creation failure leaves it permanently broken, not just
+    /// unlucky-timing broken. So each retry here rebuilds an entirely fresh ContextMenuStrip
+    /// (reusing the existing ToolStripItem objects — moving a ToolStripItem to a new owner is
+    /// fine) instead of reusing the same, now-poisoned instance.</summary>
+    private void ShowTrayMenuWithRetry()
+    {
+        const int maxAttempts = 5;
+        var position = Cursor.Position;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                // SetForegroundWindow first: without it, confirmed live 2026-08-03 that Show()
+                // returns with no exception, yet the menu window never actually stays open — it's
+                // treated as if it lost focus the instant it appeared and closes itself within the
+                // same frame. See _menuOwnerWindow's doc for why a dedicated hidden Form owns this.
+                SetForegroundWindow(_menuOwnerWindow.Handle);
+
+                // Explicit direction (rather than plain Show(Point), which defaults to opening
+                // downward) since the tray icon sits at the screen edge next to the taskbar —
+                // opening upward is both the conventional tray-menu direction and keeps it from
+                // extending off-screen below the taskbar. ToolStripDropDown still auto-corrects if
+                // this doesn't fully fit (e.g. taskbar pinned to the top instead of the bottom).
+                _menu.Show(position, ToolStripDropDownDirection.AboveLeft);
+                return;
+            }
+            catch (Win32Exception ex)
+            {
+                Log.Warn("Tray", $"Showing tray menu failed on attempt {attempt}/{maxAttempts}: {ex.Message}");
+                RebuildMenuInstance();
+            }
+        }
+        Log.Error("Tray", $"Showing tray menu failed after {maxAttempts} attempts — giving up for this click.");
+    }
+
+    /// <summary>Moves every existing top-level ToolStripItem into a brand-new ContextMenuStrip and
+    /// disposes the old one — see ShowTrayMenuWithRetry's doc for why a failed Show() means the old
+    /// instance's internal scroll-arrow control is permanently broken, not just unlucky timing.</summary>
+    private void RebuildMenuInstance()
+    {
+        var oldMenu = _menu;
+        if (oldMenu.Visible) oldMenu.Close();
+
+        var items = new ToolStripItem[oldMenu.Items.Count];
+        oldMenu.Items.CopyTo(items, 0);
+        oldMenu.Items.Clear(); // detach before disposing the old strip, so items survive it
+
+        var newMenu = new ContextMenuStrip();
+        newMenu.Items.AddRange(items);
+        _menu = newMenu;
+
+        oldMenu.Dispose();
     }
 
     private void OnHeadsetStateChanged(object? sender, HeadsetStateChangedEventArgs e)
@@ -554,22 +658,23 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// already-configured instance at startup.</summary>
     private async Task WaitForHomeAssistantConnectionThenRefreshAsync(bool notifyOnFailure)
     {
+        // No ConfigureAwait(false) anywhere in this method, including this delay loop: confirmed
+        // live 2026-08-02/03/04 that running RefreshHomeAssistantAreasAsync's menu-item rebuild on
+        // a thread-pool thread — reached via this method being fired fire-and-forget from the
+        // constructor — silently corrupts the tray ContextMenuStrip well before any crash: right/
+        // left-click stop opening the menu at all, with no exception anywhere. An EARLIER fix here
+        // only removed ConfigureAwait(false) from the await of RefreshHomeAssistantAreasAsync()
+        // itself, but this delay loop's own ConfigureAwait(false) was still discarding the
+        // WindowsFormsSynchronizationContext before ever reaching that later await — there was
+        // nothing left to restore by that point, so the "fix" didn't actually change which thread
+        // the Home Assistant refresh ran on. Removing it here too (not just downstream) is what
+        // actually keeps the whole chain on the UI thread.
         for (var i = 0; i < 10; i++)
         {
-            await Task.Delay(500).ConfigureAwait(false);
+            await Task.Delay(500);
             if (_homeAssistantClient.IsConnected) break;
         }
 
-        // No ConfigureAwait(false) past this point: confirmed live 2026-08-02/03 that running
-        // RefreshHomeAssistantAreasAsync's menu-item rebuild on a thread-pool thread — reached via
-        // this method being fired fire-and-forget from the constructor with ConfigureAwait(false)
-        // throughout — silently corrupts the tray ContextMenuStrip well before any crash: right/
-        // left-click stop opening the menu at all, with no exception anywhere. _menu.Invoke(Rebuild)
-        // still marshals the call correctly from a background thread, but if it's the first touch
-        // that forces the ContextMenuStrip's native handle into existence, that handle gets created
-        // on the wrong thread, and every later access from the real UI thread becomes cross-thread
-        // and breaks silently from then on. Resuming on the captured WindowsFormsSynchronizationContext
-        // here guarantees the eventual Invoke calls happen from a thread that already owns the handle.
         if (_homeAssistantClient.IsConnected)
         {
             await RefreshHomeAssistantAreasAsync();
@@ -626,10 +731,34 @@ public sealed class TrayApplicationContext : ApplicationContext
             _homeAssistantAreaMenu.Text = selected is not null ? $"Area: {selected.Name}" : "Area: (none selected)";
         }
 
-        if (_menu.InvokeRequired) _menu.Invoke(Rebuild); else Rebuild();
+        try
+        {
+            // Marshaling via _menuOwnerWindow (a stable Form that lives for the app's whole
+            // lifetime) rather than _menu itself — _menu can be swapped out mid-session by
+            // RebuildMenuInstance() (see ShowTrayMenuWithRetry's doc), which makes it an unreliable
+            // target for a callback that was captured before a swap happened.
+            if (_menuOwnerWindow.InvokeRequired) _menuOwnerWindow.Invoke(Rebuild); else Rebuild();
+        }
+        catch (Exception ex)
+        {
+            // Guards against a silent failure mode confirmed live 2026-08-04: this call previously
+            // wasn't wrapped, and since RefreshHomeAssistantAreasAsync runs fire-and-forget from the
+            // "Refresh areas/lights" click handler, an exception here would vanish with no log
+            // anywhere — and everything after this point (including the light refresh below) would
+            // just silently never run.
+            Log.Error("Tray", $"Rebuilding area menu items threw ({ex.GetType().Name}): {ex.Message}");
+            return;
+        }
 
         if (!string.IsNullOrEmpty(_config.HomeAssistant.SelectedAreaId))
+        {
+            Log.Info("Tray", $"Refreshing lights for selected area '{_config.HomeAssistant.SelectedAreaId}'.");
             await RefreshHomeAssistantLightsAsync(_config.HomeAssistant.SelectedAreaId);
+        }
+        else
+        {
+            Log.Info("Tray", "No Home Assistant area selected — skipping light refresh.");
+        }
     }
 
     private async Task RefreshHomeAssistantLightsAsync(string areaId)
@@ -654,7 +783,46 @@ public sealed class TrayApplicationContext : ApplicationContext
             RebuildLightActionMenu(_homeAssistantAfkLightsMenu!, _config.HomeAssistant.AfkActions);
         }
 
-        if (_menu.InvokeRequired) _menu.Invoke(Rebuild); else Rebuild();
+        try
+        {
+            // See RefreshHomeAssistantAreasAsync's Rebuild() invocation for why _menuOwnerWindow
+            // is used instead of _menu here.
+            if (_menuOwnerWindow.InvokeRequired) _menuOwnerWindow.Invoke(Rebuild); else Rebuild();
+            Log.Info("Tray", $"Rebuilt light action menus for {_homeAssistantLightsInSelectedArea.Count} light(s).");
+        }
+        catch (Exception ex)
+        {
+            // Guards against the same silent-failure mode as RefreshHomeAssistantAreasAsync's
+            // Rebuild() call above: this method can be called fire-and-forget (from the area
+            // picker's Click handler) or awaited from RefreshHomeAssistantAreasAsync (itself also
+            // fire-and-forget from a menu click), so an unwrapped exception here would vanish with
+            // no log anywhere and the light submenus would just silently stay empty.
+            Log.Error("Tray", $"Rebuilding light action menus threw ({ex.GetType().Name}): {ex.Message}");
+        }
+    }
+
+    /// <summary>Colored status icons shown before each light's name so its current setting for this
+    /// trigger is visible without expanding the submenu. Drawn as small bitmaps rather than colored
+    /// emoji (🟢/🔴/⚪) in the item text — confirmed live 2026-08-04 that WinForms' native menu text
+    /// rendering (GDI/GDI+, not DirectWrite) doesn't render color emoji at all, falling back to a
+    /// monochrome placeholder glyph instead. A real Image on ToolStripItem.Image always renders in
+    /// full color regardless of font/rendering-path support. Built once and reused (never disposed)
+    /// since they're tiny and live for the whole process.</summary>
+    private static readonly Dictionary<LightAction, Image> LightActionIcons = new()
+    {
+        [LightAction.On] = CreateStatusDot(Color.LimeGreen),
+        [LightAction.Off] = CreateStatusDot(Color.Firebrick),
+        [LightAction.NoChange] = CreateStatusDot(Color.Gainsboro),
+    };
+
+    private static Bitmap CreateStatusDot(Color color)
+    {
+        var bmp = new Bitmap(16, 16);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var brush = new SolidBrush(color);
+        g.FillEllipse(brush, 3, 3, 10, 10);
+        return bmp;
     }
 
     /// <summary>Builds one "light name -> On/Off/No change" radio submenu per light in the
@@ -664,10 +832,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void RebuildLightActionMenu(ToolStripMenuItem menu, Dictionary<string, string> actions)
     {
         ClearAndDisposeItems(menu.DropDownItems);
-        foreach (var entityId in _homeAssistantLightsInSelectedArea)
+        foreach (var light in _homeAssistantLightsInSelectedArea)
         {
-            var lightMenu = new ToolStripMenuItem(entityId);
+            var entityId = light.EntityId;
             var current = actions.GetValueOrDefault(entityId, LightAction.NoChange.ToConfigString()).ParseOrDefault();
+            var lightMenu = new ToolStripMenuItem(light.DisplayName) { Image = LightActionIcons[current] };
 
             foreach (var option in new[] { LightAction.On, LightAction.Off, LightAction.NoChange })
             {
@@ -676,9 +845,10 @@ public sealed class TrayApplicationContext : ApplicationContext
                 {
                     actions[entityId] = option.ToConfigString();
                     _config.Save(_configPath);
+                    lightMenu.Image = LightActionIcons[option];
                     foreach (ToolStripMenuItem sibling in lightMenu.DropDownItems)
                         sibling.Checked = sibling.Text == option.ToConfigString();
-                    Log.Info("Tray", $"Home Assistant: {entityId} set to {option} for this trigger.");
+                    Log.Info("Tray", $"Home Assistant: {light.DisplayName} ({entityId}) set to {option} for this trigger.");
                 };
                 lightMenu.DropDownItems.Add(optionItem);
             }
