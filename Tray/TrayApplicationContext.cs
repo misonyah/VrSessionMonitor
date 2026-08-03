@@ -209,20 +209,32 @@ public sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_homeAssistantMenu);
 #endif
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(autoLaunchVrChatItem);
-        _menu.Items.Add(autoLaunchOvrToolkitItem);
-        _menu.Items.Add(lowPowerVrChatItem);
-        _menu.Items.Add(autoManageBaballoniaItem);
-        _menu.Items.Add(autoManageVrcFtItem);
-        _menu.Items.Add(autoManageVrcOscItem);
-        _menu.Items.Add(startWithWindowsItem);
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Force run now", null, (_, _) => _ = _orchestrator.RunSessionStartAsync());
-        _menu.Items.Add("Restart VRChat now", null, (_, _) => _ = _orchestrator.RestartVrChatAsync());
-        _menu.Items.Add("Restart face-tracking pipeline", null, (_, _) => _ = RestartFaceTrackingPipelineAsync());
-        _menu.Items.Add("Recheck trackers", null, (_, _) => _ = _trackers.CheckAllAsync());
-        _menu.Items.Add("Auto-detect headset/trackers/cameras", null, (_, _) => _ = AutoDetectAsync());
-        _menu.Items.Add("Open logs folder", null, (_, _) => OpenLogsFolder());
+
+        // Settings and Actions grouped into submenus (added 2026-08-02) rather than sitting flat
+        // at the top level — confirmed live that a 25-item top-level menu needs vertical scrolling
+        // on this display, and WinForms' scroll-arrow control for a ToolStripDropDownMenu can fail
+        // outright ("Error creating window handle", Win32 1400) rather than just looking ugly.
+        // Keeping only the always-glanceable status lines + Home Assistant + these two submenus +
+        // Exit at the top level sidesteps needing to scroll at all.
+        var settingsMenu = new ToolStripMenuItem("Settings");
+        settingsMenu.DropDownItems.Add(autoLaunchVrChatItem);
+        settingsMenu.DropDownItems.Add(autoLaunchOvrToolkitItem);
+        settingsMenu.DropDownItems.Add(lowPowerVrChatItem);
+        settingsMenu.DropDownItems.Add(autoManageBaballoniaItem);
+        settingsMenu.DropDownItems.Add(autoManageVrcFtItem);
+        settingsMenu.DropDownItems.Add(autoManageVrcOscItem);
+        settingsMenu.DropDownItems.Add(startWithWindowsItem);
+        _menu.Items.Add(settingsMenu);
+
+        var actionsMenu = new ToolStripMenuItem("Actions");
+        actionsMenu.DropDownItems.Add("Force run now", null, (_, _) => _ = _orchestrator.RunSessionStartAsync());
+        actionsMenu.DropDownItems.Add("Restart VRChat now", null, (_, _) => _ = _orchestrator.RestartVrChatAsync());
+        actionsMenu.DropDownItems.Add("Restart face-tracking pipeline", null, (_, _) => _ = RestartFaceTrackingPipelineAsync());
+        actionsMenu.DropDownItems.Add("Recheck trackers", null, (_, _) => _ = _trackers.CheckAllAsync());
+        actionsMenu.DropDownItems.Add("Auto-detect headset/trackers/cameras", null, (_, _) => _ = AutoDetectAsync());
+        actionsMenu.DropDownItems.Add("Open logs folder", null, (_, _) => OpenLogsFolder());
+        _menu.Items.Add(actionsMenu);
+
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Exit", null, (_, _) => ExitApp());
 
@@ -238,6 +250,15 @@ public sealed class TrayApplicationContext : ApplicationContext
             ContextMenuStrip = _menu,
             Visible = true,
         };
+
+        // Logs the exception text that would otherwise only ever appear in a JIT-debugging popup
+        // dialog (or nowhere at all, for a non-UI-thread exception) — added after several rounds of
+        // asking the user to hand-transcribe a crash dialog during the 2026-08-02/03 tray-menu
+        // investigation. Application.ThreadException only fires for the WinForms UI thread; the
+        // AppDomain handler covers everything else, though the process still terminates after
+        // either fires (this is purely so the crash gets into the log before that happens).
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Error("Tray", $"UnhandledException: {e.ExceptionObject}");
+        System.Windows.Forms.Application.ThreadException += (_, e) => Log.Error("Tray", $"ThreadException: {e.Exception}");
 
         _headset.StateChanged += OnHeadsetStateChanged;
         _headset.StateChanged += _orchestrator.OnHeadsetStateChanged;
@@ -285,19 +306,20 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         // Fires from HeadsetMonitor's own background polling loop, not the UI thread — same
         // InvokeRequired guard as UpdateStatusItem, needed because ToolStripMenuItem (unlike
-        // NotifyIcon above) isn't safe to touch off the UI thread.
+        // NotifyIcon above) isn't safe to touch off the UI thread. Also skips while the menu is
+        // open — see UpdateStatusItems' doc for why setting .Text on a visible menu item can crash.
         var text = $"Headset: {(e.IsOnline ? "online" : "offline")}";
         if (_menu.InvokeRequired)
-            _menu.Invoke(() => _headsetItem.Text = text);
-        else
+            _menu.Invoke(() => { if (!_menu.Visible) _headsetItem.Text = text; });
+        else if (!_menu.Visible)
             _headsetItem.Text = text;
     }
 
     private void UpdateStatusItem(string state)
     {
         if (_menu.InvokeRequired)
-            _menu.Invoke(() => _statusItem.Text = $"Status: {state}");
-        else
+            _menu.Invoke(() => { if (!_menu.Visible) _statusItem.Text = $"Status: {state}"; });
+        else if (!_menu.Visible)
             _statusItem.Text = $"Status: {state}";
     }
 
@@ -306,6 +328,18 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// own background loops) this needs no InvokeRequired guard.</summary>
     private void UpdateStatusItems()
     {
+        // Skip entirely while the user has the menu open — confirmed live 2026-08-02 as the real
+        // cause of a reliably reproducible crash ("Error creating window handle", Win32 1400):
+        // setting .Text on a currently-visible ToolStripItem triggers a live layout recalculation,
+        // which tries to (re)create the scroll-arrow control's window handle once the menu is long
+        // enough to need scrolling (this one has grown a lot — SRanipalService state, all the
+        // "waiting for..." pending-action strings, etc.) and that handle creation can fail outright.
+        // This fired on every single 5s tick the menu was left open, independent of Explorer,
+        // process restarts, or anything else — skipping here just means the refresh catches up on
+        // the next tick after the user closes the menu, which costs a few seconds of stale text
+        // against crashing the whole app mid-interaction.
+        if (_menu.Visible) return;
+
         _headsetItem.Text = $"Headset: {(_headset.IsOnline ? "online" : "offline")}";
 
         _trackerItem.Text = $"Trackers: {_trackers.Summarize()}";
@@ -376,6 +410,10 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         void Apply()
         {
+            // Skips while the menu is open — see UpdateStatusItems' doc for why setting .Text on
+            // a visible menu item can crash.
+            if (_menu.Visible) return;
+
             _firmwareItem.Text = _firmwareNotify.LastEventAtUtc is DateTime at
                 ? $"Firmware self-heal: {_firmwareNotify.LastEventSummary} ({FormatAgo(DateTime.UtcNow - at)} ago)"
                 : "Firmware self-heal: none yet";
@@ -522,9 +560,19 @@ public sealed class TrayApplicationContext : ApplicationContext
             if (_homeAssistantClient.IsConnected) break;
         }
 
+        // No ConfigureAwait(false) past this point: confirmed live 2026-08-02/03 that running
+        // RefreshHomeAssistantAreasAsync's menu-item rebuild on a thread-pool thread — reached via
+        // this method being fired fire-and-forget from the constructor with ConfigureAwait(false)
+        // throughout — silently corrupts the tray ContextMenuStrip well before any crash: right/
+        // left-click stop opening the menu at all, with no exception anywhere. _menu.Invoke(Rebuild)
+        // still marshals the call correctly from a background thread, but if it's the first touch
+        // that forces the ContextMenuStrip's native handle into existence, that handle gets created
+        // on the wrong thread, and every later access from the real UI thread becomes cross-thread
+        // and breaks silently from then on. Resuming on the captured WindowsFormsSynchronizationContext
+        // here guarantees the eventual Invoke calls happen from a thread that already owns the handle.
         if (_homeAssistantClient.IsConnected)
         {
-            await RefreshHomeAssistantAreasAsync().ConfigureAwait(false);
+            await RefreshHomeAssistantAreasAsync();
         }
         else
         {
@@ -540,7 +588,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         List<AreaInfo> areas;
         try
         {
-            areas = await _homeAssistantDiscovery.DiscoverAreasAsync().ConfigureAwait(false);
+            areas = await _homeAssistantDiscovery.DiscoverAreasAsync();
         }
         catch (Exception ex)
         {
@@ -550,7 +598,14 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         void Rebuild()
         {
-            _homeAssistantAreaMenu.DropDownItems.Clear();
+            // Closing first avoids a live crash confirmed 2026-08-02 ("Error creating window
+            // handle", Win32 1400): rebuilding a ContextMenuStrip's items while the user has it
+            // open lets ShowContextMenu()'s own nested message pump dispatch this rebuild
+            // mid-display, mutating items the menu is actively trying to create window handles
+            // for. Closing first means there's nothing live left to race against.
+            if (_menu.Visible) _menu.Close();
+
+            ClearAndDisposeItems(_homeAssistantAreaMenu.DropDownItems);
             foreach (var area in areas)
             {
                 var item = new ToolStripMenuItem(area.Name) { Checked = area.AreaId == _config.HomeAssistant.SelectedAreaId };
@@ -574,14 +629,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (_menu.InvokeRequired) _menu.Invoke(Rebuild); else Rebuild();
 
         if (!string.IsNullOrEmpty(_config.HomeAssistant.SelectedAreaId))
-            await RefreshHomeAssistantLightsAsync(_config.HomeAssistant.SelectedAreaId).ConfigureAwait(false);
+            await RefreshHomeAssistantLightsAsync(_config.HomeAssistant.SelectedAreaId);
     }
 
     private async Task RefreshHomeAssistantLightsAsync(string areaId)
     {
         try
         {
-            _homeAssistantLightsInSelectedArea = await _homeAssistantDiscovery.DiscoverLightsInAreaAsync(areaId).ConfigureAwait(false);
+            _homeAssistantLightsInSelectedArea = await _homeAssistantDiscovery.DiscoverLightsInAreaAsync(areaId);
         }
         catch (Exception ex)
         {
@@ -591,6 +646,9 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         void Rebuild()
         {
+            // See RefreshHomeAssistantAreasAsync's Rebuild() for why this closes the menu first.
+            if (_menu.Visible) _menu.Close();
+
             RebuildLightActionMenu(_homeAssistantOnLightsMenu!, _config.HomeAssistant.HeadsetOnActions);
             RebuildLightActionMenu(_homeAssistantOffLightsMenu!, _config.HomeAssistant.HeadsetOffActions);
             RebuildLightActionMenu(_homeAssistantAfkLightsMenu!, _config.HomeAssistant.AfkActions);
@@ -605,7 +663,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// same light can have a different action per trigger.</summary>
     private void RebuildLightActionMenu(ToolStripMenuItem menu, Dictionary<string, string> actions)
     {
-        menu.DropDownItems.Clear();
+        ClearAndDisposeItems(menu.DropDownItems);
         foreach (var entityId in _homeAssistantLightsInSelectedArea)
         {
             var lightMenu = new ToolStripMenuItem(entityId);
@@ -627,6 +685,23 @@ public sealed class TrayApplicationContext : ApplicationContext
 
             menu.DropDownItems.Add(lightMenu);
         }
+    }
+
+    /// <summary>Explicitly disposes every item in a ToolStrip collection (and any nested
+    /// DropDownItems, recursively) before Clear() — added 2026-08-02 after a live crash
+    /// ("Error creating window handle", Win32 1400) while showing the tray context menu. Clear()
+    /// alone only removes items from the collection, it does not dispose them, so every one of
+    /// these menus' periodic rebuilds (area list, per-light action submenus) was leaking native
+    /// window handles for the life of the process.</summary>
+    private static void ClearAndDisposeItems(ToolStripItemCollection items)
+    {
+        foreach (ToolStripItem item in items)
+        {
+            if (item is ToolStripDropDownItem dropDownItem)
+                ClearAndDisposeItems(dropDownItem.DropDownItems);
+            item.Dispose();
+        }
+        items.Clear();
     }
 #endif
 

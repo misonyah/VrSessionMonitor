@@ -8,6 +8,19 @@
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <!-- The tray context menu crash investigated 2026-08-02/03 turned out to be unrelated to
+         UseWPF or DPI mode: see TrayApplicationContext.WaitForHomeAssistantConnectionThenRefreshAsync's
+         doc for the confirmed root cause (a ConfigureAwait(false) chain resuming a menu-mutating
+         Home Assistant startup refresh on a thread-pool thread instead of the UI thread). A second,
+         separate intermittent issue in the same area (the tray menu's internal scroll-arrow control
+         occasionally failing Win32 CreateWindowEx, and — later in the same investigation — right-
+         clicks sometimes not reaching the icon at all) was NOT resolved; Home Assistant defaults to
+         disabled (see MonitorConfig.HomeAssistantConfig.Enabled) until that's root-caused, since it
+         was the trigger for the confirmed bug and its menu content is the most complex part of the
+         tray UI. UseWPF stays: BaballoniaAutomation (Modules/EyeTracking.cs) needs
+         System.Windows.Automation, which UseWPF supplies. SystemAware DPI mode kept since a
+         tray-only app with no resizable Form has no use for PerMonitorV2's added complexity. -->
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -28,6 +41,7 @@
     <Using Include="System.IO" />
     <Using Include="System.Net.Http" />
   </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Google.FlatBuffers" Version="25.2.10" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
