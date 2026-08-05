@@ -96,6 +96,7 @@ public sealed class FaceTrackingMonitor : IDisposable
     private static readonly string[] FaceOscParamNames = { "JawOpen", "JawX", "MouthClosed", "MouthX", "LipPucker", "TongueOut", "LipSuckLower", "LipSuckUpper" };
     private readonly OscFreshnessTracker _faceOscTracker = new();
     private DateTime? _lastFaceOscCheckAttemptUtc;
+    private bool _lastFaceOscFrozenResult;
 
     public FaceTrackingStatus Current => _last;
 
@@ -522,8 +523,14 @@ public sealed class FaceTrackingMonitor : IDisposable
     /// whole-bundle equality — confirmed live the same night: JawOpen/MouthClosed/LipSuckLower sat
     /// frozen for 15s+ while JawX/MouthX kept jittering, which whole-bundle equality would have
     /// missed entirely. Rate-limited internally to OscFreshnessCheckIntervalMs regardless of how
-    /// often the caller checks, so a "not time to check yet" cycle correctly returns false (not
-    /// frozen) rather than false-triggering on the very first call.</summary>
+    /// often the caller checks, so a "not time to check yet" cycle returns the last real result
+    /// instead of unconditionally false — confirmed live 2026-08-05 that returning false on every
+    /// rate-limited cycle was a real bug, not just a safe default: this method is called every
+    /// 5s (FaceTrackingMonitor's outer loop) but only actually re-checks every 10s
+    /// (OscFreshnessCheckIntervalMs), so HandleStalledConnectionAsync's sustained-disconnect timer
+    /// got reset to null on every other cycle and could never accumulate past 5s — permanently
+    /// short of the 10s SustainedDisconnectMs threshold needed to ever trigger the actual restart.
+    /// The warning log fired forever; the fix never did.</summary>
     private async Task<bool> CheckFaceOscFrozenAsync()
     {
         if (!_config.FaceTrackingAutoFix.OscFreshnessEnabled) return false;
@@ -531,17 +538,19 @@ public sealed class FaceTrackingMonitor : IDisposable
         var now = DateTime.UtcNow;
         if (_lastFaceOscCheckAttemptUtc is DateTime lastAttempt &&
             now - lastAttempt < TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.OscFreshnessCheckIntervalMs))
-            return false;
+            return _lastFaceOscFrozenResult;
         _lastFaceOscCheckAttemptUtc = now;
 
         var current = await VrChatOscQueryClient.FetchParamsAsync(FaceOscParamNames).ConfigureAwait(false);
         if (current is null || current.Count == 0)
         {
             _faceOscTracker.Reset();
-            return false; // couldn't check this cycle -- don't treat that as evidence of a freeze
+            _lastFaceOscFrozenResult = false; // couldn't check this cycle -- don't treat that as evidence of a freeze
+            return false;
         }
 
-        return _faceOscTracker.Update(current, now, TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.OscFreshnessStaleThresholdMs));
+        _lastFaceOscFrozenResult = _faceOscTracker.Update(current, now, TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.OscFreshnessStaleThresholdMs));
+        return _lastFaceOscFrozenResult;
     }
 
     private List<ModuleActivity> SampleModuleActivity()
