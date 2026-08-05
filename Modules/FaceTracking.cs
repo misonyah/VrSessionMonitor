@@ -98,6 +98,9 @@ public sealed class FaceTrackingMonitor : IDisposable
     private DateTime? _lastFaceOscCheckAttemptUtc;
     private bool _lastFaceOscFrozenResult;
 
+    private DateTime? _lastViveCameraWmiCheckUtc;
+    private bool _lastViveCameraDevicePresentResult;
+
     public FaceTrackingStatus Current => _last;
 
     public FaceTrackingMonitor(MonitorConfig config)
@@ -224,23 +227,34 @@ public sealed class FaceTrackingMonitor : IDisposable
     }
 
     /// <summary>Queries WMI directly (Win32_PnPEntity) rather than shelling out to the
-    /// Get-PnpDevice cmdlet, both for speed (this runs every ~5s) and because Get-PnpDevice's
-    /// underlying provider returns historical/ghost entries for devices that aren't currently
-    /// attached (all showing Present=False) — confirmed live 2026-07-16 it listed 11 stale
-    /// entries while the device was disconnected. A plain Win32_PnPEntity query only enumerates
-    /// currently-active devices, so any match here means it's genuinely attached right now.</summary>
-    private static bool CheckViveCameraDevicePresent()
+    /// Get-PnpDevice cmdlet, both for speed and because Get-PnpDevice's underlying provider
+    /// returns historical/ghost entries for devices that aren't currently attached (all showing
+    /// Present=False) — confirmed live 2026-07-16 it listed 11 stale entries while the device was
+    /// disconnected. A plain Win32_PnPEntity query only enumerates currently-active devices, so any
+    /// match here means it's genuinely attached right now. Throttled to once every ~60s (rather
+    /// than every ~5s poll cycle) — confirmed live 2026-08-05 that wmiprvse showed sustained ~90%
+    /// CPU during an active VRChat session with perceptible stutter, and USB attach/detach for this
+    /// device doesn't need per-5-second freshness (the whole point is catching a rare disconnect,
+    /// not chasing it in real time). Returns the cached last result on throttled calls.</summary>
+    private bool CheckViveCameraDevicePresent()
     {
+        var now = DateTime.UtcNow;
+        if (_lastViveCameraWmiCheckUtc is DateTime last && now - last < TimeSpan.FromSeconds(60))
+            return _lastViveCameraDevicePresentResult;
+        _lastViveCameraWmiCheckUtc = now;
+
         try
         {
             using var searcher = new ManagementObjectSearcher(
                 $"SELECT Name FROM Win32_PnPEntity WHERE Name = '{ViveCameraDeviceName}'");
             using var results = searcher.Get();
-            return results.Count > 0;
+            _lastViveCameraDevicePresentResult = results.Count > 0;
+            return _lastViveCameraDevicePresentResult;
         }
         catch (Exception ex)
         {
             Log.Debug("FaceTracking", $"WMI Win32_PnPEntity query threw: {ex.Message}");
+            _lastViveCameraDevicePresentResult = false;
             return false;
         }
     }
