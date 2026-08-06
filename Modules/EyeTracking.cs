@@ -277,10 +277,30 @@ public sealed class BaballoniaAutomation
         return (stopButton, startButton);
     }
 
+    /// <summary>Retries on failure — confirmed live 2026-08-06 that a plain single Invoke() call
+    /// against Baballonia's Stop/Start Camera buttons intermittently throws a raw COM HRESULT
+    /// (via Marshal.ThrowExceptionForHR, e.g. "Could not open the process token") with no apparent
+    /// pattern, aborting the whole restart attempt (if it's the Stop click that fails, Start never
+    /// even gets attempted). This is well-known UI Automation flakiness — the target element can be
+    /// momentarily unavailable while its host window is mid-redraw — and a short retry reliably
+    /// clears it in practice, so one is worth it before giving up and logging a real failure.</summary>
     private static void Invoke(AutomationElement element)
     {
-        var pattern = (InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern);
-        pattern.Invoke();
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                var pattern = (InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern);
+                pattern.Invoke();
+                return;
+            }
+            catch (Exception) when (attempt < maxAttempts)
+            {
+                Log.Debug("BaballoniaAutomation", $"UI Automation Invoke() failed on attempt {attempt}/{maxAttempts}, retrying.");
+                Thread.Sleep(150);
+            }
+        }
     }
 }
 
