@@ -299,6 +299,17 @@ public sealed class PollingConfig
 {
     public int HeadsetPingIntervalMs { get; set; } = 5000;
     public int HeadsetPingTimeoutMs { get; set; } = 800;
+    /// <summary>Consecutive failed pings required before HeadsetMonitor actually declares the
+    /// headset offline. Same debounce pattern as EyeCameraOfflineDebounceFailures below, added
+    /// after the same class of bug: confirmed live 2026-08-07 that with no debounce, an isolated
+    /// dropped ICMP packet (headset connected via the PC's own WiFi hotspot rather than the usual
+    /// router, which has more latency/loss) flipped online-to-offline for a single ~5s cycle, and
+    /// the very next successful ping flipped it straight back — Home Assistant's HeadsetOnActions/
+    /// HeadsetOffActions fire on every transition, so this was toggling real lights on and off
+    /// every 20-45s while the headset sat mostly-connected but occasionally missed one ping. Only
+    /// the online-to-offline direction is debounced; a single successful ping still brings the
+    /// headset back online immediately, matching the eye-camera precedent's reasoning.</summary>
+    public int HeadsetOfflineDebounceFailures { get; set; } = 3;
     public int TrackerCheckIntervalMs { get; set; } = 10000;
     public int TrackerPingTimeoutMs { get; set; } = 500;
     public int ProcessPollIntervalMs { get; set; } = 1000;

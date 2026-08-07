@@ -23,6 +23,7 @@ public sealed class HeadsetMonitor : IDisposable
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private bool _lastKnownOnline;
+    private int _consecutiveFailures;
 
     public event EventHandler<HeadsetStateChangedEventArgs>? StateChanged;
     public bool IsOnline { get; private set; }
@@ -78,12 +79,31 @@ public sealed class HeadsetMonitor : IDisposable
             Log.Debug("HeadsetMonitor", $"Ping {ip} threw: {ex.Message}");
         }
 
+        // Debounced: a single failed ping doesn't immediately declare the headset offline (see
+        // HeadsetOfflineDebounceFailures' doc) — only the online-to-offline direction waits;
+        // recovering back online still happens on the very first successful ping.
+        if (online)
+        {
+            _consecutiveFailures = 0;
+        }
+        else if (_lastKnownOnline)
+        {
+            _consecutiveFailures++;
+            if (_consecutiveFailures < _config.Polling.HeadsetOfflineDebounceFailures)
+            {
+                Log.Trace("HeadsetMonitor", $"Ping failure {_consecutiveFailures}/{_config.Polling.HeadsetOfflineDebounceFailures} — not yet declaring offline.");
+                IsOnline = true;
+                return true;
+            }
+        }
+
         IsOnline = online;
 
         if (online != _lastKnownOnline)
         {
             Log.Info("HeadsetMonitor", $"State transition: {(_lastKnownOnline ? "online" : "offline")} -> {(online ? "online" : "offline")}");
             _lastKnownOnline = online;
+            _consecutiveFailures = 0;
             StateChanged?.Invoke(this, new HeadsetStateChangedEventArgs { IsOnline = online, Ip = ip });
         }
 
