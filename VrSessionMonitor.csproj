@@ -49,11 +49,27 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
     <PackageReference Include="System.Management" Version="10.0.10" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+    <PackageReference Include="Stateless" Version="5.20.1" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="VRChat.OSCQuery" Version="0.0.7" Condition="'$(IncludeHomeAssistant)'=='true'" />
     <PackageReference Include="LucHeart.CoreOSC" Version="1.6.0" Condition="'$(IncludeHomeAssistant)'=='true'" />
+  </ItemGroup>
+
+  <!-- The test project lives under tests/ inside this project dir (this dir is its own git
+       repo). The SDK's default **/*.cs glob would otherwise pull the test sources into the
+       main assembly — exclude them. The test project compiles them itself. -->
+  <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
+    <None Remove="tests/**/*" />
+  </ItemGroup>
+
+  <!-- The test project calls a few internal members (SessionOrchestrator.BuildStateMachine, the
+       managers' TickForTestAsync). internal is invisible across assemblies without this — the SDK
+       turns this item into the InternalsVisibleTo assembly attribute. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="VrSessionMonitor.Tests" />
   </ItemGroup>
 
 </Project>
