@@ -438,12 +438,21 @@ public sealed class GroupAutomationEntry
     public string DisplayName { get; set; } = "";
     /// <summary>Avatar OSC parameter name (sent as /avatar/parameters/&lt;ParamName&gt;, bool).</summary>
     public string ParamName { get; set; } = "";
+    /// <summary>When true, set THIS group as your VRChat represented group (nameplate) while you're
+    /// in its instance. Only listed groups with this on are ever auto-represented; leaving one falls
+    /// back to VrChatGroupAutomationConfig.FallbackRepresentGroupId (or clears representation).</summary>
+    public bool Represent { get; set; } = false;
 }
 
 public sealed class VrChatGroupAutomationConfig
 {
     public bool Enabled { get; set; } = false;
     public List<GroupAutomationEntry> Groups { get; set; } = new();
+    /// <summary>Group ID represented when you're not in a listed Represent=true group's instance.
+    /// Empty = clear representation (represent nothing) in that case. Represent actions require a
+    /// logged-in VRCX session on this machine (see VrcxSessionProvider) — no login = represent is
+    /// skipped, OSC toggles still work.</summary>
+    public string FallbackRepresentGroupId { get; set; } = "";
 }
 
 public sealed class AdbConfig
