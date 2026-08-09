@@ -16,10 +16,11 @@ public sealed class HeadsetStateChangedEventArgs : EventArgs
 /// an outbound WAN connection from VD Streamer to Virtual Desktop's cloud service before the
 /// headset ever connects, which would trigger a launch prematurely.
 /// </summary>
-public sealed class HeadsetMonitor : IDisposable
+public sealed class HeadsetMonitor : IHeadsetMonitor, IDisposable
 {
     private readonly MonitorConfig _config;
     private readonly Ping _ping = new();
+    private readonly Func<string, Task<bool>> _ping2;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private bool _lastKnownOnline;
@@ -31,9 +32,10 @@ public sealed class HeadsetMonitor : IDisposable
     /// secondary). Meaningless when IsOnline is false.</summary>
     public string RespondingIp { get; private set; } = "";
 
-    public HeadsetMonitor(MonitorConfig config)
+    public HeadsetMonitor(MonitorConfig config, Func<string, Task<bool>>? pingOverride = null)
     {
         _config = config;
+        _ping2 = pingOverride ?? PingAsync;
     }
 
     public void Start()
@@ -70,14 +72,14 @@ public sealed class HeadsetMonitor : IDisposable
     public async Task<bool> CheckOnceAsync()
     {
         var ip = _config.Network.HeadsetIp;
-        var online = await PingAsync(ip).ConfigureAwait(false);
+        var online = await _ping2(ip).ConfigureAwait(false);
 
         // Only try the secondary address if the primary one failed — a headset that can be on
         // either your normal WiFi or the PC's own hotspot, each with a different reserved IP.
         var secondaryIp = _config.Network.HeadsetIpSecondary;
         if (!online && !string.IsNullOrWhiteSpace(secondaryIp))
         {
-            online = await PingAsync(secondaryIp).ConfigureAwait(false);
+            online = await _ping2(secondaryIp).ConfigureAwait(false);
             if (online)
                 ip = secondaryIp;
         }
