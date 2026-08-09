@@ -199,17 +199,30 @@ trigger. Use **"Refresh areas/lights"** later if you rearrange anything in Home 
 **Not yet exercised live** — built and compiles clean, but hasn't been tested against a real
 VRChat session yet.
 
-Toggles a configured avatar OSC bool parameter true while you're in a specific VRChat group's
-instance, false when you leave it or move to a different one. Detected by tailing VRChat's own log
-file (`%LOCALAPPDATA%Low\VRChat\VRChat\output_log_*.txt`) for the group ID VRChat embeds directly
-in an instance's join line (`...~group(grp_xxxxx)~groupAccessType(members)`) — no VRChat API login
-needed, since that's the same instance-location string VRCX itself parses for the same purpose
-(confirmed against VRCX's own `Dotnet/LogWatcher.cs` and `src/shared/utils/instance.js`).
+Two independent features, each toggleable per group:
 
-Configure it on the **Automation** tab: enable it, then add a row per group with its Group ID
-(`grp_...`), a display label (not sent anywhere, just for your own reference), and the avatar OSC
-parameter name to toggle. Changes save immediately but only take effect after restarting the app —
-like the rest of this app's config, there's no hot-reload.
+**OSC parameter toggling** — toggles a configured avatar OSC bool parameter true while you're in a
+specific VRChat group's instance, false when you leave it or move to a different one. Detected by
+tailing VRChat's own log file (`%LOCALAPPDATA%Low\VRChat\VRChat\output_log_*.txt`) for the group
+ID VRChat embeds directly in an instance's join line (`...~group(grp_xxxxx)~groupAccessType(members)`)
+— no VRChat API login needed, since that's the same instance-location string VRCX itself parses for
+the same purpose (confirmed against VRCX's own `Dotnet/LogWatcher.cs` and `src/shared/utils/instance.js`).
+
+**Group representation** (`Represent` flag per group) — sets your VRChat represented group
+(nameplate, shown in your avatar card) while you're in that group's instance. Only listed groups
+with `Represent: true` are ever auto-represented; leaving one falls back to
+`FallbackRepresentGroupId` (either represents that group or clears representation if blank).
+Requires VRCX running + logged in on this machine (see `VrcxSessionProvider`) — this app reads
+VRCX's authenticated session cookie and uses VRChat's own `/auth/user/groups/member` endpoint to
+set representation, with **no VRChat login credentials stored in this app**. If VRCX isn't running/
+logged in, OSC toggling still works but group representation is skipped.
+
+Configure both on the **Automation** tab: enable automation, then add a row per group with its
+Group ID (`grp_...`, auto-completed from VRChat logs), a display label (not sent anywhere, just
+for your own reference), the avatar OSC parameter name to toggle (auto-completed from avatar OSC
+configs if the avatar publishes via OSCQuery), and a checkbox for `Represent`. Changes save
+immediately but only take effect after restarting the app — like the rest of this app's config,
+there's no hot-reload.
 
 Gated the same way as Home Assistant (see above) since it currently shares the same
 `LucHeart.CoreOSC`/`VRChat.OSCQuery` package references, gated behind `IncludeHomeAssistant` —
