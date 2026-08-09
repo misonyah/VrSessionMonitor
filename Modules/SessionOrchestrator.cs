@@ -178,10 +178,10 @@ public sealed class SessionOrchestrator
             Log.Info("Orchestrator", "=== Headset online — beginning session-start flow ===");
 
             await FireAsync(SessionTrigger.BeginPreflight); // -> PreflightChecks
-            await (_preflightOverride?.Invoke() ?? RunPreflightChecksAsync());
+            await (_preflightOverride?.Invoke() ?? RunPreflightChecksAsync()).ConfigureAwait(false);
 
             await FireAsync(SessionTrigger.PreflightDone);  // -> LaunchingApps
-            await LaunchVdStreamerAsync();
+            await LaunchVdStreamerAsync().ConfigureAwait(false);
 
             var vdPid = _launcher.GetProcessId("VirtualDesktop.Streamer");
 
@@ -204,7 +204,7 @@ public sealed class SessionOrchestrator
 
                 await FireAsync(SessionTrigger.AwaitStream);      // -> WaitingForStream
                 var streaming = await (_streamWaiterOverride?.Invoke(TimeSpan.FromSeconds(60))
-                                       ?? WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)));
+                                       ?? WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60))).ConfigureAwait(false);
 
                 if (!streaming)
                 {
@@ -215,16 +215,16 @@ public sealed class SessionOrchestrator
                 else
                 {
                     await FireAsync(SessionTrigger.StreamConfirmed); // -> LaunchingApps (Steam)
-                    await LaunchSteamAsync();
+                    await LaunchSteamAsync().ConfigureAwait(false);
 
                     await FireAsync(SessionTrigger.VrChatPhase);     // -> LaunchingVrChat
-                    await LaunchVrChatAsync();
+                    await LaunchVrChatAsync().ConfigureAwait(false);
 
                     await FireAsync(SessionTrigger.SlimeVrPhase);    // -> LaunchingSlimeVr
-                    await LaunchSlimeVrAsync();
+                    await LaunchSlimeVrAsync().ConfigureAwait(false);
 
                     await FireAsync(SessionTrigger.OvrPhase);        // -> LaunchingOvrToolkit
-                    await LaunchOvrToolkitAsync();
+                    await LaunchOvrToolkitAsync().ConfigureAwait(false);
 
                     _launchChainCompletedForVdPid = vdPid;
                     await FireAsync(SessionTrigger.ChainComplete);   // -> Complete
