@@ -47,10 +47,15 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
             presenceSignal: () => _anyEyeCameraOnline() || _viveTrackerPresent(),
             isRunning: () => _launcher.IsRunning("VRCFaceTracking"),
             ensureRunning: EnsureRunningAsync,
-            shutdown: () => _launcher.Kill("VRCFaceTracking"),
+            shutdown: () =>
+            {
+                Log.Warn("VrcFtLifecycle", "Idle with no eye camera or Vive tracker — shutting down VRCFaceTracking.exe.");
+                _launcher.Kill("VRCFaceTracking");
+            },
             shutdownDelayMs: _config.VrcFaceTrackingLifecycle.ShutdownDelayMs,
             clock: clock,
-            runningTick: MaybeRestartForMaxUptime);
+            runningTick: () => { MaybeRestartForMaxUptime(); return Task.CompletedTask; },
+            onTransition: (from, to) => Log.Info("VrcFtLifecycle", $"Presence state {from} -> {to}."));
     }
 
     public void Start()
@@ -90,12 +95,19 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
 
     private async Task EnsureRunningAsync()
     {
-        Log.Info("VrcFtLifecycle", "Tracker detected and VRCFaceTracking isn't running — launching it.");
-        var r = await _launcher.EnsureRunningAsync(
-            "VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, null,
-            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
-        if (!r.Success && !r.AlreadyRunning)
-            Log.Warn("VrcFtLifecycle", $"VRCFaceTracking launch did not confirm success: {r.Error}");
+        // Only log+launch when it's genuinely down. On a ShuttingDown->Running regain the process is
+        // often still alive, and the launcher's own EnsureRunningAsync would just fast-path
+        // "already running" — but the unconditional log would still lie. Mirror
+        // EnsureBothRunningAsync's per-process guard so the log matches reality.
+        if (!_launcher.IsRunning("VRCFaceTracking"))
+        {
+            Log.Info("VrcFtLifecycle", "Tracker detected and VRCFaceTracking isn't running — launching it.");
+            var r = await _launcher.EnsureRunningAsync(
+                "VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, null,
+                _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+            if (!r.Success && !r.AlreadyRunning)
+                Log.Warn("VrcFtLifecycle", $"VRCFaceTracking launch did not confirm success: {r.Error}");
+        }
     }
 
     /// <summary>

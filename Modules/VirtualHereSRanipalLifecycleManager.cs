@@ -49,10 +49,24 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
             presenceSignal: () => _headset.IsOnline || _viveTrackerPresent(),
             isRunning: () => _launcher.IsRunning("vhui64") || _launcher.IsRunning("sr_runtime"),
             ensureRunning: EnsureBothRunningAsync,
-            shutdown: () => { _launcher.Kill("vhui64"); _launcher.Kill("sr_runtime"); },
+            shutdown: () =>
+            {
+                Log.Warn("VhSranipalLifecycle", "Idle with no headset/Vive tracker — shutting down vhui64.exe/sr_runtime.exe.");
+                _launcher.Kill("vhui64");
+                _launcher.Kill("sr_runtime");
+            },
             shutdownDelayMs: _config.VirtualHereSRanipalLifecycle.ShutdownDelayMs,
-            clock: clock);
+            clock: clock,
+            // Re-ensure BOTH processes every Running tick. isRunning is an OR over vhui64/sr_runtime,
+            // so if only sr_runtime dies the OR stays true and the machine's own "not running ->
+            // ensure" branch never fires — EnsureBothRunningAsync is per-process guarded and
+            // relaunches only whichever one is actually missing, restoring independent crash-recovery.
+            runningTick: EnsureBothRunningAsync,
+            onTransition: (from, to) => Log.Info("VhSranipalLifecycle", $"Presence state {from} -> {to}."));
     }
+
+    /// <summary>Current presence-machine state. Internal, for test observability only.</summary>
+    internal PresenceState State => _machine.State;
 
     public void Start()
     {

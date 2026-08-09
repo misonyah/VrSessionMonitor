@@ -21,6 +21,13 @@ public class VrcFaceTrackingLifecycleManagerTests
         public VrcFaceTrackingLifecycleManager Build()
         {
             Config.VrcFaceTrackingLifecycle.ShutdownDelayMs = 30000;
+            // Neutralize the two paths that read REAL OS processes (Process.GetProcessesByName),
+            // which would otherwise record a phantom KillCall on this dev machine while it's running
+            // a live VRChat + VRCFaceTracking session, flaking Assert.Empty(KillCalls):
+            //   - MaxContinuousUptimeMs = 0 disables MaybeRestartForMaxUptime (via runningTick).
+            //   - MinVrChatUptimeBeforeRestartMs = int.MaxValue makes CheckVrChatRestart never fire.
+            Config.VrcFaceTrackingLifecycle.MaxContinuousUptimeMs = 0;
+            Config.VrcFaceTrackingLifecycle.MinVrChatUptimeBeforeRestartMs = int.MaxValue;
             Mgr = new VrcFaceTrackingLifecycleManager(
                 Config, () => EyeCam, () => ViveTracker, Launcher, () => Now);
             return Mgr;

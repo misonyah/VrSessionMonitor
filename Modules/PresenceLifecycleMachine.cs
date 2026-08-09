@@ -14,11 +14,19 @@ public enum PresenceState { Idle, Running, ShuttingDown }
 ///   Idle         - presence false and nothing running (rest). A leftover process detected here
 ///                  (e.g. at startup) routes to ShuttingDown so it still gets cleaned up.
 ///   Running      - presence true: ensure the process is up (crash-recover if it died) and run
-///                  the optional runningTick (e.g. VRCFaceTracking's max-uptime check).
+///                  the optional async runningTick on every Running-alive tick (e.g. VhSranipal's
+///                  per-process re-ensure, or VRCFaceTracking's max-uptime check).
 ///   ShuttingDown - presence gone but a process is still up: count down shutdownDelayMs, then kill.
 ///
 /// Driven by TickAsync() called on the manager's existing poll loop. The idle countdown is a
 /// wall-clock comparison against an injected clock so tests are deterministic.
+///
+/// runningTick is now a Func&lt;Task&gt; awaited every tick the machine stays Running with its
+/// process(es) still alive — the else branch of the Running case. Managers whose isRunning is an
+/// OR over several processes (VhSranipal) use it to re-ensure EACH process independently every
+/// cycle, so one dying while another survives still gets relaunched immediately (the OR signal
+/// alone would otherwise mask it until every process died). onTransition, when supplied, fires on
+/// every state transition so managers can log the lifecycle for log-grepping.
 /// </summary>
 public sealed class PresenceLifecycleMachine
 {
@@ -29,7 +37,8 @@ public sealed class PresenceLifecycleMachine
     private readonly Func<bool> _isRunning;
     private readonly Func<Task> _ensureRunning;
     private readonly Action _shutdown;
-    private readonly Action? _runningTick;
+    private readonly Func<Task>? _runningTick;
+    private readonly Action<PresenceState, PresenceState>? _onTransition;
     private readonly int _shutdownDelayMs;
     private readonly Func<DateTime> _clock;
 
@@ -44,17 +53,20 @@ public sealed class PresenceLifecycleMachine
         Action shutdown,
         int shutdownDelayMs,
         Func<DateTime>? clock = null,
-        Action? runningTick = null)
+        Func<Task>? runningTick = null,
+        Action<PresenceState, PresenceState>? onTransition = null)
     {
         _presenceSignal = presenceSignal;
         _isRunning = isRunning;
         _ensureRunning = ensureRunning;
         _shutdown = shutdown;
         _runningTick = runningTick;
+        _onTransition = onTransition;
         _shutdownDelayMs = shutdownDelayMs;
         _clock = clock ?? (() => DateTime.UtcNow);
 
         _sm = new StateMachine<PresenceState, Trigger>(PresenceState.Idle);
+        _sm.OnTransitioned(t => _onTransition?.Invoke(t.Source, t.Destination));
 
         _sm.Configure(PresenceState.Idle)
             .OnEntry(() => _idleSince = null)
@@ -108,9 +120,9 @@ public sealed class PresenceLifecycleMachine
                 {
                     await _ensureRunning().ConfigureAwait(false); // crash recovery, stay Running
                 }
-                else
+                else if (_runningTick is not null)
                 {
-                    _runningTick?.Invoke();
+                    await _runningTick().ConfigureAwait(false);
                 }
                 break;
 

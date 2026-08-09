@@ -26,7 +26,7 @@ public class PresenceLifecycleMachineTests
                 shutdown: () => { ShutdownCalls++; Running = false; },
                 shutdownDelayMs: shutdownDelayMs,
                 clock: () => Now,
-                runningTick: () => RunningTicks++);
+                runningTick: () => { RunningTicks++; return Task.CompletedTask; });
             return Machine;
         }
     }

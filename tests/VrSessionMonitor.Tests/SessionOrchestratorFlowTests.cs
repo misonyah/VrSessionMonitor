@@ -66,8 +66,13 @@ public class SessionOrchestratorFlowTests
         Assert.Contains("VirtualDesktop.Streamer", c.Launcher.EnsureRunningCalls);
         Assert.Contains("steam", c.Launcher.EnsureRunningCalls);
         Assert.Contains("SlimeVR", c.Launcher.EnsureRunningCalls);
-        // VRChat + OVR Toolkit go through the uri launcher (steam://rungameid).
+        // VRChat + OVR Toolkit go through the uri launcher (steam://rungameid). The generic
+        // "rungameid" match is satisfied by VRChat alone, so assert OVR Toolkit's app id explicitly
+        // to prove it actually launched too.
         Assert.Contains(c.UriLaunches, u => u.Contains("rungameid"));
+        Assert.Contains(c.UriLaunches, u => u.Contains(c.Config.Paths.OvrToolkitSteamAppId));
+        // The StateChanged stream reached the terminal Complete state.
+        Assert.Contains(SessionState.Complete, c.States);
     }
 
     [Fact]
@@ -125,6 +130,7 @@ public class SessionOrchestratorFlowTests
         var newCalls = c.Launcher.EnsureRunningCalls.GetRange(callsAfterFirst, c.Launcher.EnsureRunningCalls.Count - callsAfterFirst);
         Assert.Contains("steam", newCalls);        // full chain re-ran
         Assert.Contains("SlimeVR", newCalls);
+        Assert.Equal(SessionState.Complete, orch.State);
     }
 
     [Fact]

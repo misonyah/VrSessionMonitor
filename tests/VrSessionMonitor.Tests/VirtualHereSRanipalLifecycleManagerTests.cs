@@ -76,4 +76,30 @@ public class VirtualHereSRanipalLifecycleManagerTests
         await c.Mgr.TickForTestAsync();
         Assert.Empty(c.Launcher.EnsureRunningCalls);
     }
+
+    // Regression for the OR-signal crash-recovery gap (2026-08-09): isRunning is
+    // IsRunning("vhui64") || IsRunning("sr_runtime"), so if only sr_runtime dies the OR stays true
+    // and the machine's own "not running -> ensure" branch never fires. Before runningTick was
+    // wired to EnsureBothRunningAsync, the dead sr_runtime was never relaunched until vhui64 ALSO
+    // died. This test fails without that fix (sr_runtime is not re-ensured) and passes with it.
+    [Fact]
+    public async Task Sr_runtime_crash_while_vhui64_alive_is_relaunched()
+    {
+        var c = new Ctx(); c.Build();
+        c.Headset.SetOnline(true);
+        await c.Mgr.TickForTestAsync();              // both launch -> Running
+        Assert.Equal(PresenceState.Running, c.Mgr.State);
+
+        // Simulate ONLY sr_runtime crashing; vhui64 stays up, so the OR signal stays true.
+        c.Launcher.Running.Remove("sr_runtime");
+        var callsBefore = c.Launcher.EnsureRunningCalls.Count;
+
+        await c.Mgr.TickForTestAsync();              // Running tick must re-ensure the missing one
+
+        var newCalls = c.Launcher.EnsureRunningCalls.GetRange(
+            callsBefore, c.Launcher.EnsureRunningCalls.Count - callsBefore);
+        Assert.Contains("sr_runtime", newCalls);     // re-ensured (relaunched)
+        Assert.True(c.Launcher.IsRunning("sr_runtime"));
+        Assert.Equal(PresenceState.Running, c.Mgr.State);
+    }
 }
