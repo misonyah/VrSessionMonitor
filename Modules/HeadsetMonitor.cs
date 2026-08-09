@@ -27,6 +27,9 @@ public sealed class HeadsetMonitor : IDisposable
 
     public event EventHandler<HeadsetStateChangedEventArgs>? StateChanged;
     public bool IsOnline { get; private set; }
+    /// <summary>Whichever configured IP actually answered the last successful ping (primary or
+    /// secondary). Meaningless when IsOnline is false.</summary>
+    public string RespondingIp { get; private set; } = "";
 
     public HeadsetMonitor(MonitorConfig config)
     {
@@ -37,7 +40,10 @@ public sealed class HeadsetMonitor : IDisposable
     {
         _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => LoopAsync(_cts.Token));
-        Log.Info("HeadsetMonitor", $"Started. Target={_config.Network.HeadsetIp} ({_config.Network.HeadsetName}), " +
+        var target = string.IsNullOrWhiteSpace(_config.Network.HeadsetIpSecondary)
+            ? _config.Network.HeadsetIp
+            : $"{_config.Network.HeadsetIp} or {_config.Network.HeadsetIpSecondary}";
+        Log.Info("HeadsetMonitor", $"Started. Target={target} ({_config.Network.HeadsetName}), " +
                                     $"interval={_config.Polling.HeadsetPingIntervalMs}ms, timeout={_config.Polling.HeadsetPingTimeoutMs}ms");
     }
 
@@ -64,20 +70,20 @@ public sealed class HeadsetMonitor : IDisposable
     public async Task<bool> CheckOnceAsync()
     {
         var ip = _config.Network.HeadsetIp;
-        bool online;
-        try
+        var online = await PingAsync(ip).ConfigureAwait(false);
+
+        // Only try the secondary address if the primary one failed — a headset that can be on
+        // either your normal WiFi or the PC's own hotspot, each with a different reserved IP.
+        var secondaryIp = _config.Network.HeadsetIpSecondary;
+        if (!online && !string.IsNullOrWhiteSpace(secondaryIp))
         {
-            var reply = await _ping.SendPingAsync(ip, _config.Polling.HeadsetPingTimeoutMs).ConfigureAwait(false);
-            online = reply.Status == IPStatus.Success;
-            Log.Trace("HeadsetMonitor", online
-                ? $"Ping {ip} OK, roundtrip={reply.RoundtripTime}ms"
-                : $"Ping {ip} failed, status={reply.Status}");
+            online = await PingAsync(secondaryIp).ConfigureAwait(false);
+            if (online)
+                ip = secondaryIp;
         }
-        catch (Exception ex)
-        {
-            online = false;
-            Log.Debug("HeadsetMonitor", $"Ping {ip} threw: {ex.Message}");
-        }
+
+        if (online)
+            RespondingIp = ip;
 
         // Debounced: a single failed ping doesn't immediately declare the headset offline (see
         // HeadsetOfflineDebounceFailures' doc) — only the online-to-offline direction waits;
@@ -108,6 +114,27 @@ public sealed class HeadsetMonitor : IDisposable
         }
 
         return online;
+    }
+
+    private async Task<bool> PingAsync(string ip)
+    {
+        if (string.IsNullOrWhiteSpace(ip))
+            return false;
+
+        try
+        {
+            var reply = await _ping.SendPingAsync(ip, _config.Polling.HeadsetPingTimeoutMs).ConfigureAwait(false);
+            var online = reply.Status == IPStatus.Success;
+            Log.Trace("HeadsetMonitor", online
+                ? $"Ping {ip} OK, roundtrip={reply.RoundtripTime}ms"
+                : $"Ping {ip} failed, status={reply.Status}");
+            return online;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("HeadsetMonitor", $"Ping {ip} threw: {ex.Message}");
+            return false;
+        }
     }
 
     public void Dispose()

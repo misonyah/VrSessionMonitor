@@ -11,7 +11,7 @@ place rather than appending a new file next time.
 (`WaitForHeadsetStreamAsync`), but on timeout it just logged a warning and launched VRChat anyway.
 The headset's "online" signal is a plain ICMP ping to its LAN IP — true the moment it's powered on
 and on Wi-Fi, long before Virtual Desktop is actually opened/streaming. Result: VRChat launched
-into its low-power flatscreen window (no real VR runtime attached yet) whenever the headset was
+into its background-mode flatscreen window (no real VR runtime attached yet) whenever the headset was
 merely reachable.
 
 **Fix** (commit `6dbf1d0`): skip the VRChat launch entirely when the stream isn't confirmed, log a
@@ -114,12 +114,12 @@ in between.
 
 ## False leads (worth remembering so they don't get re-chased)
 
-### `VrChatLowPowerMode` does not control VR vs. desktop rendering
-Initially assumed the low-power toggle (`-screen-width 1024 -screen-fullscreen 0` etc.) was why
-VRChat wasn't appearing in the headset, and flipped it off. Wrong: those launch args only shape
-VRChat's flatscreen companion window (size/fullscreen/fps). Whether it renders into the headset is
+### `VrChatBackgroundMode` (formerly `VrChatLowPowerMode`) does not control VR vs. desktop rendering
+Initially assumed the background-mode toggle (`-screen-width 1024 -screen-fullscreen 0` etc.) was
+why VRChat wasn't appearing in the headset, and flipped it off. Wrong: those launch args only shape
+VRChat's flatscreen companion window (size/fullscreen). Whether it renders into the headset is
 automatic once SteamVR is active, independent of this toggle. Reverted the config change.
-Follow-on mistake: when manually relaunching VRChat after a SteamVR restart, used the *non*-low-power
+Follow-on mistake: when manually relaunching VRChat after a SteamVR restart, used the *non*-background
 args instead of reading the actual configured value, producing an unwanted maximized window that
 had to be corrected. **Any manual relaunch needs to read current config and build args exactly as
 `SessionOrchestrator.LaunchVrChatAsync` would — don't hand-type them.**
@@ -199,7 +199,7 @@ Fixes driven directly by the findings above — see individual doc comments in t
   silently persist.
 - **Tray "Restart VRChat now" action** (`SessionOrchestrator.RestartVrChatAsync`) — kills any
   running VRChat and relaunches through the same `DoLaunchVrChatAsync` code path the automatic flow
-  uses, so a manual restart always respects the current low-power/fullscreen config instead of
+  uses, so a manual restart always respects the current background/fullscreen config instead of
   being hand-typed.
 - **Startup build-timestamp log line** (`TrayApplicationContext` constructor) — logs the running
   exe's own `LastWriteTime` so a stale build (like the 4-day-old one found tonight) is visible in

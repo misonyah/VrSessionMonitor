@@ -12,6 +12,10 @@ public sealed class UpdateFinding
     public string LocalVersion { get; init; } = "unknown";
     public string? LatestKnownVersion { get; init; }
     public string Note { get; init; } = "";
+    /// <summary>True only for GitHub-checked components where the local version string didn't
+    /// match the latest release tag — see CheckGithubAsync. Always false for the local-file-only
+    /// checks (VRChat, VD Streamer), which have no reliable "latest" to compare against.</summary>
+    public bool PossiblyOutdated { get; init; }
 }
 
 /// <summary>
@@ -57,6 +61,9 @@ public sealed class UpdateChecker
 
         if (_config.Updates.CheckVrcFaceTracking)
             findings.Add(await CheckGithubAsync("VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, _config.Updates.VrcFaceTrackingGithubRepo).ConfigureAwait(false));
+
+        if (_config.Updates.CheckVrcOsc)
+            findings.Add(await CheckGithubAsync("VRCOSC", _config.Paths.VrcOscExe, _config.Updates.VrcOscGithubRepo).ConfigureAwait(false));
 
         foreach (var f in findings)
             Log.Info("UpdateChecker", $"{f.Component}: local={f.LocalVersion} latest={f.LatestKnownVersion ?? "n/a"} :: {f.Note}");
@@ -126,11 +133,12 @@ public sealed class UpdateChecker
             using var doc = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
             var tag = doc.RootElement.TryGetProperty("tag_name", out var tagEl) ? tagEl.GetString() : null;
 
-            var note = tag is not null && localVersion != "unknown" && !localVersion.Contains(tag.TrimStart('v'), StringComparison.OrdinalIgnoreCase)
+            var possiblyOutdated = tag is not null && localVersion != "unknown" && !localVersion.Contains(tag.TrimStart('v'), StringComparison.OrdinalIgnoreCase);
+            var note = possiblyOutdated
                 ? "Local version string doesn't match latest tag — worth a manual look (version formats may just differ)."
                 : "Looks current (or comparison inconclusive from version strings alone).";
 
-            return new UpdateFinding { Component = component, LocalVersion = localVersion, LatestKnownVersion = tag, Note = note };
+            return new UpdateFinding { Component = component, LocalVersion = localVersion, LatestKnownVersion = tag, Note = note, PossiblyOutdated = possiblyOutdated };
         }
         catch (Exception ex)
         {

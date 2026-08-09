@@ -51,6 +51,10 @@ public sealed class SessionOrchestrator
 
     public SessionState State { get; private set; } = SessionState.Idle;
     public event EventHandler<SessionState>? StateChanged;
+    /// <summary>Fires once per RunPreflightChecksAsync with every UpdateChecker finding (not just
+    /// the actionable ones) — consumers decide what's worth surfacing (see TrayApplicationContext,
+    /// which balloon-notifies only for PossiblyOutdated results).</summary>
+    public event EventHandler<List<UpdateFinding>>? UpdateFindingsAvailable;
 
     public SessionOrchestrator(MonitorConfig config, SlimeVrTrackerMonitor trackers, UpdateChecker updateChecker, AdbController adb)
     {
@@ -166,7 +170,8 @@ public sealed class SessionOrchestrator
         Log.Info("Orchestrator", "Pre-flight: running update checks (notify-only)...");
         try
         {
-            await _updateChecker.RunAllAsync().ConfigureAwait(false);
+            var findings = await _updateChecker.RunAllAsync().ConfigureAwait(false);
+            UpdateFindingsAvailable?.Invoke(this, findings);
         }
         catch (Exception ex)
         {
@@ -258,9 +263,9 @@ public sealed class SessionOrchestrator
     /// <summary>
     /// Manual restart path for the tray menu — bypasses the AutoLaunchVrChat toggle (a manual
     /// click is an explicit request, not the automatic flow that toggle governs) and always
-    /// builds launch args from the CURRENT config. Added after a live incident where a manual
-    /// relaunch was hand-typed with the wrong (non-low-power) args, overriding the user's actual
-    /// configured preference and popping an unwanted maximized window.
+    /// re-evaluates the CURRENT config's background-mode setting. Added after a live incident
+    /// where a manual relaunch was hand-typed with the wrong (non-background) args, overriding
+    /// the user's actual configured preference and popping an unwanted maximized window.
     /// </summary>
     public async Task RestartVrChatAsync()
     {
@@ -285,32 +290,55 @@ public sealed class SessionOrchestrator
         await DoLaunchVrChatAsync().ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// VRChat now launches via steam://rungameid (see PathsConfig.VrChatSteamAppId's doc for why —
+    /// same Steam Input binding-activation bug already fixed for OVR Toolkit). VD Streamer no
+    /// longer wraps VRChat's launcher to thread args through; confirmed live 2026-08-09 that VD's
+    /// streaming only needs VD Streamer running in the background, not to be VRChat's parent
+    /// process, so it's launched standalone and independently of VRChat here. The background-mode
+    /// launch args this used to pass dynamically must now be set once as VRChat's static Steam
+    /// "Launch Options" instead, since steam:// takes no arguments.
+    /// </summary>
     private async Task DoLaunchVrChatAsync()
     {
+        await _launcher.EnsureRunningAsync(
+            "VirtualDesktop.Streamer", _config.Paths.VirtualDesktopStreamerExe, null,
+            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+
         if (ProcessLauncher.IsRunning("VRChat"))
         {
             Log.Debug("Orchestrator", "VRChat already running, skipping launch.");
             return;
         }
 
-        // Matches the working pattern from vrc.cmd: VD Streamer wraps VRChat's own launcher.
         var sf = _config.SessionFlow;
-        var args = sf.VrChatLowPowerMode
-            ? $"\"{_config.Paths.VrChatLaunchExe}\" --watch-avatars -monitor {sf.VrChatLowPowerMonitor} -screen-width {sf.VrChatLowPowerWidth} -screen-height {sf.VrChatLowPowerHeight} -screen-fullscreen 0 --fps={sf.VrChatLowPowerFps} -force-d3d11-no-singlethreaded"
-            : $"\"{_config.Paths.VrChatLaunchExe}\" --watch-avatars -monitor 2 -screen-width 1920 -screen-height 1080 -screen-fullscreen 1 --fps=120 -force-d3d11-no-singlethreaded";
+        Log.Info("Orchestrator", $"Launching VRChat via steam://rungameid/{_config.Paths.VrChatSteamAppId}.");
+        try
+        {
+            Process.Start(new ProcessStartInfo($"steam://rungameid/{_config.Paths.VrChatSteamAppId}") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Orchestrator", "Failed to launch VRChat via the steam:// protocol", ex);
+            return;
+        }
 
-        if (sf.VrChatLowPowerMode)
-            Log.Info("Orchestrator", $"Launching VRChat in low-power windowed mode ({sf.VrChatLowPowerWidth}x{sf.VrChatLowPowerHeight}@{sf.VrChatLowPowerFps}fps, monitor {sf.VrChatLowPowerMonitor}).");
+        var elapsed = 0;
+        while (elapsed < _config.Polling.ProcessLaunchTimeoutMs)
+        {
+            await Task.Delay(_config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+            elapsed += _config.Polling.ProcessPollIntervalMs;
 
-        var result = await _launcher.EnsureRunningAsync(
-            "VRChat", _config.Paths.VirtualDesktopStreamerExe, args,
-            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+            if (ProcessLauncher.IsRunning("VRChat"))
+            {
+                Log.Info("Orchestrator", $"VRChat confirmed running after {elapsed}ms.");
+                if (sf.VrChatBackgroundMode)
+                    await MinimizeVrChatWindowAsync().ConfigureAwait(false);
+                return;
+            }
+        }
 
-        if (!result.Success)
-            Log.Warn("Orchestrator", $"VRChat launch did not confirm success: {result.Error}. " +
-                                      "This mirrors a transient 'system cannot find the drive specified' error seen during testing — it may self-heal; check tasklist manually.");
-        else if (sf.VrChatLowPowerMode)
-            await MinimizeVrChatWindowAsync().ConfigureAwait(false);
+        Log.Warn("Orchestrator", $"VRChat did not appear in the process list within {_config.Polling.ProcessLaunchTimeoutMs}ms after the steam:// launch.");
     }
 
     [DllImport("user32.dll")]
@@ -318,13 +346,15 @@ public sealed class SessionOrchestrator
 
     private const int SW_MINIMIZE = 6;
 
-    /// <summary>VRChat is launched as a grandchild of VD Streamer (VD Streamer wraps VRChat's own
-    /// launcher — see the comment above), so ProcessLauncher's WindowStyle=Minimized hint on the
-    /// STARTUPINFO only ever applies to VD Streamer's own process; Windows doesn't propagate that
-    /// hint to processes a launched process spawns internally. Confirmed live 2026-07-28: VRChat's
-    /// low-power windowed instance showed up fully visible instead of minimized. Only low-power
-    /// mode gets this treatment — full mode is fullscreen on a second monitor and is meant to
-    /// actually be seen (spectating/streaming), so it's left alone.</summary>
+    /// <summary>VRChat is launched via steam://rungameid (see DoLaunchVrChatAsync), so there's no
+    /// process handle of our own to set a WindowStyle=Minimized STARTUPINFO hint on — Steam is
+    /// what actually spawns it. Confirmed live 2026-07-28 (back when VD Streamer still wrapped the
+    /// launch instead): VRChat's background windowed instance showed up fully visible instead of
+    /// minimized regardless, since Windows doesn't propagate that hint to a process a launched
+    /// process spawns internally either way — so this explicit minimize-after-launch is needed
+    /// regardless of launch method. Only background mode gets this treatment — full mode is
+    /// fullscreen on a second monitor and is meant to actually be seen (spectating/streaming), so
+    /// it's left alone.</summary>
     private static async Task MinimizeVrChatWindowAsync()
     {
         for (var i = 0; i < 20; i++)
@@ -336,7 +366,7 @@ public sealed class SessionOrchestrator
             if (hwnd != IntPtr.Zero)
             {
                 ShowWindow(hwnd, SW_MINIMIZE);
-                Log.Debug("Orchestrator", "Minimized VRChat's low-power window.");
+                Log.Debug("Orchestrator", "Minimized VRChat's background-mode window.");
                 return;
             }
 
@@ -354,6 +384,8 @@ public sealed class SessionOrchestrator
             Log.Debug("Orchestrator", $"Waiting {delayMs}ms before checking SlimeVR — gives SteamVR's own driver-triggered auto-launch a chance to land first.");
             await Task.Delay(delayMs).ConfigureAwait(false);
         }
+
+        ProcessLauncher.KillOrphanedChildIfLauncherGone("SlimeVR", _config.Paths.SlimeVrExe, "java");
 
         await _launcher.EnsureRunningAsync(
             "SlimeVR", _config.Paths.SlimeVrExe, null,

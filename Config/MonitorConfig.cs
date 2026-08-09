@@ -265,6 +265,15 @@ public sealed class PathsConfig
     /// WebSocket server to fail and the whole app to exit shortly after starting. Launching through
     /// Steam avoids that (Steam handles the elevation per its own per-app compatibility settings).</summary>
     public string OvrToolkitSteamAppId { get; set; } = "1068820";
+    /// <summary>VRChat's Steam App ID (well-known/public). Added 2026-08-09 when VRChat's launch
+    /// switched from directly wrapping VrChatLaunchExe (via VD Streamer) to steam://rungameid — a
+    /// direct exe launch was found to bypass Steam Input's per-game binding activation entirely,
+    /// since that only fires for games launched through Steam's own protocol. Confirmed the same
+    /// class of bug already fixed for OVR Toolkit above. The tradeoff: VRChat's background-mode
+    /// launch args (see SessionFlow.VrChatBackgroundMode) can no longer be passed dynamically per
+    /// launch — steam:// takes no arguments, so they must be set once as this app's static Steam
+    /// "Launch Options" instead (right-click VRChat in Steam > Properties > Launch Options).</summary>
+    public string VrChatSteamAppId { get; set; } = "438100";
     /// <summary>Wherever your ADB install puts it — e.g. SideQuest bundles its own under
     /// "...\SideQuest\resources\app.asar.unpacked\build\platform-tools\adb.exe". Left blank by
     /// default; ADB integration is entirely best-effort and degrades gracefully if unset (see
@@ -281,6 +290,12 @@ public sealed class NetworkConfig
     /// Blank by default; the headset-detection ping loop simply never succeeds until this is
     /// set, which is a safe/inert default (see HeadsetMonitor).</summary>
     public string HeadsetIp { get; set; } = "";
+    /// <summary>Optional fallback IP, checked when HeadsetIp doesn't respond — e.g. a headset that
+    /// can be on either your normal WiFi or the PC's own hotspot depending on which one it
+    /// associated with, each giving it a different DHCP-reserved address. Blank/inert by default;
+    /// leave empty if your headset only ever has one address. HeadsetMonitor treats the headset as
+    /// online if EITHER address responds, and reports whichever one actually answered.</summary>
+    public string HeadsetIpSecondary { get; set; } = "";
     public string HeadsetName { get; set; } = "";
     public int VirtualDesktopPort { get; set; } = 38830;
     public int SlimeVrTrackerPort { get; set; } = 6969;
@@ -339,8 +354,15 @@ public sealed class UpdateCheckConfig
     public bool CheckSlimeVr { get; set; } = true;
     public bool CheckVirtualDesktopStreamer { get; set; } = true;
     public bool CheckVrcFaceTracking { get; set; } = true;
+    /// <summary>VRCOSC's own startup update check pops a blocking dialog that requires a manual
+    /// click to dismiss — fatal for an unattended automated launch, same class of problem
+    /// documented on ProcessLauncher's suppressUacPrompt. Checking here first and surfacing it as
+    /// a tray notification (see TrayApplicationContext's UpdateFindingsAvailable handler) gives a
+    /// chance to update manually ahead of time, before it can block an actual session launch.</summary>
+    public bool CheckVrcOsc { get; set; } = true;
     public string SlimeVrGithubRepo { get; set; } = "SlimeVR/SlimeVR-Server";
     public string VrcFaceTrackingGithubRepo { get; set; } = "benaclejames/VRCFaceTracking";
+    public string VrcOscGithubRepo { get; set; } = "VolcanicArts/VRCOSC";
 }
 
 public sealed class SessionFlowConfig
@@ -355,15 +377,15 @@ public sealed class SessionFlowConfig
     /// direct exe launch doesn't work.</summary>
     public bool AutoLaunchOvrToolkit { get; set; } = true;
 
-    /// <summary>Toggled live from the tray menu ("VRChat: low-power window"). When true, VRChat
-    /// launches windowed at a small resolution with a lower FPS target instead of fullscreen —
-    /// for when you're not actually going to view it through Virtual Desktop and just want it
-    /// running (e.g. for OSC/avatar work) without paying full rendering cost.</summary>
-    public bool VrChatLowPowerMode { get; set; } = false;
-    public int VrChatLowPowerWidth { get; set; } = 1024;
-    public int VrChatLowPowerHeight { get; set; } = 768;
-    public int VrChatLowPowerFps { get; set; } = 45;
-    public int VrChatLowPowerMonitor { get; set; } = 1;
+    /// <summary>Toggled live from the tray menu ("VRChat: background mode"). When true, VRChat
+    /// launches windowed at a small resolution instead of fullscreen — for when you're not
+    /// actually going to view it through Virtual Desktop and just want it running (e.g. for
+    /// OSC/avatar work) in the background, minimized. No FPS cap - VRChat runs at whatever rate
+    /// it wants, the point is just staying out of the way visually, not saving render cost.</summary>
+    public bool VrChatBackgroundMode { get; set; } = false;
+    public int VrChatBackgroundWidth { get; set; } = 640;
+    public int VrChatBackgroundHeight { get; set; } = 480;
+    public int VrChatBackgroundMonitor { get; set; } = 1;
 
     /// <summary>Confirmed live 2026-07-22: once SteamVR loads SlimeVR's own OpenVR driver
     /// (SlimeVR-Bindings-Provider.exe), that driver auto-launches the full SlimeVR.exe GUI itself

@@ -155,4 +155,47 @@ public sealed class ProcessLauncher
             return null;
         }
     }
+
+    /// <summary>
+    /// Some launcher-style apps (e.g. SlimeVR's slimevr.exe, which spawns a jre\bin\java.exe
+    /// child that hosts the actual server/RPC ports) can leave that child running after the
+    /// launcher process itself is gone — confirmed live 2026-08-09, a java.exe from the previous
+    /// day was still holding SlimeVR's RPC port (21110) more than 24h later, with no slimevr.exe
+    /// alive, causing every subsequent launch attempt to fail with "Ports are busy" until someone
+    /// manually killed it. Call this before launching such an app: if no live instance of
+    /// launcherProcessName is found, kill any orphanChildProcessName process whose executable
+    /// path lives under the same install directory as launcherExePath (path-scoped so this never
+    /// touches an unrelated process that just happens to share the child's name).
+    /// </summary>
+    public static void KillOrphanedChildIfLauncherGone(string launcherProcessName, string launcherExePath, string orphanChildProcessName)
+    {
+        if (IsRunning(launcherProcessName))
+            return;
+
+        var installDir = Path.GetDirectoryName(launcherExePath);
+        if (installDir == null)
+            return;
+
+        foreach (var proc in Process.GetProcessesByName(orphanChildProcessName))
+        {
+            try
+            {
+                var modulePath = proc.MainModule?.FileName;
+                if (modulePath != null && modulePath.StartsWith(installDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    Log.Warn("ProcessLauncher",
+                        $"Killing orphaned '{orphanChildProcessName}' process (PID {proc.Id}) under '{installDir}' - no live '{launcherProcessName}' launcher owns it.");
+                    proc.Kill();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("ProcessLauncher", $"Failed to inspect/kill '{orphanChildProcessName}' process {proc.Id}: {ex.Message}");
+            }
+            finally
+            {
+                proc.Dispose();
+            }
+        }
+    }
 }

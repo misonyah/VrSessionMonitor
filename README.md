@@ -77,7 +77,7 @@ read the code and adjust things for your own setup.
   the first.
 - **Manual "Restart VRChat now" tray action** — kills any running VRChat and relaunches it through
   the same code path (and current config) as the automatic flow, so a manual restart can't drift
-  from your configured low-power/fullscreen preference (a real mistake made once during live
+  from your configured background/fullscreen preference (a real mistake made once during live
   debugging, hand-typing the wrong args).
 - Logs its own build timestamp on startup — compare against `git log` to catch a stale running
   build before chasing a "fixed" bug that's actually just not deployed yet (also confirmed live:
@@ -183,24 +183,27 @@ the default value it does.
 
 ## Known issues / TODO
 
-- **Steam overlay never attaches to VRChat, breaking in-game payment UI (e.g. gift-subbing VRC+).**
-  VRChat is launched directly via its own `launch.exe` (wrapped by VD Streamer, so the low-power
-  windowed args — `-monitor`, `-screen-width`, etc. — can be passed), never through
-  `steam://rungameid/438100`. Steam's overlay injection only happens at the moment *it* creates a
-  game's process, so it never attaches here — confirmed live 2026-07-28 via `RunningAppID` staying
-  pinned to OVR Toolkit's app ID (which *is* launched via `steam://rungameid/`) the entire time
-  VRChat was running, and pinging `steam://rungameid/438100` at an already-running VRChat did
-  nothing (no retroactive attach). Same root category as the OVR Toolkit elevation-handshake fix
-  from 2026-07-22, just never noticed for VRChat's own overlay. Real fix needs a way to launch
-  through Steam's own protocol while still carrying the custom low-power args — maybe via Steam's
-  per-game "launch options" property instead of passing them on our own command line. Unsolved.
+- ~~Steam overlay never attaches to VRChat, breaking in-game payment UI (e.g. gift-subbing
+  VRC+).~~ — **resolved 2026-08-09.** VRChat previously launched directly via its own `launch.exe`
+  (wrapped by VD Streamer, so the background-mode windowed args — `-monitor`, `-screen-width`,
+  etc. — could be passed), never through `steam://rungameid/438100`. Steam's overlay injection
+  only happens at the moment *it* creates a game's process, so it never attached — confirmed live
+  2026-07-28 via `RunningAppID` staying pinned to OVR Toolkit's app ID (which *is* launched via
+  `steam://rungameid/`) the entire time VRChat was running. Same root category as the OVR Toolkit
+  elevation-handshake fix from 2026-07-22 and the same fix: launch via `steam://rungameid/438100`
+  instead. The background-mode window args can no longer be passed dynamically per launch (steam://
+  takes no arguments) — they now need to be set once as VRChat's static Steam "Launch Options"
+  instead (right-click VRChat in Steam > Properties > Launch Options). VD Streamer no longer wraps
+  VRChat's launcher at all; it's launched standalone in the background (confirmed live that VD's
+  streaming only needs VD Streamer running, not to be VRChat's parent process).
 
-- **VRChat's low-power window now gets explicitly minimized via `ShowWindow`/`SW_MINIMIZE`**
+- **VRChat's background-mode window now gets explicitly minimized via `ShowWindow`/`SW_MINIMIZE`**
   (`SessionOrchestrator.MinimizeVrChatWindowAsync`, added 2026-07-28) — `ProcessLauncher`'s
-  `WindowStyle=Minimized` hint never reached VRChat's actual window since VRChat is a grandchild of
-  VD Streamer (STARTUPINFO hints don't propagate to processes a launched process spawns
-  internally). Written and compiles clean, but not yet deployed/tested live — verify the window
-  actually minimizes on the next real low-power launch.
+  `WindowStyle=Minimized` hint never reached VRChat's actual window (STARTUPINFO hints don't
+  propagate to processes a launched process spawns internally, which mattered back when VD
+  Streamer still wrapped the launch — now VRChat launches via `steam://` instead, so there's no
+  process handle of ours to set that hint on at all either way). This explicit minimize-after-launch
+  step is unaffected by the steam:// launch change and still runs the same way.
 
 - ~~Root cause of the 2026-07-27 face-tracking outage was never conclusively found~~ — **resolved
   2026-07-30**, generalized rather than root-caused for that specific incident. The exact trigger
