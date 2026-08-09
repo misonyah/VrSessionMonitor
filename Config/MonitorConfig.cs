@@ -282,6 +282,11 @@ public sealed class PathsConfig
     /// WebSocket server to fail and the whole app to exit shortly after starting. Launching through
     /// Steam avoids that (Steam handles the elevation per its own per-app compatibility settings).</summary>
     public string OvrToolkitSteamAppId { get; set; } = "1068820";
+    /// <summary>XSOverlay's Steam App ID. Launched via steam://rungameid/&lt;this&gt; exactly like
+    /// OVR Toolkit (same elevation-handshake reasoning). Value 1173510 is XSOverlay's known Steam id;
+    /// confirm against the real appmanifest/process once XSOverlay is installed (it wasn't installed
+    /// as of 2026-08-10).</summary>
+    public string XSOverlaySteamAppId { get; set; } = "1173510";
     /// <summary>VRChat's Steam App ID (well-known/public). Added 2026-08-09 when VRChat's launch
     /// switched from directly wrapping VrChatLaunchExe (via VD Streamer) to steam://rungameid — a
     /// direct exe launch was found to bypass Steam Input's per-game binding activation entirely,
@@ -394,6 +399,12 @@ public sealed class SessionFlowConfig
     /// direct exe launch doesn't work.</summary>
     public bool AutoLaunchOvrToolkit { get; set; } = true;
 
+    /// <summary>Which VR overlay to auto-launch each session (None / OVR Toolkit / XSOverlay).
+    /// Chosen from the Settings window's overlay picker. Replaces the AutoLaunchOvrToolkit bool
+    /// (removed once the UI/orchestrator are migrated); defaults to XSOverlay. Takes effect on the
+    /// next session (config changes need an app restart).</summary>
+    public VrOverlayChoice VrOverlay { get; set; } = VrOverlayChoice.XSOverlay;
+
     /// <summary>Toggled live from the tray menu ("VRChat: background mode"). When true, VRChat
     /// launches windowed at a small resolution instead of fullscreen — for when you're not
     /// actually going to view it through Virtual Desktop and just want it running (e.g. for
@@ -462,6 +473,12 @@ public sealed class AdbConfig
     public string VirtualDesktopPackageName { get; set; } = "com.virtualdesktop.vr";
 }
 
+/// <summary>Which VR desktop overlay the session-start flow auto-launches. Launched via
+/// steam://rungameid/&lt;app id&gt; (see PathsConfig.OvrToolkitSteamAppId's doc for why Steam,
+/// not a direct exe). Notifications are unaffected — those go through OpenVR's overlay-independent
+/// IVRNotifications (see SteamVrNotifier), not the overlay app.</summary>
+public enum VrOverlayChoice { None, OvrToolkit, XSOverlay }
+
 #if INCLUDE_HOME_ASSISTANT
 public enum LightAction { NoChange, On, Off }
 
@@ -521,6 +538,7 @@ public sealed class MonitorConfig
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
     };
 
     /// <summary>Loading goes through Microsoft.Extensions.Configuration (the standard .NET
