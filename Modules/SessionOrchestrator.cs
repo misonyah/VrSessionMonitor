@@ -2,12 +2,20 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using Stateless;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Modules;
 
 public enum SessionState { Idle, HeadsetDetected, PreflightChecks, LaunchingApps, WaitingForStream, LaunchingVrChat, LaunchingSlimeVr, LaunchingOvrToolkit, Complete, Failed }
+
+public enum SessionTrigger
+{
+    StartSession, BeginPreflight, PreflightDone, VdLaunched,
+    PingFlapDetected, AwaitStream, StreamConfirmed, StreamTimedOut,
+    VrChatPhase, SlimeVrPhase, OvrPhase, ChainComplete, Fault
+}
 
 /// <summary>
 /// Ties the individual monitors/launchers into the actual session-start sequence, replacing
@@ -27,7 +35,13 @@ public sealed class SessionOrchestrator
     private readonly SlimeVrTrackerMonitor _trackers;
     private readonly UpdateChecker _updateChecker;
     private readonly AdbController _adb;
-    private readonly ProcessLauncher _launcher = new();
+
+    private readonly StateMachine<SessionState, SessionTrigger> _sm = BuildStateMachine();
+    private readonly IProcessLauncher _launcher;
+    private readonly Func<DateTime> _clock;
+    private readonly Func<TimeSpan, Task<bool>>? _streamWaiterOverride;
+    private readonly Func<Task>? _preflightOverride;
+    private readonly Action<string> _launchUri;
 
     private readonly SemaphoreSlim _runGate = new(1, 1);
 
@@ -49,26 +63,92 @@ public sealed class SessionOrchestrator
     /// PID match still applies. See MinHeadsetOfflineDurationForNewSessionMs.</summary>
     private DateTime? _headsetWentOfflineAtUtc;
 
-    public SessionState State { get; private set; } = SessionState.Idle;
+    public SessionState State => _sm.State;
     public event EventHandler<SessionState>? StateChanged;
     /// <summary>Fires once per RunPreflightChecksAsync with every UpdateChecker finding (not just
     /// the actionable ones) — consumers decide what's worth surfacing (see TrayApplicationContext,
     /// which balloon-notifies only for PossiblyOutdated results).</summary>
     public event EventHandler<List<UpdateFinding>>? UpdateFindingsAvailable;
 
-    public SessionOrchestrator(MonitorConfig config, SlimeVrTrackerMonitor trackers, UpdateChecker updateChecker, AdbController adb)
+    public SessionOrchestrator(
+        MonitorConfig config, SlimeVrTrackerMonitor trackers, UpdateChecker updateChecker, AdbController adb,
+        IProcessLauncher? launcher = null, Func<DateTime>? clock = null,
+        Func<TimeSpan, Task<bool>>? streamWaiter = null, Func<Task>? preflightOverride = null,
+        Action<string>? launchUri = null)
     {
         _config = config;
         _trackers = trackers;
         _updateChecker = updateChecker;
         _adb = adb;
+        _launcher = launcher ?? new ProcessLauncher();
+        _clock = clock ?? (() => DateTime.UtcNow);
+        _streamWaiterOverride = streamWaiter;
+        _preflightOverride = preflightOverride;
+        _launchUri = launchUri ?? (uri => Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }));
+
+        _sm.OnTransitioned(t =>
+        {
+            Log.Info("Orchestrator", $"State -> {t.Destination}");
+            StateChanged?.Invoke(this, t.Destination);
+        });
     }
 
-    private void SetState(SessionState s)
+    private async Task FireAsync(SessionTrigger trigger) => await _sm.FireAsync(trigger).ConfigureAwait(false);
+
+    /// <summary>
+    /// The session-start transition graph as a pure Stateless definition — no side effects, so it
+    /// can be unit-tested directly and reused by the driver. The launch WORK stays in
+    /// RunSessionStartAsync; this only encodes which transitions are legal. Illegal transitions
+    /// throw when fired, which is the point: the old linear SetState() walk couldn't catch them.
+    /// The two historically bug-prone branches are the LaunchingApps fork (PingFlapDetected vs
+    /// AwaitStream) and the WaitingForStream fork (StreamConfirmed vs StreamTimedOut).
+    /// </summary>
+    internal static StateMachine<SessionState, SessionTrigger> BuildStateMachine(SessionState initial = SessionState.Idle)
     {
-        State = s;
-        Log.Info("Orchestrator", $"State -> {s}");
-        StateChanged?.Invoke(this, s);
+        var sm = new StateMachine<SessionState, SessionTrigger>(initial);
+
+        sm.Configure(SessionState.Idle)
+            .Permit(SessionTrigger.StartSession, SessionState.HeadsetDetected);
+
+        sm.Configure(SessionState.HeadsetDetected)
+            .Permit(SessionTrigger.BeginPreflight, SessionState.PreflightChecks)
+            .Permit(SessionTrigger.Fault, SessionState.Failed);
+
+        sm.Configure(SessionState.PreflightChecks)
+            .Permit(SessionTrigger.PreflightDone, SessionState.LaunchingApps)
+            .Permit(SessionTrigger.Fault, SessionState.Failed);
+
+        sm.Configure(SessionState.LaunchingApps)
+            .PermitReentry(SessionTrigger.PreflightDone)   // harmless if re-entered; keeps graph total
+            .Permit(SessionTrigger.PingFlapDetected, SessionState.Complete)
+            .Permit(SessionTrigger.AwaitStream, SessionState.WaitingForStream)
+            .Permit(SessionTrigger.VrChatPhase, SessionState.LaunchingVrChat)
+            .Permit(SessionTrigger.Fault, SessionState.Failed);
+
+        sm.Configure(SessionState.WaitingForStream)
+            .Permit(SessionTrigger.StreamConfirmed, SessionState.LaunchingApps)
+            .Permit(SessionTrigger.StreamTimedOut, SessionState.Complete)
+            .Permit(SessionTrigger.Fault, SessionState.Failed);
+
+        sm.Configure(SessionState.LaunchingVrChat)
+            .Permit(SessionTrigger.SlimeVrPhase, SessionState.LaunchingSlimeVr)
+            .Permit(SessionTrigger.Fault, SessionState.Failed);
+
+        sm.Configure(SessionState.LaunchingSlimeVr)
+            .Permit(SessionTrigger.OvrPhase, SessionState.LaunchingOvrToolkit)
+            .Permit(SessionTrigger.Fault, SessionState.Failed);
+
+        sm.Configure(SessionState.LaunchingOvrToolkit)
+            .Permit(SessionTrigger.ChainComplete, SessionState.Complete)
+            .Permit(SessionTrigger.Fault, SessionState.Failed);
+
+        sm.Configure(SessionState.Complete)
+            .Permit(SessionTrigger.StartSession, SessionState.HeadsetDetected);
+
+        sm.Configure(SessionState.Failed)
+            .Permit(SessionTrigger.StartSession, SessionState.HeadsetDetected);
+
+        return sm;
     }
 
     public void OnHeadsetStateChanged(object? sender, HeadsetStateChangedEventArgs e)
@@ -79,7 +159,7 @@ public sealed class SessionOrchestrator
         }
         else
         {
-            _headsetWentOfflineAtUtc = DateTime.UtcNow;
+            _headsetWentOfflineAtUtc = _clock();
             Log.Info("Orchestrator", "Headset went offline. Not auto-stopping anything — leaving session as-is.");
         }
     }
@@ -94,25 +174,26 @@ public sealed class SessionOrchestrator
 
         try
         {
-            SetState(SessionState.HeadsetDetected);
+            await FireAsync(SessionTrigger.StartSession);   // -> HeadsetDetected
             Log.Info("Orchestrator", "=== Headset online — beginning session-start flow ===");
 
-            SetState(SessionState.PreflightChecks);
-            await RunPreflightChecksAsync().ConfigureAwait(false);
+            await FireAsync(SessionTrigger.BeginPreflight); // -> PreflightChecks
+            await (_preflightOverride?.Invoke() ?? RunPreflightChecksAsync());
 
-            SetState(SessionState.LaunchingApps);
-            await LaunchVdStreamerAsync().ConfigureAwait(false);
+            await FireAsync(SessionTrigger.PreflightDone);  // -> LaunchingApps
+            await LaunchVdStreamerAsync();
 
-            var vdPid = ProcessLauncher.GetProcessId("VirtualDesktop.Streamer");
+            var vdPid = _launcher.GetProcessId("VirtualDesktop.Streamer");
 
-            var offlineDuration = _headsetWentOfflineAtUtc.HasValue ? DateTime.UtcNow - _headsetWentOfflineAtUtc.Value : (TimeSpan?)null;
+            var offlineDuration = _headsetWentOfflineAtUtc.HasValue ? _clock() - _headsetWentOfflineAtUtc.Value : (TimeSpan?)null;
             var wasBriefFlap = offlineDuration.HasValue &&
-                                offlineDuration.Value.TotalMilliseconds < _config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs;
+                               offlineDuration.Value.TotalMilliseconds < _config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs;
 
             if (vdPid.HasValue && vdPid == _launchChainCompletedForVdPid && wasBriefFlap)
             {
                 Log.Info("Orchestrator", $"Launch chain already completed for this VD Streamer instance (PID {vdPid}) and the headset was only offline for " +
                                           $"{offlineDuration!.Value.TotalSeconds:F0}s — this is a headset ping flap, not a new VD session. Skipping Steam/VRChat/SlimeVR/OVR Toolkit relaunch.");
+                await FireAsync(SessionTrigger.PingFlapDetected); // -> Complete
             }
             else
             {
@@ -121,38 +202,40 @@ public sealed class SessionOrchestrator
                                               $"{(offlineDuration.HasValue ? $"{offlineDuration.Value.TotalMinutes:F0}m" : "an unknown duration")} " +
                                               $"(>= {_config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs}ms threshold) — treating as a genuine new session, not a ping flap.");
 
-                SetState(SessionState.WaitingForStream);
-                var streaming = await WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+                await FireAsync(SessionTrigger.AwaitStream);      // -> WaitingForStream
+                var streaming = await (_streamWaiterOverride?.Invoke(TimeSpan.FromSeconds(60))
+                                       ?? WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60)));
 
                 if (!streaming)
                 {
                     Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — " +
                                               "skipping Steam/VRChat/SlimeVR launch. Only VD Streamer itself was started, so it's ready to accept a connection whenever you actually open Virtual Desktop.");
+                    await FireAsync(SessionTrigger.StreamTimedOut); // -> Complete
                 }
                 else
                 {
-                    SetState(SessionState.LaunchingApps);
-                    await LaunchSteamAsync().ConfigureAwait(false);
+                    await FireAsync(SessionTrigger.StreamConfirmed); // -> LaunchingApps (Steam)
+                    await LaunchSteamAsync();
 
-                    SetState(SessionState.LaunchingVrChat);
-                    await LaunchVrChatAsync().ConfigureAwait(false);
+                    await FireAsync(SessionTrigger.VrChatPhase);     // -> LaunchingVrChat
+                    await LaunchVrChatAsync();
 
-                    SetState(SessionState.LaunchingSlimeVr);
-                    await LaunchSlimeVrAsync().ConfigureAwait(false);
+                    await FireAsync(SessionTrigger.SlimeVrPhase);    // -> LaunchingSlimeVr
+                    await LaunchSlimeVrAsync();
 
-                    SetState(SessionState.LaunchingOvrToolkit);
-                    await LaunchOvrToolkitAsync().ConfigureAwait(false);
+                    await FireAsync(SessionTrigger.OvrPhase);        // -> LaunchingOvrToolkit
+                    await LaunchOvrToolkitAsync();
 
                     _launchChainCompletedForVdPid = vdPid;
+                    await FireAsync(SessionTrigger.ChainComplete);   // -> Complete
                 }
             }
 
-            SetState(SessionState.Complete);
             Log.Info("Orchestrator", "=== Session-start flow complete ===");
         }
         catch (Exception ex)
         {
-            SetState(SessionState.Failed);
+            if (_sm.CanFire(SessionTrigger.Fault)) await FireAsync(SessionTrigger.Fault);
             Log.Error("Orchestrator", "Session-start flow threw an unhandled exception", ex);
         }
         finally
@@ -305,7 +388,7 @@ public sealed class SessionOrchestrator
             "VirtualDesktop.Streamer", _config.Paths.VirtualDesktopStreamerExe, null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
 
-        if (ProcessLauncher.IsRunning("VRChat"))
+        if (_launcher.IsRunning("VRChat"))
         {
             Log.Debug("Orchestrator", "VRChat already running, skipping launch.");
             return;
@@ -315,7 +398,7 @@ public sealed class SessionOrchestrator
         Log.Info("Orchestrator", $"Launching VRChat via steam://rungameid/{_config.Paths.VrChatSteamAppId}.");
         try
         {
-            Process.Start(new ProcessStartInfo($"steam://rungameid/{_config.Paths.VrChatSteamAppId}") { UseShellExecute = true });
+            _launchUri($"steam://rungameid/{_config.Paths.VrChatSteamAppId}");
         }
         catch (Exception ex)
         {
@@ -329,7 +412,7 @@ public sealed class SessionOrchestrator
             await Task.Delay(_config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
             elapsed += _config.Polling.ProcessPollIntervalMs;
 
-            if (ProcessLauncher.IsRunning("VRChat"))
+            if (_launcher.IsRunning("VRChat"))
             {
                 Log.Info("Orchestrator", $"VRChat confirmed running after {elapsed}ms.");
                 if (sf.VrChatBackgroundMode)
@@ -385,7 +468,7 @@ public sealed class SessionOrchestrator
             await Task.Delay(delayMs).ConfigureAwait(false);
         }
 
-        ProcessLauncher.KillOrphanedChildIfLauncherGone("SlimeVR", _config.Paths.SlimeVrExe, "java");
+        _launcher.KillOrphanedChildIfLauncherGone("SlimeVR", _config.Paths.SlimeVrExe, "java");
 
         await _launcher.EnsureRunningAsync(
             "SlimeVR", _config.Paths.SlimeVrExe, null,
@@ -406,7 +489,7 @@ public sealed class SessionOrchestrator
     {
         if (!_config.SessionFlow.AutoLaunchOvrToolkit) return Task.CompletedTask;
 
-        if (ProcessLauncher.IsRunning("OVR Toolkit"))
+        if (_launcher.IsRunning("OVR Toolkit"))
         {
             Log.Debug("Orchestrator", "OVR Toolkit already running, skipping launch.");
             return Task.CompletedTask;
@@ -415,7 +498,7 @@ public sealed class SessionOrchestrator
         Log.Info("Orchestrator", $"Launching OVR Toolkit via steam://rungameid/{_config.Paths.OvrToolkitSteamAppId}.");
         try
         {
-            Process.Start(new ProcessStartInfo($"steam://rungameid/{_config.Paths.OvrToolkitSteamAppId}") { UseShellExecute = true });
+            _launchUri($"steam://rungameid/{_config.Paths.OvrToolkitSteamAppId}");
         }
         catch (Exception ex)
         {
