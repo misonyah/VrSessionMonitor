@@ -394,14 +394,9 @@ public sealed class SessionFlowConfig
     /// else (VD Streamer, Steam, SlimeVR) but skips launching VRChat itself.</summary>
     public bool AutoLaunchVrChat { get; set; } = true;
 
-    /// <summary>Toggled live from the tray menu ("Auto-start OVR Toolkit"). Launched via
-    /// steam://rungameid/&lt;PathsConfig.OvrToolkitSteamAppId&gt; — see that field's doc for why a
-    /// direct exe launch doesn't work.</summary>
-    public bool AutoLaunchOvrToolkit { get; set; } = true;
-
     /// <summary>Which VR overlay to auto-launch each session (None / OVR Toolkit / XSOverlay).
-    /// Chosen from the Settings window's overlay picker. Replaces the AutoLaunchOvrToolkit bool
-    /// (removed once the UI/orchestrator are migrated); defaults to XSOverlay. Takes effect on the
+    /// Chosen from the Settings window's overlay picker. Replaces the old single-overlay
+    /// auto-launch bool (fully migrated as of Task 3); defaults to XSOverlay. Takes effect on the
     /// next session (config changes need an app restart).</summary>
     public VrOverlayChoice VrOverlay { get; set; } = VrOverlayChoice.XSOverlay;
 

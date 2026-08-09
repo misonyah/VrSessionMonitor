@@ -488,8 +488,21 @@ public sealed class SettingsForm : Form
 
         layout.Controls.Add(BuildCheckbox("Auto-start VRChat", _config.SessionFlow.AutoLaunchVrChat,
             v => { _config.SessionFlow.AutoLaunchVrChat = v; _config.Save(_configPath); }));
-        layout.Controls.Add(BuildCheckbox("Auto-start OVR Toolkit", _config.SessionFlow.AutoLaunchOvrToolkit,
-            v => { _config.SessionFlow.AutoLaunchOvrToolkit = v; _config.Save(_configPath); }));
+        var overlayRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+        overlayRow.Controls.Add(new Label { Text = "VR overlay to auto-start:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
+        var overlayCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+        overlayCombo.Items.AddRange(new object[] { VrOverlayChoice.None, VrOverlayChoice.OvrToolkit, VrOverlayChoice.XSOverlay });
+        overlayCombo.SelectedItem = _config.SessionFlow.VrOverlay;
+        overlayCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (overlayCombo.SelectedItem is VrOverlayChoice choice)
+            {
+                _config.SessionFlow.VrOverlay = choice;
+                _config.Save(_configPath);
+            }
+        };
+        overlayRow.Controls.Add(overlayCombo);
+        layout.Controls.Add(overlayRow);
         layout.Controls.Add(BuildCheckbox("Auto-start/stop Baballonia", _config.BaballoniaLifecycle.Enabled,
             v => { _config.BaballoniaLifecycle.Enabled = v; _config.Save(_configPath); }));
         layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCFaceTracking", _config.VrcFaceTrackingLifecycle.Enabled,
