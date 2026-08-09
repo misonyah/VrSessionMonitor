@@ -36,6 +36,12 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
     private VrcRepresentClient? _represent;
     private string? _lastRepresentedGroupId;   // in-memory cache of current representation
     private bool _representSeeded;
+    // Serializes ReconcileRepresentAsync so overlapping calls (same log batch processing several
+    // transitions synchronously, or the next poll tick firing before a prior reconcile's VRCX-DB
+    // read + VRChat API round-trip finishes) can't race _lastRepresentedGroupId/_representSeeded
+    // or issue concurrent SetRepresentedAsync calls where the last-completing one (not the latest
+    // transition) would win.
+    private readonly SemaphoreSlim _representGate = new(1, 1);
 
     private bool RepresentConfigured =>
         !string.IsNullOrWhiteSpace(_config.VrChatGroupAutomation.FallbackRepresentGroupId)
@@ -196,9 +202,11 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
 
     private async Task ReconcileRepresentAsync(string? activeGroupId)
     {
-        if (_represent is null || !_represent.HasSession) return;
+        await _representGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (_represent is null || !_represent.HasSession) return;
+
             var desired = RepresentPolicy.ComputeDesiredRepresentedGroupId(
                 activeGroupId, _config.VrChatGroupAutomation.Groups, _config.VrChatGroupAutomation.FallbackRepresentGroupId);
 
@@ -232,6 +240,10 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
         {
             Log.Warn("VrChatGroupAutomation", $"Represent reconcile failed: {ex.Message}");
         }
+        finally
+        {
+            _representGate.Release();
+        }
     }
 
     private async void SendParam(string paramName, bool value)
@@ -253,6 +265,7 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
         _cts?.Dispose();
         _osc?.Dispose();
         _represent?.Dispose();
+        _representGate.Dispose();
     }
 }
 #endif
