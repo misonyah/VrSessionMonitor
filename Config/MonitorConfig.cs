@@ -409,6 +409,26 @@ public sealed class SessionFlowConfig
     public int MinHeadsetOfflineDurationForNewSessionMs { get; set; } = 90000;
 }
 
+/// <summary>One VRChat group whose instances should toggle an avatar OSC parameter while you're
+/// in them. Detected by tailing VRChat's own log file for the group ID VRChat embeds directly in
+/// an instance's join line (e.g. "...~group(grp_xxxxx)~groupAccessType(members)") - no VRChat API
+/// login needed, since the same instance-location string VRCX itself parses already carries it.</summary>
+public sealed class GroupAutomationEntry
+{
+    /// <summary>VRChat group ID, e.g. "grp_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".</summary>
+    public string GroupId { get; set; } = "";
+    /// <summary>Just a label for the Settings UI - not sent anywhere.</summary>
+    public string DisplayName { get; set; } = "";
+    /// <summary>Avatar OSC parameter name (sent as /avatar/parameters/&lt;ParamName&gt;, bool).</summary>
+    public string ParamName { get; set; } = "";
+}
+
+public sealed class VrChatGroupAutomationConfig
+{
+    public bool Enabled { get; set; } = false;
+    public List<GroupAutomationEntry> Groups { get; set; } = new();
+}
+
 public sealed class AdbConfig
 {
     public bool Enabled { get; set; } = true;
@@ -465,6 +485,7 @@ public sealed class MonitorConfig
     public VrcFaceTrackingLifecycleConfig VrcFaceTrackingLifecycle { get; set; } = new();
     public VrcOscLifecycleConfig VrcOscLifecycle { get; set; } = new();
     public SessionFlowConfig SessionFlow { get; set; } = new();
+    public VrChatGroupAutomationConfig VrChatGroupAutomation { get; set; } = new();
     public List<TrackerConfig> Trackers { get; set; } = new();
     public List<EyeCameraConfig> EyeCameras { get; set; } = new();
 

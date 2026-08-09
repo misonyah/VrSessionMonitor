@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using VrSessionMonitor.Config;
@@ -112,6 +113,9 @@ public sealed class SettingsForm : Form
 #endif
         SettingsTabIndex = _tabs.TabPages.Count;
         _tabs.TabPages.Add(BuildSettingsTab());
+#if INCLUDE_HOME_ASSISTANT
+        _tabs.TabPages.Add(BuildAutomationTab());
+#endif
         _tabs.TabPages.Add(BuildAdvancedTab());
 
         var bottomBar = new FlowLayoutPanel
@@ -532,6 +536,72 @@ public sealed class SettingsForm : Form
         tab.Controls.Add(outer);
         return tab;
     }
+
+#if INCLUDE_HOME_ASSISTANT
+    // ───────────────────────────── Automation tab ─────────────────────────────
+
+    /// <summary>Editable list backing VrChatGroupAutomationMonitor's watch list - see that
+    /// class's doc for the actual detection/OSC-send mechanism. Changes here are saved to config
+    /// immediately but only take effect on restart, matching this app's general "no config
+    /// hot-reload" convention (the monitor reads Groups/Enabled once, at Start()).</summary>
+    private TabPage BuildAutomationTab()
+    {
+        var tab = new TabPage("Automation");
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Padding = new Padding(10) };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var header = new FlowLayoutPanel { AutoSize = true };
+        header.Controls.Add(BuildCheckbox("Enabled", _config.VrChatGroupAutomation.Enabled,
+            v => { _config.VrChatGroupAutomation.Enabled = v; _config.Save(_configPath); }));
+        header.Controls.Add(new Label
+        {
+            Text = "Toggles an avatar OSC bool parameter true while you're in a matching VRChat\n" +
+                   "group's instance, false otherwise. Detected from VRChat's own log file - no\n" +
+                   "login needed. Restart the app after changing this list for it to take effect.",
+            AutoSize = true,
+            Margin = new Padding(12, 3, 3, 3),
+        });
+        layout.Controls.Add(header, 0, 0);
+
+        var grid = new DataGridView
+        {
+            Dock = DockStyle.Fill,
+            AutoGenerateColumns = false,
+            AllowUserToAddRows = true,
+            AllowUserToDeleteRows = true,
+            RowHeadersVisible = false,
+        };
+        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Group ID (grp_...)", DataPropertyName = nameof(GroupAutomationEntry.GroupId), FillWeight = 40 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Display name", DataPropertyName = nameof(GroupAutomationEntry.DisplayName), FillWeight = 30 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "OSC parameter name", DataPropertyName = nameof(GroupAutomationEntry.ParamName), FillWeight = 30 });
+
+        var binding = new BindingList<GroupAutomationEntry>(_config.VrChatGroupAutomation.Groups);
+        grid.DataSource = binding;
+
+        void SaveGroups() => _config.Save(_configPath);
+        grid.CellEndEdit += (_, _) => SaveGroups();
+        grid.UserDeletedRow += (_, _) => SaveGroups();
+        grid.RowValidated += (_, _) => SaveGroups();
+
+        layout.Controls.Add(grid, 0, 1);
+
+        var removeSelectedButton = new Button { Text = "Remove selected row(s)", AutoSize = true, Margin = new Padding(3, 8, 3, 3) };
+        removeSelectedButton.Click += (_, _) =>
+        {
+            foreach (DataGridViewRow row in grid.SelectedRows)
+            {
+                if (!row.IsNewRow) binding.RemoveAt(row.Index);
+            }
+            SaveGroups();
+        };
+        layout.Controls.Add(removeSelectedButton, 0, 2);
+
+        tab.Controls.Add(layout);
+        return tab;
+    }
+#endif
 
     private static CheckBox BuildCheckbox(string text, bool initial, Action<bool> onChange)
     {

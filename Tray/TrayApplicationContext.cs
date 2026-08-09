@@ -33,6 +33,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private HomeAssistantLightsManager? _homeAssistantManager;
     private HmdActivityMonitor? _hmdActivity;
     private VrChatOscAfkListener? _vrChatOscAfk;
+    private readonly VrChatGroupAutomationMonitor _groupAutomation;
 
     internal bool HomeAssistantIsConnected => _homeAssistantClient.IsConnected;
 #endif
@@ -77,6 +78,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantManager = new HomeAssistantLightsManager(_config, _homeAssistantClient, _headset);
         _hmdActivity = new HmdActivityMonitor(_config);
         _vrChatOscAfk = new VrChatOscAfkListener(_config);
+        _groupAutomation = new VrChatGroupAutomationMonitor(_config);
 #endif
 
         // Replaces the old tray ContextMenuStrip entirely (see git history around 2026-08-09) —
@@ -145,6 +147,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // without toggling AFK" half of detection is lost until this interop is fixed or replaced.
         _vrChatOscAfk!.AfkChanged += (_, afk) => _homeAssistantManager!.OnOscAfkChanged(afk);
         _vrChatOscAfk.Start();
+        _groupAutomation.Start();
         if (_config.HomeAssistant.Enabled)
             _ = WaitForHomeAssistantConnectionThenRefreshAsync(notifyOnFailure: false);
 #endif
@@ -453,6 +456,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantManager?.Dispose();
         _hmdActivity?.Dispose();
         _vrChatOscAfk?.Dispose();
+        _groupAutomation.Dispose();
         _homeAssistantClient.Dispose();
 #endif
         Log.Shutdown();

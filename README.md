@@ -69,21 +69,42 @@ read the code and adjust things for your own setup.
   avoids that.
 - **SteamVR in-headset toast notifications** for key auto-fix events (only when SteamVR is
   actually running).
-- **Auto-detect headset/trackers/cameras** — a tray action that ping-sweeps the LAN for a
+- **Auto-detect headset/trackers/cameras** — a Settings-tab action that ping-sweeps the LAN for a
   Meta/Oculus MAC OUI prefix, queries SlimeVR's own local API, and reads Baballonia's camera
   address fields directly, instead of requiring manual IP/MAC entry. See the note below for what
   is and isn't verified yet.
 - **Start with Windows** toggle, and a single-instance lock so a second launch can't collide with
   the first.
-- **Manual "Restart VRChat now" tray action** — kills any running VRChat and relaunches it through
-  the same code path (and current config) as the automatic flow, so a manual restart can't drift
-  from your configured background/fullscreen preference (a real mistake made once during live
-  debugging, hand-typing the wrong args).
+- **Manual "Restart" button next to the VRChat status row** — kills any running VRChat and
+  relaunches it through the same code path (and current config) as the automatic flow, so a manual
+  restart can't drift from your configured background/fullscreen preference (a real mistake made
+  once during live debugging, hand-typing the wrong args).
 - Logs its own build timestamp on startup — compare against `git log` to catch a stale running
   build before chasing a "fixed" bug that's actually just not deployed yet (also confirmed live:
   a build ran unrestarted for 4 days across 3 subsequent fixes).
-- Everything is toggleable from the tray menu, with live status for headset/trackers/eye+face
-  pipeline/SteamVR/VRChat/last firmware self-heal event.
+- **VRChat group → avatar parameter automation** — toggles a configured avatar OSC bool parameter
+  true while you're in a specific VRChat group's instance, false otherwise. See its own section
+  below.
+- Everything is toggleable from the Settings/Status window (see below), with live status for
+  headset/trackers/eye+face pipeline/SteamVR/VRChat/last firmware self-heal event.
+
+## Settings/Status window
+
+Replaces what used to be a right-click tray context menu (that menu had a recurring WinForms
+crash — see `docs/superpowers/specs/2026-08-09-settings-status-window-design.md` for the full
+story). The tray icon now opens a normal window instead, and clicking the same button again while
+that tab is already open closes it:
+
+- **Left-click** → **Status** tab (live-updating: headset, trackers, eye/face tracking, SteamVR,
+  VRChat, firmware self-heal).
+- **Right-click** → **Settings** tab (launch toggles, network IPs, background-mode dimensions, and
+  an Actions column pinned to the right so it's visible without scrolling).
+- **Middle-click** → **Home Assistant** tab (only present in builds with that feature compiled in —
+  connection setup, area picker, per-light action pickers for all three trigger categories).
+- An **Automation** tab holds the VRChat group → OSC parameter config (see below), and an
+  **Advanced** tab opens `appsettings.json` directly in your default editor for anything not
+  promoted to the curated Settings tab.
+- **Exit** is a button inside the window itself, not a menu item.
 
 ## Requirements
 
@@ -98,8 +119,8 @@ read the code and adjust things for your own setup.
 2. Fill in your own headset IP, tracker IPs/MACs, eye camera IPs, and any install paths that
    don't match the defaults (most third-party paths default to their usual Steam/Program Files
    location — only your own trackers/cameras/headset and anything installed somewhere unusual
-   needs editing). Alternatively, run the app once and use the tray menu's **"Auto-detect
-   headset/trackers/cameras"** action.
+   needs editing). Alternatively, run the app once and use the Settings tab's **"Auto-detect
+   headset/trackers/cameras"** button.
 3. `dotnet build`, then run `bin/Debug/net10.0-windows/VrSessionMonitor.exe`.
 
 `appsettings.json` is gitignored — it holds your real network layout and is never meant to be
@@ -135,28 +156,32 @@ report why rather than silently doing nothing.
 
 Switches your Home Assistant lights automatically as the VR session changes state, with a separate
 configurable light map per trigger — headset on, headset off, and AFK — each light set to On, Off,
-or No change from the tray menu. AFK comes from two independent sources OR'd together: SteamVR's
-own HMD activity level (headset taken off your face) and VRChat's own `/avatar/parameters/AFK`
-parameter over OSC (AFK toggled from the quick menu while still wearing the headset).
+or No change from the Home Assistant tab. AFK comes from two independent sources OR'd together:
+SteamVR's own HMD activity level (headset taken off your face) and VRChat's own
+`/avatar/parameters/AFK` parameter over OSC (AFK toggled from the quick menu while still wearing
+the headset).
 
 It's gated twice, and both gates have to be open for anything to happen:
 
 - **`IncludeHomeAssistant`** — a compile-time MSBuild property, **on by default**. Build with
   `dotnet build -p:IncludeHomeAssistant=false` to compile the feature out entirely: no HA client,
-  no OpenVR activity polling, no OSCQuery service advertised to VRChat, no tray menu entries.
+  no OpenVR activity polling, no OSCQuery service advertised to VRChat, no Home Assistant tab (and,
+  since the VRChat group automation feature currently shares the same OSC package references, no
+  Automation tab either — see that section for why).
 - **`HomeAssistant.Enabled`** — the runtime flag in `appsettings.json`, **off by default**. While
   it's false nothing connects, polls, or advertises itself, even in a build that includes the
   feature. The setup flow below sets this to `true` for you.
 
 **Caveat before changing the compile flag on an existing install:** `MonitorConfig.Save()` does a
 full-object rewrite, and a build made with `-p:IncludeHomeAssistant=false` has no `HomeAssistant`
-property to write out. The first time any tray toggle triggers a config save, that whole section —
-access token, selected area, and all three light maps — is silently dropped from
+property to write out. The first time any settings change triggers a config save, that whole
+section — access token, selected area, and all three light maps — is silently dropped from
 `appsettings.json`. Back the file up first if you care about those settings.
 
-### Connecting it (all from the tray, no JSON editing required)
+### Connecting it (all from the window, no JSON editing required)
 
-1. Tray icon → **Home Assistant** → **"Set up connection..."**.
+1. Middle-click the tray icon (or right-click → Settings tab, if you'd rather navigate manually) →
+   **Home Assistant** tab → **"Set up connection..."**.
 2. Type your Home Assistant Base URL (e.g. `http://homeassistant.local:8123`).
 3. Click **"Create token"** — opens that URL's `/profile/security` page in your browser using
    whatever you just typed (doesn't need anything saved yet). Scroll down to **"Long-lived access
@@ -169,6 +194,31 @@ connected. The **Area** picker and the three per-trigger light lists (**Headset 
 AFK**) populate right after; each light gets its own On / Off / No change choice, independently per
 trigger. Use **"Refresh areas/lights"** later if you rearrange anything in Home Assistant itself.
 
+## VRChat group → avatar parameter automation
+
+**Not yet exercised live** — built and compiles clean, but hasn't been tested against a real
+VRChat session yet.
+
+Toggles a configured avatar OSC bool parameter true while you're in a specific VRChat group's
+instance, false when you leave it or move to a different one. Detected by tailing VRChat's own log
+file (`%LOCALAPPDATA%Low\VRChat\VRChat\output_log_*.txt`) for the group ID VRChat embeds directly
+in an instance's join line (`...~group(grp_xxxxx)~groupAccessType(members)`) — no VRChat API login
+needed, since that's the same instance-location string VRCX itself parses for the same purpose
+(confirmed against VRCX's own `Dotnet/LogWatcher.cs` and `src/shared/utils/instance.js`).
+
+Configure it on the **Automation** tab: enable it, then add a row per group with its Group ID
+(`grp_...`), a display label (not sent anywhere, just for your own reference), and the avatar OSC
+parameter name to toggle. Changes save immediately but only take effect after restarting the app —
+like the rest of this app's config, there's no hot-reload.
+
+Gated the same way as Home Assistant (see above) since it currently shares the same
+`LucHeart.CoreOSC`/`VRChat.OSCQuery` package references, gated behind `IncludeHomeAssistant` —
+despite that flag's name, this feature has nothing to do with Home Assistant itself. OSC messages
+are sent to VRChat's conventional default receive port (`127.0.0.1:9000`) rather than resolved via
+OSCQuery discovery; if you run other local OSC routing tools that actually reassign VRChat's real
+receive port, this would need to move to dynamic discovery instead (see
+`Modules/VrChatGroupAutomationMonitor.cs`'s own doc comment).
+
 ## Config reference
 
 `appsettings.json` is a plain JSON tree, loaded via `Microsoft.Extensions.Configuration` (saved
@@ -177,7 +227,8 @@ sections: `Network`, `Polling`, `Paths`, `Updates`, `Adb`, `HomeAssistant` (only
 include the feature — see above), `EyeCameraAutoRestart`, `EyeTrackingOscFreshness`,
 `BaballoniaLifecycle`, `FaceTrackingAutoFix` (includes the `OscFreshness*` fields),
 `SRanipalService`, `SteamVrStuckSession`, `VrcFaceTrackingLifecycle`, `VrcOscLifecycle`,
-`SessionFlow`, `Trackers` (a list), `EyeCameras` (a list). Every field has a doc comment on its
+`SessionFlow`, `VrChatGroupAutomation` (only in builds that include the Home Assistant feature —
+see above), `Trackers` (a list), `EyeCameras` (a list). Every field has a doc comment on its
 C# property in `Config/MonitorConfig.cs` explaining what it does and, where relevant, why it has
 the default value it does.
 
