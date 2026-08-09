@@ -179,9 +179,9 @@ public sealed class VrcFaceTrackingLifecycleConfig
 {
     /// <summary>VRCFaceTracking is launched whenever the Vive Facial Tracker or either eye
     /// camera is detected present, and shut down after ShutdownDelayMs of neither being present
-    /// — rather than running unconditionally. This replaces plain crash-recovery for
-    /// VRCFaceTracking specifically (sr_runtime.exe and vhui64.exe still get unconditional
-    /// crash-recovery in FaceTrackingMonitor).</summary>
+    /// — rather than running unconditionally. sr_runtime.exe/vhui64.exe get the same treatment
+    /// via VirtualHereSRanipalLifecycleConfig below, not unconditional crash-recovery anymore
+    /// (that was the 2026-08-09 bug this config was added to fix).</summary>
     public bool Enabled { get; set; } = true;
     public int ShutdownDelayMs { get; set; } = 30000;
     /// <summary>Confirmed live 2026-07-16: VRCFaceTracking.exe's own parent process can silently
@@ -235,6 +235,23 @@ public sealed class VrcOscLifecycleConfig
     /// relaunching) VRCOSC across a quick VRChat restart, which would otherwise bounce its OSC
     /// connection for no reason.</summary>
     public int ShutdownDelayMs { get; set; } = 30000;
+}
+
+/// <summary>Added 2026-08-09 after vhui64.exe/sr_runtime.exe were found running indefinitely with
+/// no headset connected and no VR session active at all — they used to get unconditional
+/// crash-recovery in FaceTrackingMonitor (launch if not running, no matter what), which meant
+/// nothing ever actually stopped them once started. See VirtualHereSRanipalLifecycleManager for
+/// the presence signal used (headset online, OR the Vive tracker device already actively
+/// present so an existing desktop-mode session isn't interrupted).</summary>
+public sealed class VirtualHereSRanipalLifecycleConfig
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Deliberately longer than VrcFaceTrackingLifecycleConfig.ShutdownDelayMs (30s) —
+    /// vhui64.exe/sr_runtime.exe are cheap to leave running for a bit in case the headset comes
+    /// back shortly (e.g. a brief WiFi drop), and relaunching sr_runtime.exe specifically has a
+    /// real cost (fresh SRanipal init, UAC-prompt-suppression dance) worth avoiding on a false
+    /// "session ended" read.</summary>
+    public int ShutdownDelayMs { get; set; } = 300000; // 5 minutes
 }
 
 public sealed class PathsConfig
@@ -484,6 +501,7 @@ public sealed class MonitorConfig
     public SteamVrStuckSessionConfig SteamVrStuckSession { get; set; } = new();
     public VrcFaceTrackingLifecycleConfig VrcFaceTrackingLifecycle { get; set; } = new();
     public VrcOscLifecycleConfig VrcOscLifecycle { get; set; } = new();
+    public VirtualHereSRanipalLifecycleConfig VirtualHereSRanipalLifecycle { get; set; } = new();
     public SessionFlowConfig SessionFlow { get; set; } = new();
     public VrChatGroupAutomationConfig VrChatGroupAutomation { get; set; } = new();
     public List<TrackerConfig> Trackers { get; set; } = new();

@@ -50,6 +50,14 @@ public sealed class FaceTrackingStatus
 /// (vhui64.exe, backed by the "vhclient" Windows Service) -> SRanipal (sr_runtime.exe) ->
 /// VRCFaceTracking's face module (one of its VRCFaceTracking.ModuleProcess.exe children).
 ///
+/// vhui64.exe/sr_runtime.exe's own start/stop LIFECYCLE (when to launch them, when to shut them
+/// down if nothing needs them) is NOT owned here — see VirtualHereSRanipalLifecycleManager, added
+/// 2026-08-09 after they were found running indefinitely with no headset connected and no VR
+/// session active at all, simply because nothing ever shut them down once launched (unlike
+/// VRCFaceTracking, which already had this kind of presence-based lifecycle). This class now only
+/// monitors their status and fixes a stalled CONNECTION between already-running processes — it
+/// assumes they're supposed to be up, it doesn't decide whether they should be.
+///
 /// Investigated 2026-07-16 whether the same graceful UI-automation restart used for Baballonia
 /// (see EyeTracking.cs) would work here — it doesn't:
 ///  - sr_runtime.exe is headless: FindFirst for a top-level window returns nothing at all.
@@ -59,13 +67,6 @@ public sealed class FaceTrackingStatus
 ///    reachable via UI Automation, unlike Baballonia's Avalonia UI.
 /// So the only available remediation is a blunt kill+relaunch of the process(es) involved, not a
 /// graceful in-app click.
-///
-/// vhui64.exe runs as a real Windows Service ("vhclient" / "VirtualHere Client USB Sharing") plus
-/// a separate tray/UI client process (confirmed via Get-Service). This monitor only
-/// crash-recovers the client PROCESS the same way as everything else (ProcessLauncher). Restarting
-/// the underlying SERVICE would need a different mechanism (sc.exe / ServiceController) — not
-/// implemented; flagged as a smaller follow-up if the client-level restart ever proves
-/// insufficient.
 ///
 /// See HandleStalledConnectionAsync's doc for the full 2026-07-16 escalation history: a plain
 /// sr_runtime.exe kill+relaunch was confirmed (via live logs across a 14+ minute episode) to
@@ -201,7 +202,6 @@ public sealed class FaceTrackingMonitor : IDisposable
 
         _last = status;
 
-        await HandleCrashRecoveryAsync(status).ConfigureAwait(false);
         await HandleSRanipalServiceRecoveryAsync(status).ConfigureAwait(false);
         await HandleStalledConnectionAsync(status).ConfigureAwait(false);
 
@@ -329,46 +329,6 @@ public sealed class FaceTrackingMonitor : IDisposable
                 Log.Warn("FaceTracking", $"Starting '{serviceName}' failed: {ex.Message}");
             }
         }).ConfigureAwait(false);
-    }
-
-    /// <summary>vhui64.exe gets unconditional crash-recovery — it's the prerequisite that makes the
-    /// Vive Facial Tracker's PnP device (and therefore ViveCameraDevicePresent below) ever appear
-    /// at all, so gating it on that same signal would be circular.
-    ///
-    /// sr_runtime.exe is different: confirmed live 2026-07-28, it crashed and got unconditionally
-    /// relaunched at 4:12am while the headset was completely off (no tracker, no eye camera, no
-    /// VRChat/SteamVR session) — burning real CPU (127s of CPU time within ~2 minutes) for a
-    /// runtime nothing needed. Unlike vhui64, ViveCameraDevicePresent doesn't depend on sr_runtime
-    /// itself being alive (only on vhui64 having shared the device), so gating sr_runtime's
-    /// recovery on it is safe and precise: it still crash-recovers instantly mid-session (the
-    /// device stays present the whole time), but stops pointlessly relaunching when nothing is
-    /// plugged in. VRCFaceTracking.exe gets no crash-recovery here at all — its start/stop
-    /// lifecycle is owned by VrcFaceTrackingLifecycleManager (launched on tracker presence, shut
-    /// down after a delay with none present), which would otherwise fight with relaunching here.</summary>
-    private async Task HandleCrashRecoveryAsync(FaceTrackingStatus status)
-    {
-        if (!status.SRanipalRunning && status.ViveCameraDevicePresent)
-            // suppressUacPrompt: sr_runtime.exe's manifest requests requestedExecutionLevel
-            // "highestAvailable", which triggers a UAC consent prompt on every launch on an
-            // admin-capable account — fine for a human, fatal for this unattended auto-relaunch
-            // (confirmed live 2026-07-16: nothing there to click "Yes", launch just hangs). See
-            // ProcessLauncher.EnsureRunningAsync's suppressUacPrompt doc for the mechanism.
-            await RelaunchAsync("sr_runtime", _config.Paths.SRanipalExe, suppressUacPrompt: true).ConfigureAwait(false);
-
-        if (!status.VirtualHereRunning)
-            await RelaunchAsync("vhui64", _config.Paths.VirtualHereClientExe).ConfigureAwait(false);
-    }
-
-    private async Task RelaunchAsync(string processName, string exePath, bool suppressUacPrompt = false)
-    {
-        Log.Warn("FaceTracking", $"'{processName}' is not running — attempting to relaunch it.");
-        var result = await _launcher.EnsureRunningAsync(
-            processName, exePath, null,
-            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
-            suppressUacPrompt: suppressUacPrompt).ConfigureAwait(false);
-
-        if (!result.Success && !result.AlreadyRunning)
-            Log.Warn("FaceTracking", $"Relaunch of '{processName}' did not confirm success: {result.Error}");
     }
 
     /// <summary>If SRanipal and VRCFaceTracking are both alive with a module loaded, but nothing
