@@ -175,6 +175,7 @@ public class SessionOrchestratorFlowTests
         var orch = c.Build();
         await orch.RunSessionStartAsync();
         Assert.Contains(c.UriLaunches, u => u.Contains(c.Config.Paths.OvrToolkitSteamAppId));
+        Assert.DoesNotContain(c.UriLaunches, u => u.Contains(c.Config.Paths.XSOverlaySteamAppId));
     }
 
     [Fact]

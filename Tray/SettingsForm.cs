@@ -491,6 +491,17 @@ public sealed class SettingsForm : Form
         var overlayRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         overlayRow.Controls.Add(new Label { Text = "VR overlay to auto-start:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
         var overlayCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+        overlayCombo.Format += (_, e) =>
+        {
+            if (e.ListItem is VrOverlayChoice c)
+                e.Value = c switch
+                {
+                    VrOverlayChoice.None => "None",
+                    VrOverlayChoice.OvrToolkit => "OVR Toolkit",
+                    VrOverlayChoice.XSOverlay => "XSOverlay",
+                    _ => c.ToString(),
+                };
+        };
         overlayCombo.Items.AddRange(new object[] { VrOverlayChoice.None, VrOverlayChoice.OvrToolkit, VrOverlayChoice.XSOverlay });
         overlayCombo.SelectedItem = _config.SessionFlow.VrOverlay;
         overlayCombo.SelectedIndexChanged += (_, _) =>

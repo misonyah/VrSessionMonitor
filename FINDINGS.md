@@ -206,11 +206,13 @@ Fixes driven directly by the findings above — see individual doc comments in t
   the log immediately, without needing `Get-Process`/file-mtime comparisons.
 - **SlimeVR launch delay** (`SessionOrchestrator.LaunchSlimeVrAsync`,
   `SessionFlowConfig.SlimeVrLaunchDelayMs`, default 35s) — see finding #4 above.
-- **OVR Toolkit auto-launch** (`SessionOrchestrator.LaunchOvrToolkitAsync`,
-  `SessionFlowConfig.AutoLaunchOvrToolkit`, `PathsConfig.OvrToolkitSteamAppId`) — launches via
-  `steam://rungameid/1068820` rather than through `ProcessLauncher` (which requires a real file
-  path, not a URL) or the exe directly (which hits the elevation bug above). Tray toggle added
-  ("Auto-start OVR Toolkit"), matching the `AutoLaunchVrChat` pattern.
+- **Selectable VR overlay auto-launch** (`SessionOrchestrator.LaunchVrOverlayAsync`,
+  `SessionFlowConfig.VrOverlay`, `VrOverlayChoice` — None/OvrToolkit/XSOverlay, default
+  XSOverlay) — launches the chosen overlay via `steam://rungameid` (OVR Toolkit
+  `1068820`/`PathsConfig.OvrToolkitSteamAppId`, XSOverlay `1173510`/`PathsConfig.XSOverlaySteamAppId`)
+  rather than through `ProcessLauncher` (which requires a real file path, not a URL) or the exe
+  directly (which hits the elevation bug above). Chosen from the Settings tab's overlay dropdown,
+  replacing the old single `AutoLaunchOvrToolkit` toggle.
 
 All compiled clean (verified via a scratch `-o` build directory, since the live tray process
 still had the real `bin/` output locked at the time).
