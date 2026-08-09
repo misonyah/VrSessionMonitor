@@ -10,8 +10,11 @@ namespace VrSessionMonitor.Modules;
 /// VRCX persists its cookies in %APPDATA%\VRCX\VRCX.sqlite3 (table `cookies`, row key='default',
 /// value = Base64(JSON CookieCollection)) — confirmed against VRCX's own Dotnet/WebApi.cs
 /// Load/SaveCookies. We read that one row, read-only and shared (VRCX keeps the DB open in WAL
-/// mode), and hand back the vrchat.cloud cookies. Any failure (no VRCX, no row, expired) → null,
-/// and the caller skips represent while leaving OSC toggles untouched.
+/// mode), and hand back the vrchat.cloud cookies. Any failure to read/parse (no VRCX, no row, no
+/// vrchat.cloud cookies, format drift) → null, and the caller skips represent while leaving OSC
+/// toggles untouched. Note we do NOT detect an expired cookie here — an expired session cookie is
+/// still returned non-null; expiry only surfaces later as a 401 at the API layer, at which point
+/// represent is skipped.
 /// </summary>
 public sealed class VrcxSessionProvider
 {
@@ -57,19 +60,25 @@ public sealed class VrcxSessionProvider
     /// <summary>Pure: Base64(JSON CookieCollection) → the vrchat.cloud cookies. Empty on any failure.</summary>
     public static CookieCollection ExtractVrchatCookies(string base64Value)
     {
-        var result = new CookieCollection();
         try
         {
             var bytes = Convert.FromBase64String(base64Value);
             var all = JsonSerializer.Deserialize<CookieCollection>(bytes);
-            if (all is null) return result;
+            if (all is null) return new CookieCollection();
+            // Accumulate into a local list first, and only build the returned collection once the
+            // loop has completed without throwing. Adding straight into the result would let a
+            // mid-loop throw hand back a PARTIAL non-empty set, contradicting the "empty on any
+            // failure" contract.
+            var matched = new List<Cookie>();
             foreach (Cookie c in all)
             {
                 if (!string.IsNullOrEmpty(c.Domain) && c.Domain.Contains("vrchat.cloud", StringComparison.OrdinalIgnoreCase))
-                    result.Add(c);
+                    matched.Add(c);
             }
+            var result = new CookieCollection();
+            foreach (var c in matched) result.Add(c);
+            return result;
         }
-        catch { /* garbage/format drift → empty */ }
-        return result;
+        catch { /* garbage/format drift → empty */ return new CookieCollection(); }
     }
 }

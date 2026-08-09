@@ -596,10 +596,32 @@ public sealed class SettingsForm : Form
         grid.RowValidated += (_, _) => SaveGroups();
 
         var vrchatLow = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + @"Low\VRChat\VRChat";
+        // ScanGroupIds/ScanOscBoolParams read every VRChat output_log_*.txt and every avatar OSC
+        // config JSON — tens–hundreds of MB for a heavy user, which would freeze the Settings window
+        // if done synchronously here. Build the two collections EMPTY and wire them to the grid's
+        // EditingControlShowing handler and the fallback textbox now (they're referenced by object,
+        // so late population is fine — autocomplete is pure convenience). Then run both scans on a
+        // background thread and marshal back to populate them: AutoCompleteStringCollection.AddRange
+        // must run on the UI/STA thread, hence the BeginInvoke. Never block the constructor here.
         var groupIdSuggestions = new AutoCompleteStringCollection();
-        groupIdSuggestions.AddRange(AutomationSuggestionSources.ScanGroupIds(vrchatLow).ToArray());
         var oscParamSuggestions = new AutoCompleteStringCollection();
-        oscParamSuggestions.AddRange(AutomationSuggestionSources.ScanOscBoolParams(Path.Combine(vrchatLow, "OSC")).ToArray());
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var groupIds = AutomationSuggestionSources.ScanGroupIds(vrchatLow).ToArray();
+                var oscParams = AutomationSuggestionSources.ScanOscBoolParams(Path.Combine(vrchatLow, "OSC")).ToArray();
+                BeginInvoke((Action)(() =>
+                {
+                    groupIdSuggestions.AddRange(groupIds);
+                    oscParamSuggestions.AddRange(oscParams);
+                }));
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("SettingsForm", $"Automation autocomplete scan failed: {ex.Message}");
+            }
+        });
 
         var fallbackRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         fallbackRow.Controls.Add(new Label { Text = "Fallback represented group (blank = clear):", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });

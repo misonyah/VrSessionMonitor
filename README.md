@@ -210,12 +210,14 @@ the same purpose (confirmed against VRCX's own `Dotnet/LogWatcher.cs` and `src/s
 
 **Group representation** (`Represent` flag per group) — sets your VRChat represented group
 (nameplate, shown in your avatar card) while you're in that group's instance. Only listed groups
-with `Represent: true` are ever auto-represented; leaving one falls back to
-`FallbackRepresentGroupId` (either represents that group or clears representation if blank).
-Requires VRCX running + logged in on this machine (see `VrcxSessionProvider`) — this app reads
-VRCX's authenticated session cookie and uses VRChat's own `/auth/user/groups/member` endpoint to
-set representation, with **no VRChat login credentials stored in this app**. If VRCX isn't running/
-logged in, OSC toggling still works but group representation is skipped.
+with `Represent: true` are ever auto-represented; whenever you're not in a listed `Represent: true`
+group's instance (including at startup/first seed, not only when you leave one), it represents
+`FallbackRepresentGroupId` — or clears your representation if that's blank. Requires VRCX running +
+logged in on this machine (see `VrcxSessionProvider`) — this app reads VRCX's authenticated session
+cookie and calls VRChat's own group endpoints (`PUT groups/{groupId}/representation` with
+`{"isRepresenting":true}` to set, `GET users/{userId}/groups/represented` to read the current one),
+with **no VRChat login credentials stored in this app**. If VRCX isn't running/logged in, OSC
+toggling still works but group representation is skipped.
 
 Configure both on the **Automation** tab: enable automation, then add a row per group with its
 Group ID (`grp_...`, auto-completed from VRChat logs), a display label (not sent anywhere, just

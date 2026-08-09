@@ -216,6 +216,10 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
                 _representSeeded = true;
             }
 
+            // After seeding, this cache trusts itself over any out-of-band change (e.g. you set a
+            // different represented group manually in VRChat/VRCX mid-session): we don't re-poll the
+            // API each tick, so such an edit isn't reconciled until the desired value next changes.
+
             if (string.Equals(desired, _lastRepresentedGroupId, StringComparison.Ordinal)) return; // already correct
 
             if (desired is not null)

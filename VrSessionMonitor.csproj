@@ -45,6 +45,10 @@
   <ItemGroup>
     <PackageReference Include="Google.FlatBuffers" Version="25.2.10" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <!-- Microsoft.Data.Sqlite 10.0.0 pulls SQLitePCLRaw.lib.e_sqlite3 2.1.11 transitively, which
+         carries NU1903 (GHSA-2m69-gcr7-jv3q — bundled SQLite native vuln, affected <= 2.1.11).
+         Pin the bundle forward to a post-2.1.11 build (bundles patched SQLite) to clear it. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.10" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />

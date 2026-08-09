@@ -28,6 +28,9 @@ public class VrcxCookieExtractionTests
 
         var result = VrcxSessionProvider.ExtractVrchatCookies(EncodeLikeVrcx(cc));
 
+        // Exactly the two vrchat.cloud cookies (auth + twoFactorAuth) — asserting the count too so a
+        // silently-dropped matching cookie would be caught, not just a wrongly-included one.
+        Assert.Equal(2, result.Count);
         Assert.Contains(result.Cast<Cookie>(), c => c.Name == "auth" && c.Value == "authcookie-value");
         Assert.DoesNotContain(result.Cast<Cookie>(), c => c.Domain.Contains("example.com"));
     }
