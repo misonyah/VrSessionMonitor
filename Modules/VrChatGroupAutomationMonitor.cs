@@ -33,6 +33,14 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
     private long _logPosition;
     private string? _activeGroupId;
 
+    private VrcRepresentClient? _represent;
+    private string? _lastRepresentedGroupId;   // in-memory cache of current representation
+    private bool _representSeeded;
+
+    private bool RepresentConfigured =>
+        !string.IsNullOrWhiteSpace(_config.VrChatGroupAutomation.FallbackRepresentGroupId)
+        || _config.VrChatGroupAutomation.Groups.Any(g => g.Represent);
+
     // "[Behaviour] Joining wrld_xxx:12345~group(grp_yyy)~groupAccessType(members)" - excludes the
     // two other "[Behaviour] Joining ..." lines VRChat logs that aren't actual instance joins
     // ("Joining or Creating Room: <world name>" and "Joining friend: <name>"), matching VRCX's
@@ -58,6 +66,13 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
         // multiple local OSC routers ever actually reassign VRChat's real receive port on this
         // machine, this would need to move to dynamic discovery instead.
         _osc = new OscSender(new IPEndPoint(IPAddress.Loopback, 9000));
+
+        if (RepresentConfigured)
+        {
+            _represent = new VrcRepresentClient(new VrcxSessionProvider());
+            if (!_represent.HasSession)
+                Log.Warn("VrChatGroupAutomation", "Represent is configured but no VRCX session was found — represent will be skipped until VRCX is logged in.");
+        }
 
         _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => LoopAsync(_cts.Token));
@@ -175,6 +190,48 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
                 SendParam(entry.ParamName, true);
             }
         }
+
+        _ = ReconcileRepresentAsync(groupId);
+    }
+
+    private async Task ReconcileRepresentAsync(string? activeGroupId)
+    {
+        if (_represent is null || !_represent.HasSession) return;
+        try
+        {
+            var desired = RepresentPolicy.ComputeDesiredRepresentedGroupId(
+                activeGroupId, _config.VrChatGroupAutomation.Groups, _config.VrChatGroupAutomation.FallbackRepresentGroupId);
+
+            if (!_representSeeded)
+            {
+                _lastRepresentedGroupId = await _represent.GetRepresentedGroupIdAsync().ConfigureAwait(false);
+                _representSeeded = true;
+            }
+
+            if (string.Equals(desired, _lastRepresentedGroupId, StringComparison.Ordinal)) return; // already correct
+
+            if (desired is not null)
+            {
+                if (await _represent.SetRepresentedAsync(desired, true).ConfigureAwait(false))
+                {
+                    Log.Info("VrChatGroupAutomation", $"Represented group set to {desired}.");
+                    _lastRepresentedGroupId = desired;
+                }
+            }
+            else if (_lastRepresentedGroupId is not null)
+            {
+                // clear: un-represent whatever is currently represented
+                if (await _represent.SetRepresentedAsync(_lastRepresentedGroupId, false).ConfigureAwait(false))
+                {
+                    Log.Info("VrChatGroupAutomation", "Cleared represented group.");
+                    _lastRepresentedGroupId = null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("VrChatGroupAutomation", $"Represent reconcile failed: {ex.Message}");
+        }
     }
 
     private async void SendParam(string paramName, bool value)
@@ -195,6 +252,7 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
         Stop();
         _cts?.Dispose();
         _osc?.Dispose();
+        _represent?.Dispose();
     }
 }
 #endif

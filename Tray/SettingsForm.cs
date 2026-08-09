@@ -564,7 +564,9 @@ public sealed class SettingsForm : Form
         {
             Text = "Toggles an avatar OSC bool parameter true while you're in a matching VRChat\n" +
                    "group's instance, false otherwise. Detected from VRChat's own log file - no\n" +
-                   "login needed. Restart the app after changing this list for it to take effect.",
+                   "login needed. Restart the app after changing this list for it to take effect.\n" +
+                   "Tick Represent to also set that group as your VRChat represented group while\n" +
+                   "you're in it (needs VRCX running and logged in).",
             AutoSize = true,
             Margin = new Padding(12, 3, 3, 3),
         });
@@ -583,6 +585,7 @@ public sealed class SettingsForm : Form
         grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Display name", DataPropertyName = nameof(GroupAutomationEntry.DisplayName), FillWeight = 30 });
         var paramCol = new DataGridViewTextBoxColumn { HeaderText = "OSC parameter name", DataPropertyName = nameof(GroupAutomationEntry.ParamName), FillWeight = 30 };
         grid.Columns.Add(paramCol);
+        grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Represent", DataPropertyName = nameof(GroupAutomationEntry.Represent), FillWeight = 15 });
 
         var binding = new BindingList<GroupAutomationEntry>(_config.VrChatGroupAutomation.Groups);
         grid.DataSource = binding;
@@ -597,6 +600,24 @@ public sealed class SettingsForm : Form
         groupIdSuggestions.AddRange(AutomationSuggestionSources.ScanGroupIds(vrchatLow).ToArray());
         var oscParamSuggestions = new AutoCompleteStringCollection();
         oscParamSuggestions.AddRange(AutomationSuggestionSources.ScanOscBoolParams(Path.Combine(vrchatLow, "OSC")).ToArray());
+
+        var fallbackRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+        fallbackRow.Controls.Add(new Label { Text = "Fallback represented group (blank = clear):", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
+        var fallbackBox = new TextBox
+        {
+            Text = _config.VrChatGroupAutomation.FallbackRepresentGroupId,
+            Width = 260,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+            AutoCompleteSource = AutoCompleteSource.CustomSource,
+            AutoCompleteCustomSource = groupIdSuggestions,
+        };
+        fallbackBox.Leave += (_, _) =>
+        {
+            _config.VrChatGroupAutomation.FallbackRepresentGroupId = fallbackBox.Text.Trim();
+            _config.Save(_configPath);
+        };
+        fallbackRow.Controls.Add(fallbackBox);
+        header.Controls.Add(fallbackRow);
 
         grid.EditingControlShowing += (_, e) =>
         {
