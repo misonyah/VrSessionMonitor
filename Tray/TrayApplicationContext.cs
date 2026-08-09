@@ -69,7 +69,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _eyeTracking = new EyeTrackingMonitor(_config);
         _vrcFtLifecycle = new VrcFaceTrackingLifecycleManager(_config, _eyeTracking, _faceTracking);
         _vrcOscLifecycle = new VrcOscLifecycleManager(_config, _vrChat);
-        _vhSranipalLifecycle = new VirtualHereSRanipalLifecycleManager(_config, _headset, _faceTracking);
+        _vhSranipalLifecycle = new VirtualHereSRanipalLifecycleManager(
+            _config, _headset, () => _faceTracking.Current.ViveCameraDevicePresent);
         _firmwareNotify = new FirmwareNotificationListener(_config);
         _updateChecker = new UpdateChecker(_config);
         _adb = new AdbController(_config);

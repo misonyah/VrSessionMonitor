@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
@@ -27,20 +26,32 @@ namespace VrSessionMonitor.Modules;
 public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
 {
     private readonly MonitorConfig _config;
-    private readonly HeadsetMonitor _headset;
-    private readonly FaceTrackingMonitor _faceTracking;
-    private readonly ProcessLauncher _launcher = new();
+    private readonly IHeadsetMonitor _headset;
+    private readonly Func<bool> _viveTrackerPresent;
+    private readonly IProcessLauncher _launcher;
+    private readonly PresenceLifecycleMachine _machine;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
 
-    private DateTime? _idleSinceUtc;
-    private bool _lastShouldBeRunning;
-
-    public VirtualHereSRanipalLifecycleManager(MonitorConfig config, HeadsetMonitor headset, FaceTrackingMonitor faceTracking)
+    public VirtualHereSRanipalLifecycleManager(
+        MonitorConfig config,
+        IHeadsetMonitor headset,
+        Func<bool> viveTrackerPresent,
+        IProcessLauncher? launcher = null,
+        Func<DateTime>? clock = null)
     {
         _config = config;
         _headset = headset;
-        _faceTracking = faceTracking;
+        _viveTrackerPresent = viveTrackerPresent;
+        _launcher = launcher ?? new ProcessLauncher();
+
+        _machine = new PresenceLifecycleMachine(
+            presenceSignal: () => _headset.IsOnline || _viveTrackerPresent(),
+            isRunning: () => _launcher.IsRunning("vhui64") || _launcher.IsRunning("sr_runtime"),
+            ensureRunning: EnsureBothRunningAsync,
+            shutdown: () => { _launcher.Kill("vhui64"); _launcher.Kill("sr_runtime"); },
+            shutdownDelayMs: _config.VirtualHereSRanipalLifecycle.ShutdownDelayMs,
+            clock: clock);
     }
 
     public void Start()
@@ -61,124 +72,55 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            try
-            {
-                await CheckOnceAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Log.Debug("VhSranipalLifecycle", $"Check cycle threw: {ex.Message}");
-            }
+            try { await TickForTestAsync().ConfigureAwait(false); }
+            catch (Exception ex) { Log.Debug("VhSranipalLifecycle", $"Check cycle threw: {ex.Message}"); }
 
             try { await Task.Delay(_config.Polling.ProcessPollIntervalMs * 5, token).ConfigureAwait(false); }
             catch (TaskCanceledException) { break; }
         }
     }
 
-    private async Task CheckOnceAsync()
+    /// <summary>One poll cycle. Named for test access; the loop and tests both call it.</summary>
+    internal async Task TickForTestAsync()
     {
         if (!_config.VirtualHereSRanipalLifecycle.Enabled) return;
-
-        var headsetOnline = _headset.IsOnline;
-        var viveTrackerPresent = _faceTracking.Current.ViveCameraDevicePresent;
-        var shouldBeRunning = headsetOnline || viveTrackerPresent;
-
-        if (shouldBeRunning != _lastShouldBeRunning)
-        {
-            Log.Info("VhSranipalLifecycle", $"Presence changed: headsetOnline={headsetOnline} viveTracker={viveTrackerPresent} -> shouldBeRunning={shouldBeRunning}.");
-            _lastShouldBeRunning = shouldBeRunning;
-        }
-
-        if (shouldBeRunning)
-        {
-            _idleSinceUtc = null;
-
-            if (!ProcessLauncher.IsRunning("vhui64"))
-            {
-                Log.Info("VhSranipalLifecycle", "vhui64.exe not running — launching it.");
-                var result = await _launcher.EnsureRunningAsync(
-                    "vhui64", _config.Paths.VirtualHereClientExe, null,
-                    _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
-                if (!result.Success && !result.AlreadyRunning)
-                    Log.Warn("VhSranipalLifecycle", $"vhui64.exe launch did not confirm success: {result.Error}");
-            }
-
-            if (!ProcessLauncher.IsRunning("sr_runtime"))
-            {
-                Log.Info("VhSranipalLifecycle", "sr_runtime.exe not running — launching it.");
-                // suppressUacPrompt: sr_runtime.exe's manifest requests requestedExecutionLevel
-                // "highestAvailable", which triggers a UAC consent prompt on every launch on an
-                // admin-capable account — fine for a human, fatal for this unattended auto-launch
-                // (confirmed live 2026-07-16: nothing there to click "Yes", launch just hangs).
-                var result = await _launcher.EnsureRunningAsync(
-                    "sr_runtime", _config.Paths.SRanipalExe, null,
-                    _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
-                    suppressUacPrompt: true).ConfigureAwait(false);
-                if (!result.Success && !result.AlreadyRunning)
-                    Log.Warn("VhSranipalLifecycle", $"sr_runtime.exe launch did not confirm success: {result.Error}");
-            }
-
-            return;
-        }
-
-        // Neither signal present.
-        if (!ProcessLauncher.IsRunning("vhui64") && !ProcessLauncher.IsRunning("sr_runtime"))
-        {
-            _idleSinceUtc = null; // nothing running, nothing to shut down
-            return;
-        }
-
-        var now = DateTime.UtcNow;
-        _idleSinceUtc ??= now;
-
-        var elapsed = now - _idleSinceUtc.Value;
-        var threshold = TimeSpan.FromMilliseconds(_config.VirtualHereSRanipalLifecycle.ShutdownDelayMs);
-        if (elapsed < threshold) return;
-
-        Log.Warn("VhSranipalLifecycle", $"No headset and no Vive tracker for {elapsed.TotalSeconds:F0}s — shutting down vhui64.exe/sr_runtime.exe.");
-        KillIfRunning("vhui64");
-        KillIfRunning("sr_runtime");
-
-        _idleSinceUtc = null;
+        await _machine.TickAsync().ConfigureAwait(false);
     }
 
-    private static void KillIfRunning(string processName)
+    private async Task EnsureBothRunningAsync()
     {
-        try
+        if (!_launcher.IsRunning("vhui64"))
         {
-            foreach (var proc in Process.GetProcessesByName(processName))
-            {
-                try
-                {
-                    proc.Kill(entireProcessTree: true);
-                    proc.WaitForExit(5000);
-                }
-                finally
-                {
-                    proc.Dispose();
-                }
-            }
+            Log.Info("VhSranipalLifecycle", "vhui64.exe not running — launching it.");
+            var r = await _launcher.EnsureRunningAsync(
+                "vhui64", _config.Paths.VirtualHereClientExe, null,
+                _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+            if (!r.Success && !r.AlreadyRunning)
+                Log.Warn("VhSranipalLifecycle", $"vhui64.exe launch did not confirm success: {r.Error}");
         }
-        catch (Exception ex)
+
+        if (!_launcher.IsRunning("sr_runtime"))
         {
-            Log.Error("VhSranipalLifecycle", $"Killing {processName}.exe threw", ex);
+            Log.Info("VhSranipalLifecycle", "sr_runtime.exe not running — launching it.");
+            // suppressUacPrompt: sr_runtime.exe manifests requestedExecutionLevel highestAvailable,
+            // which pops a UAC prompt on every launch on an admin account — fatal for unattended
+            // auto-launch (confirmed live 2026-07-16). See ProcessLauncher's __COMPAT_LAYER note.
+            var r = await _launcher.EnsureRunningAsync(
+                "sr_runtime", _config.Paths.SRanipalExe, null,
+                _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
+                suppressUacPrompt: true).ConfigureAwait(false);
+            if (!r.Success && !r.AlreadyRunning)
+                Log.Warn("VhSranipalLifecycle", $"sr_runtime.exe launch did not confirm success: {r.Error}");
         }
     }
 
-    /// <summary>Surfaces the shutdown-after-idle countdown for the tray — same reasoning as
-    /// VrcFaceTrackingLifecycleManager.DescribePendingAction.</summary>
     public string? DescribePendingAction()
     {
         if (!_config.VirtualHereSRanipalLifecycle.Enabled) return null;
-
-        if (_idleSinceUtc is DateTime since)
-        {
-            var remaining = TimeSpan.FromMilliseconds(_config.VirtualHereSRanipalLifecycle.ShutdownDelayMs) - (DateTime.UtcNow - since);
-            if (remaining > TimeSpan.Zero)
-                return $"vhui64/sr_runtime shutdown in {remaining.TotalSeconds:F0}s";
-        }
-
-        return null;
+        var remaining = _machine.ShutdownCountdownRemaining();
+        return remaining is TimeSpan t && t > TimeSpan.Zero
+            ? $"vhui64/sr_runtime shutdown in {t.TotalSeconds:F0}s"
+            : null;
     }
 
     public void Dispose()
