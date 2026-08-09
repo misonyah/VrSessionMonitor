@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 using VrSessionMonitor.Modules;
@@ -67,7 +68,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrChat = new VrChatMonitor(_config);
         _faceTracking = new FaceTrackingMonitor(_config);
         _eyeTracking = new EyeTrackingMonitor(_config);
-        _vrcFtLifecycle = new VrcFaceTrackingLifecycleManager(_config, _eyeTracking, _faceTracking);
+        _vrcFtLifecycle = new VrcFaceTrackingLifecycleManager(
+            _config,
+            () => _eyeTracking.Current.Any(c => c.Online),
+            () => _faceTracking.Current.ViveCameraDevicePresent);
         _vrcOscLifecycle = new VrcOscLifecycleManager(_config, _vrChat);
         _vhSranipalLifecycle = new VirtualHereSRanipalLifecycleManager(
             _config, _headset, () => _faceTracking.Current.ViveCameraDevicePresent);

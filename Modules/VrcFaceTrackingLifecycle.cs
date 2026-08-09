@@ -22,21 +22,35 @@ namespace VrSessionMonitor.Modules;
 public sealed class VrcFaceTrackingLifecycleManager : IDisposable
 {
     private readonly MonitorConfig _config;
-    private readonly EyeTrackingMonitor _eyeTracking;
-    private readonly FaceTrackingMonitor _faceTracking;
-    private readonly ProcessLauncher _launcher = new();
+    private readonly Func<bool> _anyEyeCameraOnline;
+    private readonly Func<bool> _viveTrackerPresent;
+    private readonly IProcessLauncher _launcher;
+    private readonly PresenceLifecycleMachine _machine;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
 
-    private DateTime? _noTrackerSinceUtc;
-    private bool _lastAnyTrackerPresent;
     private DateTime? _refreshedForVrChatStartTime;
 
-    public VrcFaceTrackingLifecycleManager(MonitorConfig config, EyeTrackingMonitor eyeTracking, FaceTrackingMonitor faceTracking)
+    public VrcFaceTrackingLifecycleManager(
+        MonitorConfig config,
+        Func<bool> anyEyeCameraOnline,
+        Func<bool> viveTrackerPresent,
+        IProcessLauncher? launcher = null,
+        Func<DateTime>? clock = null)
     {
         _config = config;
-        _eyeTracking = eyeTracking;
-        _faceTracking = faceTracking;
+        _anyEyeCameraOnline = anyEyeCameraOnline;
+        _viveTrackerPresent = viveTrackerPresent;
+        _launcher = launcher ?? new ProcessLauncher();
+
+        _machine = new PresenceLifecycleMachine(
+            presenceSignal: () => _anyEyeCameraOnline() || _viveTrackerPresent(),
+            isRunning: () => _launcher.IsRunning("VRCFaceTracking"),
+            ensureRunning: EnsureRunningAsync,
+            shutdown: () => _launcher.Kill("VRCFaceTracking"),
+            shutdownDelayMs: _config.VrcFaceTrackingLifecycle.ShutdownDelayMs,
+            clock: clock,
+            runningTick: MaybeRestartForMaxUptime);
     }
 
     public void Start()
@@ -57,94 +71,31 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            try
-            {
-                await CheckOnceAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Log.Debug("VrcFtLifecycle", $"Check cycle threw: {ex.Message}");
-            }
+            try { await TickForTestAsync().ConfigureAwait(false); }
+            catch (Exception ex) { Log.Debug("VrcFtLifecycle", $"Check cycle threw: {ex.Message}"); }
 
             try { await Task.Delay(_config.Polling.ProcessPollIntervalMs * 5, token).ConfigureAwait(false); }
             catch (TaskCanceledException) { break; }
         }
     }
 
-    private async Task CheckOnceAsync()
+    /// <summary>One poll cycle. CheckVrChatRestart runs unconditionally every cycle (as before),
+    /// then the presence machine advances. Named for test access.</summary>
+    internal async Task TickForTestAsync()
     {
         if (!_config.VrcFaceTrackingLifecycle.Enabled) return;
-
         CheckVrChatRestart();
+        await _machine.TickAsync().ConfigureAwait(false);
+    }
 
-        var anyEyeCameraOnline = _eyeTracking.Current.Any(c => c.Online);
-        var viveTrackerPresent = _faceTracking.Current.ViveCameraDevicePresent;
-        var anyTrackerPresent = anyEyeCameraOnline || viveTrackerPresent;
-
-        if (anyTrackerPresent != _lastAnyTrackerPresent)
-        {
-            Log.Info("VrcFtLifecycle", $"Tracker presence changed: eyeCamera={anyEyeCameraOnline} viveTracker={viveTrackerPresent} -> anyPresent={anyTrackerPresent}.");
-            _lastAnyTrackerPresent = anyTrackerPresent;
-        }
-
-        if (anyTrackerPresent)
-        {
-            _noTrackerSinceUtc = null;
-
-            if (!ProcessLauncher.IsRunning("VRCFaceTracking"))
-            {
-                Log.Info("VrcFtLifecycle", $"Tracker detected (eyeCamera={anyEyeCameraOnline}, viveTracker={viveTrackerPresent}) and VRCFaceTracking isn't running — launching it.");
-                var result = await _launcher.EnsureRunningAsync(
-                    "VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, null,
-                    _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
-
-                if (!result.Success && !result.AlreadyRunning)
-                    Log.Warn("VrcFtLifecycle", $"VRCFaceTracking launch did not confirm success: {result.Error}");
-            }
-            else
-            {
-                MaybeRestartForMaxUptime();
-            }
-
-            return;
-        }
-
-        // No tracker present at all.
-        if (!ProcessLauncher.IsRunning("VRCFaceTracking"))
-        {
-            _noTrackerSinceUtc = null; // nothing running, nothing to shut down
-            return;
-        }
-
-        var now = DateTime.UtcNow;
-        _noTrackerSinceUtc ??= now;
-
-        var elapsed = now - _noTrackerSinceUtc.Value;
-        var threshold = TimeSpan.FromMilliseconds(_config.VrcFaceTrackingLifecycle.ShutdownDelayMs);
-        if (elapsed < threshold) return;
-
-        Log.Warn("VrcFtLifecycle", $"No eye camera or Vive tracker detected for {elapsed.TotalSeconds:F0}s — shutting down VRCFaceTracking.exe.");
-        try
-        {
-            foreach (var proc in Process.GetProcessesByName("VRCFaceTracking"))
-            {
-                try
-                {
-                    proc.Kill(entireProcessTree: true);
-                    proc.WaitForExit(5000);
-                }
-                finally
-                {
-                    proc.Dispose();
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Error("VrcFtLifecycle", "Killing VRCFaceTracking.exe threw", ex);
-        }
-
-        _noTrackerSinceUtc = null;
+    private async Task EnsureRunningAsync()
+    {
+        Log.Info("VrcFtLifecycle", "Tracker detected and VRCFaceTracking isn't running — launching it.");
+        var r = await _launcher.EnsureRunningAsync(
+            "VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, null,
+            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+        if (!r.Success && !r.AlreadyRunning)
+            Log.Warn("VrcFtLifecycle", $"VRCFaceTracking launch did not confirm success: {r.Error}");
     }
 
     /// <summary>
@@ -193,22 +144,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
             Log.Warn("VrcFtLifecycle", $"VRCFaceTracking (started {vrcft.StartTime:HH:mm:ss}) predates the currently-running VRChat instance (started {vrChatStart:HH:mm:ss}) — its OSC handshake is likely stale or was never established against it. Restarting it.");
             SteamVrNotifier.TryNotify(_config, "Restarting VRCFaceTracking (stale against current VRChat instance)");
 
-            foreach (var proc in Process.GetProcessesByName("VRCFaceTracking"))
-            {
-                try
-                {
-                    proc.Kill(entireProcessTree: true);
-                    proc.WaitForExit(5000);
-                }
-                catch (Exception ex)
-                {
-                    Log.Warn("VrcFtLifecycle", $"Killing VRCFaceTracking.exe for VRChat-restart refresh threw: {ex.Message}");
-                }
-                finally
-                {
-                    proc.Dispose();
-                }
-            }
+            _launcher.Kill("VRCFaceTracking");
 
             _refreshedForVrChatStartTime = vrChatStart;
         }
@@ -257,18 +193,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         SteamVrNotifier.TryNotify(_config, "Restarting VRCFaceTracking (preventive, long uptime)");
         try
         {
-            foreach (var p in Process.GetProcessesByName("VRCFaceTracking"))
-            {
-                try
-                {
-                    p.Kill(entireProcessTree: true);
-                    p.WaitForExit(5000);
-                }
-                finally
-                {
-                    p.Dispose();
-                }
-            }
+            _launcher.Kill("VRCFaceTracking");
         }
         catch (Exception ex)
         {
@@ -284,17 +209,12 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
     {
         if (!_config.VrcFaceTrackingLifecycle.Enabled) return null;
 
-        var now = DateTime.UtcNow;
-
-        if (_noTrackerSinceUtc is DateTime since)
-        {
-            var remaining = TimeSpan.FromMilliseconds(_config.VrcFaceTrackingLifecycle.ShutdownDelayMs) - (now - since);
-            if (remaining > TimeSpan.Zero)
-                return $"VRCFaceTracking shutdown in {remaining.TotalSeconds:F0}s";
-        }
+        var shutdown = _machine.ShutdownCountdownRemaining();
+        if (shutdown is TimeSpan s && s > TimeSpan.Zero)
+            return $"VRCFaceTracking shutdown in {s.TotalSeconds:F0}s";
 
         var maxUptimeMs = _config.VrcFaceTrackingLifecycle.MaxContinuousUptimeMs;
-        if (maxUptimeMs > 0 && _lastAnyTrackerPresent)
+        if (maxUptimeMs > 0 && _machine.State == PresenceState.Running)
         {
             using var proc = Process.GetProcessesByName("VRCFaceTracking").FirstOrDefault();
             if (proc is not null)
@@ -305,7 +225,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
             }
         }
 
-        if (!_lastAnyTrackerPresent && !ProcessLauncher.IsRunning("VRCFaceTracking"))
+        if (_machine.State == PresenceState.Idle && !_launcher.IsRunning("VRCFaceTracking"))
             return "waiting for an eye camera or Vive tracker to launch VRCFaceTracking";
 
         return null;
