@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.Linq;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 using VrSessionMonitor.Modules;
@@ -500,7 +501,7 @@ public sealed class SettingsForm : Form
 
         var bgGroup = new GroupBox { Text = "VRChat background mode", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(380, 0) };
         var bgLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-        bgLayout.Controls.Add(BuildCheckbox("Enabled (windowed instead of fullscreen)", _config.SessionFlow.VrChatBackgroundMode,
+        bgLayout.Controls.Add(BuildCheckbox("Run VRChat in the background (small, minimized)", _config.SessionFlow.VrChatBackgroundMode,
             v => { _config.SessionFlow.VrChatBackgroundMode = v; _config.Save(_configPath); }));
         bgLayout.Controls.Add(BuildNumericRow("Width", _config.SessionFlow.VrChatBackgroundWidth,
             v => { _config.SessionFlow.VrChatBackgroundWidth = v; _config.Save(_configPath); }));
@@ -577,9 +578,11 @@ public sealed class SettingsForm : Form
             AllowUserToDeleteRows = true,
             RowHeadersVisible = false,
         };
-        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Group ID (grp_...)", DataPropertyName = nameof(GroupAutomationEntry.GroupId), FillWeight = 40 });
+        var groupCol = new DataGridViewTextBoxColumn { HeaderText = "Group ID (grp_...)", DataPropertyName = nameof(GroupAutomationEntry.GroupId), FillWeight = 40 };
+        grid.Columns.Add(groupCol);
         grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Display name", DataPropertyName = nameof(GroupAutomationEntry.DisplayName), FillWeight = 30 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "OSC parameter name", DataPropertyName = nameof(GroupAutomationEntry.ParamName), FillWeight = 30 });
+        var paramCol = new DataGridViewTextBoxColumn { HeaderText = "OSC parameter name", DataPropertyName = nameof(GroupAutomationEntry.ParamName), FillWeight = 30 };
+        grid.Columns.Add(paramCol);
 
         var binding = new BindingList<GroupAutomationEntry>(_config.VrChatGroupAutomation.Groups);
         grid.DataSource = binding;
@@ -588,6 +591,37 @@ public sealed class SettingsForm : Form
         grid.CellEndEdit += (_, _) => SaveGroups();
         grid.UserDeletedRow += (_, _) => SaveGroups();
         grid.RowValidated += (_, _) => SaveGroups();
+
+        var vrchatLow = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + @"Low\VRChat\VRChat";
+        var groupIdSuggestions = new AutoCompleteStringCollection();
+        groupIdSuggestions.AddRange(AutomationSuggestionSources.ScanGroupIds(vrchatLow).ToArray());
+        var oscParamSuggestions = new AutoCompleteStringCollection();
+        oscParamSuggestions.AddRange(AutomationSuggestionSources.ScanOscBoolParams(Path.Combine(vrchatLow, "OSC")).ToArray());
+
+        grid.EditingControlShowing += (_, e) =>
+        {
+            if (e.Control is not TextBox tb) return;
+            var col = grid.CurrentCell?.OwningColumn;
+            if (col == groupCol)
+            {
+                tb.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+                tb.AutoCompleteSource = AutoCompleteSource.CustomSource;
+                tb.AutoCompleteCustomSource = groupIdSuggestions;
+            }
+            else if (col == paramCol)
+            {
+                tb.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+                tb.AutoCompleteSource = AutoCompleteSource.CustomSource;
+                tb.AutoCompleteCustomSource = oscParamSuggestions;
+            }
+            else
+            {
+                // Display name column: the editing TextBox is reused across columns, so explicitly
+                // clear autocomplete or it carries the previous column's source.
+                tb.AutoCompleteMode = AutoCompleteMode.None;
+                tb.AutoCompleteCustomSource = null;
+            }
+        };
 
         layout.Controls.Add(grid, 0, 1);
 
