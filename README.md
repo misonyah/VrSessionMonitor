@@ -63,10 +63,13 @@ read the code and adjust things for your own setup.
   bridge) a few seconds after it loads, independent of this app. Launching SlimeVR immediately
   raced that and produced two real GUI windows (confirmed live 2026-07-22); a configurable delay
   before this app's own launch attempt lets the driver's auto-launch land first.
-- **OVR Toolkit auto-launch** — launched via `steam://rungameid/<PathsConfig.OvrToolkitSteamAppId>`
-  rather than its exe path directly. A direct exe launch was found to skip OVR Toolkit's own
+- **Selectable VR overlay** — choose None, OVR Toolkit, or XSOverlay from the Settings window's overlay
+  picker (default XSOverlay). The chosen overlay launches via `steam://rungameid/<app-id>` rather
+  than its exe path directly. A direct exe launch for OVR Toolkit was found to skip its own
   admin-elevation handshake and crash shortly after starting; going through Steam's launch protocol
-  avoids that.
+  avoids that. XSOverlay must be installed for the XSOverlay option to actually launch anything.
+  Notifications are unaffected — they use SteamVR's OpenVR notifications, independent of the overlay
+  app.
 - **SteamVR in-headset toast notifications** for key auto-fix events (only when SteamVR is
   actually running).
 - **Auto-detect headset/trackers/cameras** — a Settings-tab action that ping-sweeps the LAN for a
