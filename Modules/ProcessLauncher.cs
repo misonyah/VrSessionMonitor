@@ -25,7 +25,7 @@ namespace VrSessionMonitor.Modules;
 /// didn't (as far as the OS is concerned) acquire. SemaphoreSlim has no such thread affinity and
 /// is the correct primitive for a lock that needs to survive an await.
 /// </summary>
-public sealed class ProcessLauncher
+public sealed class ProcessLauncher : IProcessLauncher
 {
     private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(30);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> LocksByProcessName = new();
@@ -196,6 +196,38 @@ public sealed class ProcessLauncher
             {
                 proc.Dispose();
             }
+        }
+    }
+
+    // --- IProcessLauncher instance members (forward to the statics that UI code still calls) ---
+
+    bool IProcessLauncher.IsRunning(string processName) => IsRunning(processName);
+
+    int? IProcessLauncher.GetProcessId(string processName) => GetProcessId(processName);
+
+    void IProcessLauncher.KillOrphanedChildIfLauncherGone(string launcherProcessName, string launcherExePath, string orphanChildProcessName)
+        => KillOrphanedChildIfLauncherGone(launcherProcessName, launcherExePath, orphanChildProcessName);
+
+    public void Kill(string processName)
+    {
+        try
+        {
+            foreach (var proc in Process.GetProcessesByName(processName))
+            {
+                try
+                {
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(5000);
+                }
+                finally
+                {
+                    proc.Dispose();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("ProcessLauncher", $"Killing {processName}.exe threw", ex);
         }
     }
 }
