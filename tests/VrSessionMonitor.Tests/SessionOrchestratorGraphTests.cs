@@ -39,7 +39,7 @@ public class SessionOrchestratorGraphTests
         foreach (var s in new[] { SessionState.HeadsetDetected, SessionState.PreflightChecks,
                                   SessionState.LaunchingApps, SessionState.WaitingForStream,
                                   SessionState.LaunchingVrChat, SessionState.LaunchingSlimeVr,
-                                  SessionState.LaunchingOvrToolkit })
+                                  SessionState.LaunchingVrOverlay })
         {
             var sm = SessionOrchestrator.BuildStateMachine(s);
             Assert.True(sm.CanFire(SessionTrigger.Fault));
@@ -59,7 +59,7 @@ public class SessionOrchestratorGraphTests
         sm.Fire(SessionTrigger.StreamConfirmed);// LaunchingApps (Steam)
         sm.Fire(SessionTrigger.VrChatPhase);    // LaunchingVrChat
         sm.Fire(SessionTrigger.SlimeVrPhase);   // LaunchingSlimeVr
-        sm.Fire(SessionTrigger.OvrPhase);       // LaunchingOvrToolkit
+        sm.Fire(SessionTrigger.VrOverlayPhase); // LaunchingVrOverlay
         sm.Fire(SessionTrigger.ChainComplete);  // Complete
         Assert.Equal(SessionState.Complete, sm.State);
     }

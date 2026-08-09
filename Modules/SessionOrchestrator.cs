@@ -8,13 +8,13 @@ using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Modules;
 
-public enum SessionState { Idle, HeadsetDetected, PreflightChecks, LaunchingApps, WaitingForStream, LaunchingVrChat, LaunchingSlimeVr, LaunchingOvrToolkit, Complete, Failed }
+public enum SessionState { Idle, HeadsetDetected, PreflightChecks, LaunchingApps, WaitingForStream, LaunchingVrChat, LaunchingSlimeVr, LaunchingVrOverlay, Complete, Failed }
 
 public enum SessionTrigger
 {
     StartSession, BeginPreflight, PreflightDone, VdLaunched,
     PingFlapDetected, AwaitStream, StreamConfirmed, StreamTimedOut,
-    VrChatPhase, SlimeVrPhase, OvrPhase, ChainComplete, Fault
+    VrChatPhase, SlimeVrPhase, VrOverlayPhase, ChainComplete, Fault
 }
 
 /// <summary>
@@ -135,10 +135,10 @@ public sealed class SessionOrchestrator
             .Permit(SessionTrigger.Fault, SessionState.Failed);
 
         sm.Configure(SessionState.LaunchingSlimeVr)
-            .Permit(SessionTrigger.OvrPhase, SessionState.LaunchingOvrToolkit)
+            .Permit(SessionTrigger.VrOverlayPhase, SessionState.LaunchingVrOverlay)
             .Permit(SessionTrigger.Fault, SessionState.Failed);
 
-        sm.Configure(SessionState.LaunchingOvrToolkit)
+        sm.Configure(SessionState.LaunchingVrOverlay)
             .Permit(SessionTrigger.ChainComplete, SessionState.Complete)
             .Permit(SessionTrigger.Fault, SessionState.Failed);
 
@@ -223,8 +223,8 @@ public sealed class SessionOrchestrator
                     await FireAsync(SessionTrigger.SlimeVrPhase);    // -> LaunchingSlimeVr
                     await LaunchSlimeVrAsync().ConfigureAwait(false);
 
-                    await FireAsync(SessionTrigger.OvrPhase);        // -> LaunchingOvrToolkit
-                    await LaunchOvrToolkitAsync().ConfigureAwait(false);
+                    await FireAsync(SessionTrigger.VrOverlayPhase);  // -> LaunchingVrOverlay
+                    await LaunchVrOverlayAsync().ConfigureAwait(false);
 
                     _launchChainCompletedForVdPid = vdPid;
                     await FireAsync(SessionTrigger.ChainComplete);   // -> Complete
@@ -476,33 +476,40 @@ public sealed class SessionOrchestrator
     }
 
     /// <summary>
-    /// Launched via steam://rungameid/&lt;OvrToolkitSteamAppId&gt; rather than through
-    /// ProcessLauncher (which requires the target to be a real file — a URL isn't one) or its exe
-    /// path directly. Confirmed live 2026-07-22: launching "OVR Toolkit.exe" directly skips
-    /// whatever elevation handshake Steam normally does for it, and it dies shortly after starting
-    /// with "Process is not running as admin or has failed to get the right elevation level!"
-    /// followed by its bridge process and WebSocket server failing. Going through Steam's own
-    /// launch protocol (same mechanism already used for the SteamVR stuck-session restart in
-    /// SteamVrMonitor.cs) avoided that entirely.
+    /// Launches the configured VR overlay (SessionFlow.VrOverlay) via steam://rungameid — the same
+    /// elevation-safe path OVR Toolkit always needed (see PathsConfig.OvrToolkitSteamAppId's doc).
+    /// None = skip. Fire-and-forget: Steam handles a not-installed app itself, so this only logs an
+    /// informational "Launching …". Notifications are unaffected (OpenVR IVRNotifications).
     /// </summary>
-    private Task LaunchOvrToolkitAsync()
+    private Task LaunchVrOverlayAsync()
     {
-        if (!_config.SessionFlow.AutoLaunchOvrToolkit) return Task.CompletedTask;
-
-        if (_launcher.IsRunning("OVR Toolkit"))
+        var (appId, processName, label) = _config.SessionFlow.VrOverlay switch
         {
-            Log.Debug("Orchestrator", "OVR Toolkit already running, skipping launch.");
+            VrOverlayChoice.OvrToolkit => (_config.Paths.OvrToolkitSteamAppId, "OVR Toolkit", "OVR Toolkit"),
+            VrOverlayChoice.XSOverlay  => (_config.Paths.XSOverlaySteamAppId, "XSOverlay", "XSOverlay"),
+            _                          => (null, null, null),
+        };
+
+        if (appId is null)
+        {
+            Log.Debug("Orchestrator", "No VR overlay selected (VrOverlay=None) — skipping overlay launch.");
             return Task.CompletedTask;
         }
 
-        Log.Info("Orchestrator", $"Launching OVR Toolkit via steam://rungameid/{_config.Paths.OvrToolkitSteamAppId}.");
+        if (_launcher.IsRunning(processName!))
+        {
+            Log.Debug("Orchestrator", $"{label} already running, skipping launch.");
+            return Task.CompletedTask;
+        }
+
+        Log.Info("Orchestrator", $"Launching {label} via steam://rungameid/{appId}.");
         try
         {
-            _launchUri($"steam://rungameid/{_config.Paths.OvrToolkitSteamAppId}");
+            _launchUri($"steam://rungameid/{appId}");
         }
         catch (Exception ex)
         {
-            Log.Error("Orchestrator", "Failed to launch OVR Toolkit via the steam:// protocol", ex);
+            Log.Error("Orchestrator", $"Failed to launch {label} via the steam:// protocol", ex);
         }
 
         return Task.CompletedTask;

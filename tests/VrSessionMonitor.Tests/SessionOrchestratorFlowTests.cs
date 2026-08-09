@@ -66,11 +66,13 @@ public class SessionOrchestratorFlowTests
         Assert.Contains("VirtualDesktop.Streamer", c.Launcher.EnsureRunningCalls);
         Assert.Contains("steam", c.Launcher.EnsureRunningCalls);
         Assert.Contains("SlimeVR", c.Launcher.EnsureRunningCalls);
-        // VRChat + OVR Toolkit go through the uri launcher (steam://rungameid). The generic
-        // "rungameid" match is satisfied by VRChat alone, so assert OVR Toolkit's app id explicitly
-        // to prove it actually launched too.
+        // VRChat + the configured VR overlay (default SessionFlow.VrOverlay = XSOverlay, per
+        // MonitorConfig) go through the uri launcher (steam://rungameid). The generic "rungameid"
+        // match is satisfied by VRChat alone, so assert the overlay's app id explicitly to prove
+        // it actually launched too. Overlay-specific selection (XSOverlay/OvrToolkit/None) is
+        // covered separately by the Overlay_* tests below.
         Assert.Contains(c.UriLaunches, u => u.Contains("rungameid"));
-        Assert.Contains(c.UriLaunches, u => u.Contains(c.Config.Paths.OvrToolkitSteamAppId));
+        Assert.Contains(c.UriLaunches, u => u.Contains(c.Config.Paths.XSOverlaySteamAppId));
         // The StateChanged stream reached the terminal Complete state.
         Assert.Contains(SessionState.Complete, c.States);
     }
@@ -152,5 +154,37 @@ public class SessionOrchestratorFlowTests
         await orch.RunSessionStartAsync();
 
         Assert.Equal(SessionState.Failed, orch.State);
+    }
+
+    [Fact]
+    public async Task Overlay_xsoverlay_launches_xsoverlay_appid()
+    {
+        var c = new Ctx();
+        c.Config.SessionFlow.VrOverlay = VrOverlayChoice.XSOverlay;
+        var orch = c.Build();
+        await orch.RunSessionStartAsync();
+        Assert.Contains(c.UriLaunches, u => u.Contains(c.Config.Paths.XSOverlaySteamAppId));
+        Assert.DoesNotContain(c.UriLaunches, u => u.Contains(c.Config.Paths.OvrToolkitSteamAppId));
+    }
+
+    [Fact]
+    public async Task Overlay_ovrtoolkit_launches_ovrtoolkit_appid()
+    {
+        var c = new Ctx();
+        c.Config.SessionFlow.VrOverlay = VrOverlayChoice.OvrToolkit;
+        var orch = c.Build();
+        await orch.RunSessionStartAsync();
+        Assert.Contains(c.UriLaunches, u => u.Contains(c.Config.Paths.OvrToolkitSteamAppId));
+    }
+
+    [Fact]
+    public async Task Overlay_none_launches_no_overlay()
+    {
+        var c = new Ctx();
+        c.Config.SessionFlow.VrOverlay = VrOverlayChoice.None;
+        var orch = c.Build();
+        await orch.RunSessionStartAsync();
+        Assert.DoesNotContain(c.UriLaunches, u => u.Contains(c.Config.Paths.XSOverlaySteamAppId));
+        Assert.DoesNotContain(c.UriLaunches, u => u.Contains(c.Config.Paths.OvrToolkitSteamAppId));
     }
 }
