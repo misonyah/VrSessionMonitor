@@ -38,6 +38,7 @@ public sealed class SettingsForm : Form
     private readonly VrcFaceTrackingLifecycleManager _vrcFtLifecycle;
     private readonly VrcOscLifecycleManager _vrcOscLifecycle;
     private readonly VirtualHereSRanipalLifecycleManager _vhSranipalLifecycle;
+    private readonly SlimeVrLifecycleManager _slimeLifecycle;
     private readonly FirmwareNotificationListener _firmwareNotify;
     private readonly SessionOrchestrator _orchestrator;
 
@@ -83,6 +84,7 @@ public sealed class SettingsForm : Form
         VrcFaceTrackingLifecycleManager vrcFtLifecycle,
         VrcOscLifecycleManager vrcOscLifecycle,
         VirtualHereSRanipalLifecycleManager vhSranipalLifecycle,
+        SlimeVrLifecycleManager slimeLifecycle,
         FirmwareNotificationListener firmwareNotify,
         SessionOrchestrator orchestrator)
     {
@@ -98,6 +100,7 @@ public sealed class SettingsForm : Form
         _vrcFtLifecycle = vrcFtLifecycle;
         _vrcOscLifecycle = vrcOscLifecycle;
         _vhSranipalLifecycle = vhSranipalLifecycle;
+        _slimeLifecycle = slimeLifecycle;
         _firmwareNotify = firmwareNotify;
         _orchestrator = orchestrator;
 
@@ -398,6 +401,7 @@ public sealed class SettingsForm : Form
         if (_faceTracking.DescribePendingAction() is string faceTrackingPending) pending.Add(faceTrackingPending);
         if (_vrcFtLifecycle.DescribePendingAction() is string vrcFtPending) pending.Add(vrcFtPending);
         if (_vhSranipalLifecycle.DescribePendingAction() is string vhSranipalPending) pending.Add(vhSranipalPending);
+        if (_slimeLifecycle.DescribePendingAction() is string slimePending) pending.Add(slimePending);
         _peripheralNextLabel.Visible = pending.Count > 0;
         if (pending.Count > 0)
             _peripheralNextLabel.Text = $"Next: {string.Join(", ", pending)}";

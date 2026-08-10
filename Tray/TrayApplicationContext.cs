@@ -23,6 +23,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly VrcFaceTrackingLifecycleManager _vrcFtLifecycle;
     private readonly VrcOscLifecycleManager _vrcOscLifecycle;
     private readonly VirtualHereSRanipalLifecycleManager _vhSranipalLifecycle;
+    private readonly SlimeVrMotionMonitor _slimeMotion;
+    private readonly SlimeVrLifecycleManager _slimeLifecycle;
     private readonly FirmwareNotificationListener _firmwareNotify;
     private readonly UpdateChecker _updateChecker;
     private readonly AdbController _adb;
@@ -75,6 +77,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrcOscLifecycle = new VrcOscLifecycleManager(_config, _vrChat);
         _vhSranipalLifecycle = new VirtualHereSRanipalLifecycleManager(
             _config, _headset, () => _faceTracking.Current.ViveCameraDevicePresent);
+        _slimeMotion = new SlimeVrMotionMonitor(_config);
+        _slimeLifecycle = new SlimeVrLifecycleManager(
+            _config,
+            () => _steamVr.Current.VrServerRunning,
+            () => _headset.IsOnline,
+            () => _slimeMotion.TrackersIdle);
         _firmwareNotify = new FirmwareNotificationListener(_config);
         _updateChecker = new UpdateChecker(_config);
         _adb = new AdbController(_config);
@@ -92,7 +100,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // see SettingsForm's own doc comment for why. Created once and shown/hidden from here on,
         // never recreated.
         _settingsForm = new SettingsForm(this, _config, _configPath, _headset, _trackers, _steamVr,
-            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _firmwareNotify, _orchestrator);
+            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _slimeLifecycle, _firmwareNotify, _orchestrator);
 
         _notifyIcon = new NotifyIcon
         {
@@ -142,6 +150,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrcFtLifecycle.Start();
         _vrcOscLifecycle.Start();
         _vhSranipalLifecycle.Start();
+        _slimeMotion.Start();
+        _slimeLifecycle.Start();
         _firmwareNotify.Start();
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient.Start();
@@ -460,6 +470,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrcFtLifecycle.Dispose();
         _vrcOscLifecycle.Dispose();
         _vhSranipalLifecycle.Dispose();
+        _slimeLifecycle.Dispose();
+        _slimeMotion.Dispose();
         _firmwareNotify.Dispose();
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantManager?.Dispose();
