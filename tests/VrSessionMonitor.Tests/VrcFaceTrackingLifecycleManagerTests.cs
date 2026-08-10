@@ -21,13 +21,11 @@ public class VrcFaceTrackingLifecycleManagerTests
         public VrcFaceTrackingLifecycleManager Build()
         {
             Config.VrcFaceTrackingLifecycle.ShutdownDelayMs = 30000;
-            // Neutralize the two paths that read REAL OS processes (Process.GetProcessesByName),
-            // which would otherwise record a phantom KillCall on this dev machine while it's running
-            // a live VRChat + VRCFaceTracking session, flaking Assert.Empty(KillCalls):
-            //   - MaxContinuousUptimeMs = 0 disables MaybeRestartForMaxUptime (via runningTick).
-            //   - MinVrChatUptimeBeforeRestartMs = int.MaxValue makes CheckVrChatRestart never fire.
-            Config.VrcFaceTrackingLifecycle.MaxContinuousUptimeMs = 0;
-            Config.VrcFaceTrackingLifecycle.MinVrChatUptimeBeforeRestartMs = int.MaxValue;
+            // CheckVrChatRestart / MaybeRestartForMaxUptime now read process start times through the
+            // launcher seam (_launcher.GetStartTime), so the fake returns null for anything not in
+            // FakeProcessLauncher.StartTimes — no real OS process is ever touched. The old
+            // MaxContinuousUptimeMs=0 / MinVrChatUptimeBeforeRestartMs=int.MaxValue workaround is no
+            // longer needed for hermeticity; leaving the shipped defaults exercises the real config.
             Mgr = new VrcFaceTrackingLifecycleManager(
                 Config, () => EyeCam, () => ViveTracker, Launcher, () => Now);
             return Mgr;
@@ -90,5 +88,38 @@ public class VrcFaceTrackingLifecycleManagerTests
         c.EyeCam = true;
         await c.Mgr.TickForTestAsync();
         Assert.Empty(c.Launcher.EnsureRunningCalls);
+    }
+
+    // These two exercise the previously-untestable start-time-comparison paths, now that they read
+    // through the launcher seam (_launcher.GetStartTime) instead of real OS Process objects.
+
+    [Fact]
+    public async Task Max_uptime_exceeded_restarts_vrcfacetracking()
+    {
+        var c = new Ctx();
+        c.Config.VrcFaceTrackingLifecycle.MaxContinuousUptimeMs = 3600000; // 1h limit
+        c.Build();
+        c.EyeCam = true;
+        await c.Mgr.TickForTestAsync();   // launches (fake marks VRCFaceTracking running)
+        // Report it as having been up for 2h — exceeds the 1h limit (compared against real DateTime.Now).
+        c.Launcher.StartTimes["VRCFaceTracking"] = DateTime.Now.AddHours(-2);
+        await c.Mgr.TickForTestAsync();   // Running-alive tick -> MaybeRestartForMaxUptime -> kill
+        Assert.Contains("VRCFaceTracking", c.Launcher.KillCalls);
+    }
+
+    [Fact]
+    public async Task Vrcfacetracking_predating_current_vrchat_is_restarted()
+    {
+        var c = new Ctx();
+        c.Config.VrcFaceTrackingLifecycle.MinVrChatUptimeBeforeRestartMs = 0; // no min-uptime gate for the test
+        c.Build();
+        // VRChat came up 1 min ago; VRCFaceTracking has been up 5 min — it predates this VRChat
+        // instance, so its OSC handshake is stale and CheckVrChatRestart should restart it.
+        c.Launcher.Running.Add("VRChat");
+        c.Launcher.Running.Add("VRCFaceTracking");
+        c.Launcher.StartTimes["VRChat"] = DateTime.Now.AddMinutes(-1);
+        c.Launcher.StartTimes["VRCFaceTracking"] = DateTime.Now.AddMinutes(-5);
+        await c.Mgr.TickForTestAsync();   // CheckVrChatRestart runs first -> kill VRCFaceTracking
+        Assert.Contains("VRCFaceTracking", c.Launcher.KillCalls);
     }
 }

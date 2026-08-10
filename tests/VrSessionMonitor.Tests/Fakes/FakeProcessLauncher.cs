@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using VrSessionMonitor.Modules;
@@ -15,6 +16,10 @@ public sealed class FakeProcessLauncher : IProcessLauncher
     /// <summary>Optional: PID returned by GetProcessId, keyed by process name.</summary>
     public readonly Dictionary<string, int?> ProcessIds = new();
 
+    /// <summary>Optional: start time returned by GetStartTime, keyed by process name. Unset = null
+    /// (i.e. "not running"), which is what the start-time comparison paths treat as a no-op.</summary>
+    public readonly Dictionary<string, DateTime?> StartTimes = new();
+
     public Task<ProcessLauncher.LaunchResult> EnsureRunningAsync(
         string processName, string exePath, string? args,
         int startupTimeoutMs, int pollIntervalMs,
@@ -31,6 +36,9 @@ public sealed class FakeProcessLauncher : IProcessLauncher
 
     public int? GetProcessId(string processName) =>
         ProcessIds.TryGetValue(processName, out var pid) ? pid : (Running.Contains(processName) ? 1 : null);
+
+    public DateTime? GetStartTime(string processName) =>
+        StartTimes.TryGetValue(processName, out var t) ? t : null;
 
     public void Kill(string processName)
     {

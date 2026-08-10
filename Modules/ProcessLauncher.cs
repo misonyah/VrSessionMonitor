@@ -30,6 +30,32 @@ public sealed class ProcessLauncher : IProcessLauncher
     private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(30);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> LocksByProcessName = new();
 
+    /// <summary>This app's own Windows session (the interactive user session for a tray app).
+    /// -1 means "couldn't determine" — in which case session-scoping is disabled and matching
+    /// falls back to the old all-sessions behavior.</summary>
+    private static readonly int CurrentSessionId = TryGetCurrentSessionId();
+
+    private static int TryGetCurrentSessionId()
+    {
+        try { using var me = Process.GetCurrentProcess(); return me.SessionId; }
+        catch { return -1; }
+    }
+
+    /// <summary>Every process this monitor launches/owns (the vhui64 CLIENT, sr_runtime, VRChat,
+    /// SlimeVR, VRCFaceTracking, the VR overlays) runs in the interactive user session — never
+    /// Session 0. Scoping all name matching to our own session stops IsRunning/Kill from ever
+    /// matching an unrelated Session-0 SERVICE that happens to share an exe name. Confirmed live
+    /// 2026-08-10: the VirtualHere USB *service* runs as vhui64.exe in Session 0, and the idle
+    /// shutdown kept trying — and failing with Win32 "Access is denied" every cycle — to kill it.
+    /// SessionId is read off the snapshot GetProcessesByName already populated; if it throws (e.g.
+    /// a protected process), treat it as "not ours".</summary>
+    private static bool InCurrentSession(Process p)
+    {
+        if (CurrentSessionId < 0) return true; // couldn't determine ours — don't filter
+        try { return p.SessionId == CurrentSessionId; }
+        catch { return false; }
+    }
+
     public sealed record LaunchResult(bool AlreadyRunning, bool Started, bool Success, string? Error);
 
     public async Task<LaunchResult> EnsureRunningAsync(
@@ -131,28 +157,56 @@ public sealed class ProcessLauncher : IProcessLauncher
 
     public static bool IsRunning(string processName)
     {
+        var procs = Process.GetProcessesByName(processName);
         try
         {
-            return Process.GetProcessesByName(processName).Length > 0;
+            return procs.Any(InCurrentSession);
         }
         catch (Exception ex)
         {
             Log.Debug("ProcessLauncher", $"GetProcessesByName({processName}) threw: {ex.Message}");
             return false;
         }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
     }
 
     public static int? GetProcessId(string processName)
     {
+        var procs = Process.GetProcessesByName(processName);
         try
         {
-            using var proc = Process.GetProcessesByName(processName).FirstOrDefault();
-            return proc?.Id;
+            return procs.FirstOrDefault(InCurrentSession)?.Id;
         }
         catch (Exception ex)
         {
             Log.Debug("ProcessLauncher", $"GetProcessesByName({processName}) threw: {ex.Message}");
             return null;
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
+    }
+
+    public static DateTime? GetStartTime(string processName)
+    {
+        var procs = Process.GetProcessesByName(processName);
+        try
+        {
+            var proc = procs.FirstOrDefault(InCurrentSession);
+            return proc?.StartTime;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("ProcessLauncher", $"GetStartTime({processName}) threw: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
         }
     }
 
@@ -181,7 +235,7 @@ public sealed class ProcessLauncher : IProcessLauncher
             try
             {
                 var modulePath = proc.MainModule?.FileName;
-                if (modulePath != null && modulePath.StartsWith(installDir, StringComparison.OrdinalIgnoreCase))
+                if (InCurrentSession(proc) && modulePath != null && modulePath.StartsWith(installDir, StringComparison.OrdinalIgnoreCase))
                 {
                     Log.Warn("ProcessLauncher",
                         $"Killing orphaned '{orphanChildProcessName}' process (PID {proc.Id}) under '{installDir}' - no live '{launcherProcessName}' launcher owns it.");
@@ -208,6 +262,8 @@ public sealed class ProcessLauncher : IProcessLauncher
     void IProcessLauncher.KillOrphanedChildIfLauncherGone(string launcherProcessName, string launcherExePath, string orphanChildProcessName)
         => KillOrphanedChildIfLauncherGone(launcherProcessName, launcherExePath, orphanChildProcessName);
 
+    DateTime? IProcessLauncher.GetStartTime(string processName) => GetStartTime(processName);
+
     public void Kill(string processName)
     {
         try
@@ -216,6 +272,7 @@ public sealed class ProcessLauncher : IProcessLauncher
             {
                 try
                 {
+                    if (!InCurrentSession(proc)) continue; // never touch a Session-0 namesake service
                     proc.Kill(entireProcessTree: true);
                     proc.WaitForExit(5000);
                 }

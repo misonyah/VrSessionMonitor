@@ -17,6 +17,12 @@ public interface IProcessLauncher
     bool IsRunning(string processName);
     int? GetProcessId(string processName);
 
+    /// <summary>Start time of the (first, current-session) process with this name, or null if none
+    /// is running. Lets start-time comparisons (VRCFaceTracking-vs-VRChat staleness, max-uptime)
+    /// go through the seam instead of touching System.Diagnostics.Process directly, so they're
+    /// unit-testable.</summary>
+    DateTime? GetStartTime(string processName);
+
     /// <summary>Kill every process with this name (entire process tree), waiting briefly for exit.
     /// Consolidates the identical GetProcessesByName(...).Kill loop the managers each hand-rolled.</summary>
     void Kill(string processName);

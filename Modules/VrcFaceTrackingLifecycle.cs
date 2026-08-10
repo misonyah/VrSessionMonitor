@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
@@ -131,29 +130,27 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
     /// </summary>
     private void CheckVrChatRestart()
     {
-        Process? vrChatProc = null;
         try
         {
-            vrChatProc = Process.GetProcessesByName("VRChat").FirstOrDefault();
-            if (vrChatProc is null) return; // nothing running to compare against right now
+            var vrChatStart = _launcher.GetStartTime("VRChat");
+            if (vrChatStart is null) return; // nothing running to compare against right now
 
-            var vrChatStart = vrChatProc.StartTime;
             if (_refreshedForVrChatStartTime == vrChatStart) return; // already handled this exact VRChat instance
 
-            var vrChatUptime = DateTime.Now - vrChatStart;
+            var vrChatUptime = DateTime.Now - vrChatStart.Value;
             var minUptime = TimeSpan.FromMilliseconds(_config.VrcFaceTrackingLifecycle.MinVrChatUptimeBeforeRestartMs);
             if (vrChatUptime < minUptime) return; // give VRChat's own OSC service time to come up before forcing a handshake retry
 
-            using var vrcft = Process.GetProcessesByName("VRCFaceTracking").FirstOrDefault();
-            if (vrcft is null) return; // nothing running to be stale; leave unmarked so a later launch still gets checked
+            var vrcftStart = _launcher.GetStartTime("VRCFaceTracking");
+            if (vrcftStart is null) return; // nothing running to be stale; leave unmarked so a later launch still gets checked
 
-            if (vrcft.StartTime >= vrChatStart)
+            if (vrcftStart.Value >= vrChatStart.Value)
             {
                 _refreshedForVrChatStartTime = vrChatStart; // VRCFaceTracking is fresher than this VRChat instance — nothing to do
                 return;
             }
 
-            Log.Warn("VrcFtLifecycle", $"VRCFaceTracking (started {vrcft.StartTime:HH:mm:ss}) predates the currently-running VRChat instance (started {vrChatStart:HH:mm:ss}) — its OSC handshake is likely stale or was never established against it. Restarting it.");
+            Log.Warn("VrcFtLifecycle", $"VRCFaceTracking (started {vrcftStart.Value:HH:mm:ss}) predates the currently-running VRChat instance (started {vrChatStart.Value:HH:mm:ss}) — its OSC handshake is likely stale or was never established against it. Restarting it.");
             SteamVrNotifier.TryNotify(_config, "Restarting VRCFaceTracking (stale against current VRChat instance)");
 
             _launcher.Kill("VRCFaceTracking");
@@ -163,10 +160,6 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         catch (Exception ex)
         {
             Log.Debug("VrcFtLifecycle", $"VRChat-restart check threw: {ex.Message}");
-        }
-        finally
-        {
-            vrChatProc?.Dispose();
         }
     }
 
@@ -181,27 +174,13 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         var maxUptimeMs = _config.VrcFaceTrackingLifecycle.MaxContinuousUptimeMs;
         if (maxUptimeMs <= 0) return; // 0 = disabled
 
-        Process? proc = null;
-        try
-        {
-            proc = Process.GetProcessesByName("VRCFaceTracking").FirstOrDefault();
-            if (proc is null) return;
+        var start = _launcher.GetStartTime("VRCFaceTracking");
+        if (start is null) return;
 
-            var uptime = DateTime.Now - proc.StartTime;
-            if (uptime.TotalMilliseconds < maxUptimeMs) return;
+        var uptime = DateTime.Now - start.Value;
+        if (uptime.TotalMilliseconds < maxUptimeMs) return;
 
-            Log.Warn("VrcFtLifecycle", $"VRCFaceTracking.exe has been running continuously for {uptime.TotalHours:F1}h (limit {maxUptimeMs / 3600000.0:F1}h) — restarting it preventively before it can silently wedge its OSC output. It'll relaunch fresh on the next check since a tracker is still present.");
-        }
-        catch (Exception ex)
-        {
-            Log.Debug("VrcFtLifecycle", $"Checking VRCFaceTracking.exe uptime threw: {ex.Message}");
-            return;
-        }
-        finally
-        {
-            proc?.Dispose();
-        }
-
+        Log.Warn("VrcFtLifecycle", $"VRCFaceTracking.exe has been running continuously for {uptime.TotalHours:F1}h (limit {maxUptimeMs / 3600000.0:F1}h) — restarting it preventively before it can silently wedge its OSC output. It'll relaunch fresh on the next check since a tracker is still present.");
         SteamVrNotifier.TryNotify(_config, "Restarting VRCFaceTracking (preventive, long uptime)");
         try
         {
@@ -228,10 +207,10 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         var maxUptimeMs = _config.VrcFaceTrackingLifecycle.MaxContinuousUptimeMs;
         if (maxUptimeMs > 0 && _machine.State == PresenceState.Running)
         {
-            using var proc = Process.GetProcessesByName("VRCFaceTracking").FirstOrDefault();
-            if (proc is not null)
+            var start = _launcher.GetStartTime("VRCFaceTracking");
+            if (start is not null)
             {
-                var remaining = TimeSpan.FromMilliseconds(maxUptimeMs) - (DateTime.Now - proc.StartTime);
+                var remaining = TimeSpan.FromMilliseconds(maxUptimeMs) - (DateTime.Now - start.Value);
                 if (remaining > TimeSpan.Zero)
                     return $"preventive restart due in {FormatDuration(remaining)}";
             }
