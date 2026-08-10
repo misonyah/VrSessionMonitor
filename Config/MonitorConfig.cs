@@ -254,6 +254,25 @@ public sealed class VirtualHereSRanipalLifecycleConfig
     public int ShutdownDelayMs { get; set; } = 300000; // 5 minutes
 }
 
+public sealed class SlimeVrLifecycleConfig
+{
+    /// <summary>Auto-stop SlimeVR (slimevr.exe + its java child) once you're done with VR.
+    /// "Done" = SteamVR not running AND headset offline AND the trackers have been motionless for
+    /// IdleWindowMs — all three, held for ShutdownDelayMs. This manager only STOPS SlimeVR;
+    /// launching stays with SessionOrchestrator.</summary>
+    public bool Enabled { get; set; } = true;
+    /// <summary>How long all three signals (SteamVR off, headset off, trackers idle) must stay
+    /// inactive before SlimeVR is stopped. Matches VirtualHereSRanipalLifecycle's 5 min.</summary>
+    public int ShutdownDelayMs { get; set; } = 300000;
+    /// <summary>How often to poll SlimeVR's SolarXR WebSocket for tracker rotations.</summary>
+    public int PollIntervalMs { get; set; } = 2000;
+    /// <summary>Trackers must stay within IdleAngleThresholdDeg for this long to count as idle.</summary>
+    public int IdleWindowMs { get; set; } = 120000;
+    /// <summary>Per-tracker angular change (degrees) under this over the window = "still". Set above
+    /// the IMU noise floor so a resting-but-powered tracker reads as idle.</summary>
+    public double IdleAngleThresholdDeg { get; set; } = 2.0;
+}
+
 public sealed class PathsConfig
 {
     public string SteamExe { get; set; } = @"C:\Program Files (x86)\Steam\steam.exe";
@@ -523,6 +542,7 @@ public sealed class MonitorConfig
     public VrcFaceTrackingLifecycleConfig VrcFaceTrackingLifecycle { get; set; } = new();
     public VrcOscLifecycleConfig VrcOscLifecycle { get; set; } = new();
     public VirtualHereSRanipalLifecycleConfig VirtualHereSRanipalLifecycle { get; set; } = new();
+    public SlimeVrLifecycleConfig SlimeVrLifecycle { get; set; } = new();
     public SessionFlowConfig SessionFlow { get; set; } = new();
     public VrChatGroupAutomationConfig VrChatGroupAutomation { get; set; } = new();
     public List<TrackerConfig> Trackers { get; set; } = new();
