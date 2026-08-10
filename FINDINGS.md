@@ -212,7 +212,7 @@ Fixes driven directly by the findings above — see individual doc comments in t
   `1068820`/`PathsConfig.OvrToolkitSteamAppId`, XSOverlay `1173510`/`PathsConfig.XSOverlaySteamAppId`)
   rather than through `ProcessLauncher` (which requires a real file path, not a URL) or the exe
   directly (which hits the elevation bug above). Chosen from the Settings tab's overlay dropdown,
-  replacing the old single `AutoLaunchOvrToolkit` toggle.
+  replacing the old single-overlay (OVR-Toolkit-only) auto-launch toggle.
 
 All compiled clean (verified via a scratch `-o` build directory, since the live tray process
 still had the real `bin/` output locked at the time).

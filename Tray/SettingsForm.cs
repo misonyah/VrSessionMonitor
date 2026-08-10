@@ -490,7 +490,7 @@ public sealed class SettingsForm : Form
             v => { _config.SessionFlow.AutoLaunchVrChat = v; _config.Save(_configPath); }));
         var overlayRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         overlayRow.Controls.Add(new Label { Text = "VR overlay to auto-start:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
-        var overlayCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+        var overlayCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140, FormattingEnabled = true };
         overlayCombo.Format += (_, e) =>
         {
             if (e.ListItem is VrOverlayChoice c)
