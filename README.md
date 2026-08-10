@@ -1,5 +1,7 @@
 # VR Session Monitor
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/misonyah)
+
 A Windows tray app that watches a PCVR session end-to-end — headset, SlimeVR trackers, eye/face
 tracking, SteamVR, VRChat — and automatically launches, self-heals, and reports on all of it. It
 replaces a set of fragile `.cmd` scripts (headset detection via port-sniffing, no real launch
