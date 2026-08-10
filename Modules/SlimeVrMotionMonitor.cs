@@ -31,8 +31,11 @@ namespace VrSessionMonitor.Modules;
 /// the loop continues; nothing here is allowed to throw out of the poll loop. Logged at
 /// Debug/Trace only so a not-running SlimeVR doesn't spam Info/Warn.
 ///
-/// UNTESTED against a live server as of 2026-08-10 (see SlimeVrDiscovery for the same caveat on the
-/// connect/parse shape this mirrors) — live verification is Task 5 of the SlimeVR auto-stop plan.
+/// Confirmed live 2026-08-11 (Task 5 of the SlimeVR auto-stop plan): SyntheticTrackers reliably
+/// returns real tracker rotations (14 on this rig) every poll. See FetchRotationsAsync and
+/// ParseRotations for two live-only issues this uncovered and worked around: an unsolicited
+/// legacy JSON frame sent on every connect, and a parse failure isolated to the redundant
+/// per-device Trackers vector.
 /// </summary>
 public sealed class SlimeVrMotionMonitor : IDisposable
 {
@@ -138,21 +141,41 @@ public sealed class SlimeVrMotionMonitor : IDisposable
             var request = BuildPollRotationsRequest();
             await ws.SendAsync(request, WebSocketMessageType.Binary, endOfMessage: true, cts.Token).ConfigureAwait(false);
 
-            using var ms = new MemoryStream();
             var buffer = new byte[8192];
-            WebSocketReceiveResult received;
-            do
-            {
-                received = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token).ConfigureAwait(false);
-                if (received.MessageType == WebSocketMessageType.Close)
-                {
-                    Log.Debug("SlimeVrMotion", "SlimeVR closed the connection before replying.");
-                    return result;
-                }
-                ms.Write(buffer, 0, received.Count);
-            } while (!received.EndOfMessage);
 
-            result = ParseRotations(ms.ToArray());
+            // Confirmed live 2026-08-11: on every new connection SlimeVR immediately pushes an
+            // unsolicited legacy JSON "config" text frame (e.g.
+            // {"type":"config","tracker_id":"SlimeVR Tracker 1","location":"hmd",...}) ahead of
+            // the actual PollDataFeed reply — unrelated to SolarXR/FlatBuffers, seemingly one
+            // per known tracker. The original single-receive version treated whatever arrived
+            // first as the FlatBuffers response and threw (ArgumentOutOfRangeException) trying to
+            // parse JSON text as a binary MessageBundle on every single poll. Loop over logical WS
+            // messages, discarding non-Binary frames, until the real reply shows up or the shared
+            // PollTimeoutMs budget (via cts) runs out.
+            while (true)
+            {
+                using var ms = new MemoryStream();
+                WebSocketReceiveResult received;
+                do
+                {
+                    received = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token).ConfigureAwait(false);
+                    if (received.MessageType == WebSocketMessageType.Close)
+                    {
+                        Log.Debug("SlimeVrMotion", "SlimeVR closed the connection before replying.");
+                        return result;
+                    }
+                    ms.Write(buffer, 0, received.Count);
+                } while (!received.EndOfMessage);
+
+                if (received.MessageType != WebSocketMessageType.Binary)
+                {
+                    Log.Trace("SlimeVrMotion", $"Ignoring non-binary WS message ({received.MessageType}, {ms.Length} bytes) while waiting for the PollDataFeed reply.");
+                    continue;
+                }
+
+                result = ParseRotations(ms.ToArray());
+                break;
+            }
         }
         finally
         {
@@ -212,16 +235,34 @@ public sealed class SlimeVrMotionMonitor : IDisposable
                     rotations.Add(new TrackerRotation(trackerId++, quat.X, quat.Y, quat.Z, quat.W));
             }
 
-            for (var d = 0; d < update.DevicesLength; d++)
+            // Confirmed live 2026-08-11: SyntheticTrackers (SlimeVR's own fused/computed skeleton
+            // trackers) parses cleanly end-to-end and is sufficient on its own for idle detection.
+            // The separate per-device Trackers vector (DeviceDataMask.TrackerData, a redundant
+            // backup path also requested above) threw ArgumentOutOfRangeException accessing
+            // Devices(0) against a live SlimeVR server with several physical trackers connected —
+            // root cause not fully isolated (looked like a valid vtable/vector up through
+            // DevicesLength, but indirecting into element 0 read out of bounds; possibly a
+            // build-vs-server SolarXR schema drift specific to DeviceData/HardwareInfo, since
+            // SyntheticTrackers's TrackerData shares the same struct layout and parses fine).
+            // Isolated in its own try/catch so a Devices-vector problem can never discard the
+            // SyntheticTrackers rotations already collected above — see task-5-report.md.
+            try
             {
-                var device = update.Devices(d);
-                if (device is null) continue;
-
-                for (var t = 0; t < device.Value.TrackersLength; t++)
+                for (var d = 0; d < update.DevicesLength; d++)
                 {
-                    if (device.Value.Trackers(t)?.Rotation is { } quat)
-                        rotations.Add(new TrackerRotation(trackerId++, quat.X, quat.Y, quat.Z, quat.W));
+                    var device = update.Devices(d);
+                    if (device is null) continue;
+
+                    for (var t = 0; t < device.Value.TrackersLength; t++)
+                    {
+                        if (device.Value.Trackers(t)?.Rotation is { } quat)
+                            rotations.Add(new TrackerRotation(trackerId++, quat.X, quat.Y, quat.Z, quat.W));
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("SlimeVrMotion", $"Per-device Trackers vector failed to parse (keeping {rotations.Count} SyntheticTrackers rotation(s) already read): {ex.Message}");
             }
         }
 
