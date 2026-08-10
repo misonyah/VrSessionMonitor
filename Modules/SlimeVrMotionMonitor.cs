@@ -66,8 +66,13 @@ public sealed class SlimeVrMotionMonitor : IDisposable
 
     public void Stop()
     {
-        _cts?.Cancel();
+        var cts = _cts;
+        _cts = null;
+        if (cts is null) return;
+
+        try { cts.Cancel(); } catch (ObjectDisposedException) { /* already disposed */ }
         try { _loopTask?.Wait(2000); } catch { /* ignore */ }
+        cts.Dispose();
         Log.Info("SlimeVrMotion", "Stopped.");
     }
 
@@ -75,7 +80,11 @@ public sealed class SlimeVrMotionMonitor : IDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            await PollOnceAsync(token).ConfigureAwait(false);
+            // Belt-and-suspenders: PollOnceAsync already guards its own body end-to-end, but this
+            // outer guard means a future edit inside PollOnceAsync can't silently kill the loop.
+            try { await PollOnceAsync(token).ConfigureAwait(false); }
+            catch (Exception ex) { Log.Debug("SlimeVrMotion", $"Poll cycle threw, continuing: {ex.Message}"); }
+
             try { await Task.Delay(_config.SlimeVrLifecycle.PollIntervalMs, token).ConfigureAwait(false); }
             catch (TaskCanceledException) { break; }
         }
@@ -83,22 +92,27 @@ public sealed class SlimeVrMotionMonitor : IDisposable
 
     private async Task PollOnceAsync(CancellationToken token)
     {
+        // Entire body guarded — including Observe/TrackersIdle/logging — so nothing here (not just
+        // the fetch) can ever throw out of the poll loop. Never let a connect/send/receive/parse or
+        // detector failure escape unnoticed; treat it exactly like an empty (idle) snapshot.
         List<TrackerRotation> rotations;
         try
         {
             rotations = await FetchRotationsAsync(token).ConfigureAwait(false);
+
+            _lastRotationCount = rotations.Count;
+            _detector.Observe(rotations, DateTime.UtcNow);
+            TrackersIdle = _detector.IsIdle;
+            Log.Trace("SlimeVrMotion", $"Observed {rotations.Count} tracker rotation(s) -> TrackersIdle={TrackersIdle}");
         }
         catch (Exception ex)
         {
-            // Never let a connect/send/receive/parse failure escape the poll loop.
             Log.Debug("SlimeVrMotion", $"Poll threw, treating as empty (idle): {ex.Message}");
             rotations = new List<TrackerRotation>();
+            _lastRotationCount = rotations.Count;
+            _detector.Observe(rotations, DateTime.UtcNow);
+            TrackersIdle = _detector.IsIdle;
         }
-
-        _lastRotationCount = rotations.Count;
-        _detector.Observe(rotations, DateTime.UtcNow);
-        TrackersIdle = _detector.IsIdle;
-        Log.Trace("SlimeVrMotion", $"Observed {rotations.Count} tracker rotation(s) -> TrackersIdle={TrackersIdle}");
     }
 
     private async Task<List<TrackerRotation>> FetchRotationsAsync(CancellationToken ct)
@@ -225,7 +239,8 @@ public sealed class SlimeVrMotionMonitor : IDisposable
 
     public void Dispose()
     {
+        // Stop() itself is idempotent (guards on _cts being null) and already disposes the CTS, so
+        // Dispose() is safe to call more than once (and safe to call after an explicit Stop()).
         Stop();
-        _cts?.Dispose();
     }
 }
