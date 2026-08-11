@@ -65,6 +65,17 @@ read the code and adjust things for your own setup.
   bridge) a few seconds after it loads, independent of this app. Launching SlimeVR immediately
   raced that and produced two real GUI windows (confirmed live 2026-07-22); a configurable delay
   before this app's own launch attempt lets the driver's auto-launch land first.
+- **SlimeVR auto-stop** — SlimeVR's server (and its detached `java` child) is launched as part of
+  session start but was never stopped, leaving the server holding its ports long after you're done.
+  Once you're clearly finished — SteamVR off **and** headset offline **and** the trackers sitting
+  motionless — it stops SlimeVR after a delay (5 min by default). "Done" means all three at once,
+  held continuously, so it can't fire mid-session; trackers-idle is read from SlimeVR's own SolarXR
+  WebSocket (per-tracker rotation, idle = no orientation change beyond a small threshold over a
+  sustained window), with "no trackers reporting" also counting as idle. It only ever *stops*
+  SlimeVR — launching stays owned by the session-start flow — so it never fights the launcher, and
+  never powers off the physical trackers (battery devices, out of software reach). Confirmed live
+  2026-08-12: after a real session end it went idle → shutting-down at the 2-minute idle-window
+  mark and killed the server + `java` child exactly 5 minutes later, on schedule.
 - **Selectable VR overlay** — choose None, OVR Toolkit, or XSOverlay from the Settings window's overlay
   picker (default XSOverlay). The chosen overlay launches via `steam://rungameid/<app-id>` rather
   than its exe path directly. A direct exe launch for OVR Toolkit was found to skip its own
@@ -247,7 +258,7 @@ sections: `Network`, `Polling`, `Paths`, `Updates`, `Adb`, `HomeAssistant` (only
 include the feature — see above), `EyeCameraAutoRestart`, `EyeTrackingOscFreshness`,
 `BaballoniaLifecycle`, `FaceTrackingAutoFix` (includes the `OscFreshness*` fields),
 `SRanipalService`, `SteamVrStuckSession`, `VrcFaceTrackingLifecycle`, `VrcOscLifecycle`,
-`SessionFlow`, `VrChatGroupAutomation` (only in builds that include the Home Assistant feature —
+`SlimeVrLifecycle`, `SessionFlow`, `VrChatGroupAutomation` (only in builds that include the Home Assistant feature —
 see above), `Trackers` (a list), `EyeCameras` (a list). Every field has a doc comment on its
 C# property in `Config/MonitorConfig.cs` explaining what it does and, where relevant, why it has
 the default value it does.
