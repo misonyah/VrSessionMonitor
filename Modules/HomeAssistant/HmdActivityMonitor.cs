@@ -137,10 +137,13 @@ public sealed class HmdActivityMonitor : IDisposable
         if (!TryReadActivityLevel(out var level))
             return; // SteamVR not running, DLL missing, or a transient read failure — leave IsUserPresent at its last known value
 
-        // UserInteraction is the only level meaning "actually being worn and used right now" —
-        // Idle/*_Timeout/Standby/Unknown all mean the runtime judged the headset not actively in
-        // use, which is exactly what AFK should track.
-        var present = level == EDeviceActivityLevel.UserInteraction;
+        // "Present" = the headset is being WORN, whether or not you're mid-motion. UserInteraction
+        // is active movement; UserInteraction_Timeout is "was active within the last ~timeout window"
+        // — you've gone still (reading the SteamVR dashboard/overlay, or just not moving) but are
+        // STILL wearing it. Only Idle/Standby/Idle_Timeout/Unknown mean the headset is actually off
+        // your head or idle-long, which is the real AFK to track. Treating UserInteraction_Timeout
+        // as absent used to false-trigger AFK the moment you opened the SteamVR overlay.
+        var present = level is EDeviceActivityLevel.UserInteraction or EDeviceActivityLevel.UserInteraction_Timeout;
 
         if (present == IsUserPresent)
         {
