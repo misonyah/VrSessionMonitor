@@ -247,6 +247,13 @@ public sealed class VrcOscLifecycleConfig
     /// relaunching) VRCOSC across a quick VRChat restart, which would otherwise bounce its OSC
     /// connection for no reason.</summary>
     public int ShutdownDelayMs { get; set; } = 30000;
+
+    /// <summary>When true (default), auto-click "Yes" on VRCOSC's own "Update Available" dialog so
+    /// it applies the update itself instead of sitting there blocking, waiting for a manual click.
+    /// Handled by UI Automation against the dialog window (same approach as the Baballonia camera
+    /// buttons). Set false to leave the prompt alone (dismiss it yourself, or handle updates
+    /// manually).</summary>
+    public bool AutoAcceptUpdatePrompt { get; set; } = true;
 }
 
 /// <summary>Added 2026-08-09 after vhui64.exe/sr_runtime.exe were found running indefinitely with
