@@ -62,6 +62,15 @@ public sealed class SlimeVrMotionMonitor : IDisposable
 
     public void Start()
     {
+        // When the auto-stop feature is off there's no consumer for TrackersIdle, so don't open a
+        // WebSocket to SlimeVR and poll it every couple seconds for nothing. TrackersIdle stays at
+        // its safe default (true); SlimeVrLifecycleManager is likewise disabled and never reads it.
+        if (!_config.SlimeVrLifecycle.Enabled)
+        {
+            Log.Info("SlimeVrMotion", "SlimeVrLifecycle disabled — not polling SolarXR for tracker motion.");
+            return;
+        }
+
         _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => LoopAsync(_cts.Token));
         Log.Info("SlimeVrMotion", $"Started. Polling ws://{Host}:{Port} every {_config.SlimeVrLifecycle.PollIntervalMs}ms.");
@@ -215,7 +224,10 @@ public sealed class SlimeVrMotionMonitor : IDisposable
         return new ArraySegment<byte>(builder.SizedByteArray());
     }
 
-    private static List<TrackerRotation> ParseRotations(byte[] data)
+    // internal (not private) so SlimeVrMotionMonitorParseTests can exercise the binary parse — the
+    // JSON-frame-skip in FetchRotationsAsync and the synthetic-vs-device selection here are the two
+    // live-only issues Task 5 uncovered, and this is their regression net.
+    internal static List<TrackerRotation> ParseRotations(byte[] data)
     {
         var rotations = new List<TrackerRotation>();
         var bundle = MessageBundle.GetRootAsMessageBundle(new ByteBuffer(data));
@@ -229,40 +241,45 @@ public sealed class SlimeVrMotionMonitor : IDisposable
 
             var update = header.Value.MessageAsDataFeedUpdate();
 
+            var syntheticBefore = rotations.Count;
             for (var j = 0; j < update.SyntheticTrackersLength; j++)
             {
                 if (update.SyntheticTrackers(j)?.Rotation is { } quat)
                     rotations.Add(new TrackerRotation(trackerId++, quat.X, quat.Y, quat.Z, quat.W));
             }
 
-            // Confirmed live 2026-08-11: SyntheticTrackers (SlimeVR's own fused/computed skeleton
-            // trackers) parses cleanly end-to-end and is sufficient on its own for idle detection.
-            // The separate per-device Trackers vector (DeviceDataMask.TrackerData, a redundant
-            // backup path also requested above) threw ArgumentOutOfRangeException accessing
-            // Devices(0) against a live SlimeVR server with several physical trackers connected —
-            // root cause not fully isolated (looked like a valid vtable/vector up through
-            // DevicesLength, but indirecting into element 0 read out of bounds; possibly a
-            // build-vs-server SolarXR schema drift specific to DeviceData/HardwareInfo, since
-            // SyntheticTrackers's TrackerData shares the same struct layout and parses fine).
-            // Isolated in its own try/catch so a Devices-vector problem can never discard the
-            // SyntheticTrackers rotations already collected above — see task-5-report.md.
-            try
+            // The per-device Trackers vector (DeviceDataMask.TrackerData) is only a FALLBACK for a
+            // server that doesn't populate SyntheticTrackers — so only touch it when this update's
+            // synthetic pass yielded nothing. Confirmed live 2026-08-11: SyntheticTrackers (SlimeVR's
+            // own fused/computed skeleton trackers) parses cleanly and is populated on a normal rig
+            // (14 on this one), which used to mean the block below still ran every poll and threw
+            // ArgumentOutOfRangeException indirecting into Devices(0) — a swallowed exception + Debug
+            // line on a ~2s cadence, forever, for data we never needed. Root cause of that throw was
+            // never fully isolated (looked like a valid vector through DevicesLength, but element 0
+            // read out of bounds; likely a build-vs-server SolarXR schema drift specific to
+            // DeviceData/HardwareInfo, since SyntheticTrackers's TrackerData shares the struct layout
+            // and parses fine). Kept as a guarded fallback so a synthetic-empty server still yields
+            // rotations, and still isolated so a Devices problem can never discard synthetic ones.
+            if (rotations.Count == syntheticBefore)
             {
-                for (var d = 0; d < update.DevicesLength; d++)
+                try
                 {
-                    var device = update.Devices(d);
-                    if (device is null) continue;
-
-                    for (var t = 0; t < device.Value.TrackersLength; t++)
+                    for (var d = 0; d < update.DevicesLength; d++)
                     {
-                        if (device.Value.Trackers(t)?.Rotation is { } quat)
-                            rotations.Add(new TrackerRotation(trackerId++, quat.X, quat.Y, quat.Z, quat.W));
+                        var device = update.Devices(d);
+                        if (device is null) continue;
+
+                        for (var t = 0; t < device.Value.TrackersLength; t++)
+                        {
+                            if (device.Value.Trackers(t)?.Rotation is { } quat)
+                                rotations.Add(new TrackerRotation(trackerId++, quat.X, quat.Y, quat.Z, quat.W));
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Log.Debug("SlimeVrMotion", $"Per-device Trackers vector failed to parse (keeping {rotations.Count} SyntheticTrackers rotation(s) already read): {ex.Message}");
+                catch (Exception ex)
+                {
+                    Log.Debug("SlimeVrMotion", $"Per-device Trackers fallback failed to parse (synthetic was empty; {rotations.Count} rotation(s) so far): {ex.Message}");
+                }
             }
         }
 

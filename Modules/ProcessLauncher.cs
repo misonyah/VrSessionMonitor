@@ -230,12 +230,21 @@ public sealed class ProcessLauncher : IProcessLauncher
         if (installDir == null)
             return;
 
+        // Match against the install dir WITH a trailing separator, so a sibling directory whose
+        // name is a superset of this one — e.g. a "...\common\SlimeVR2\jre\bin\java.exe" against
+        // this launcher's "...\common\SlimeVR" — can't satisfy StartsWith and get an unrelated
+        // process killed. This reap is the one place a name-matched process is force-killed, so the
+        // path scope has to be exact.
+        var installDirPrefix = installDir.EndsWith(Path.DirectorySeparatorChar)
+            ? installDir
+            : installDir + Path.DirectorySeparatorChar;
+
         foreach (var proc in Process.GetProcessesByName(orphanChildProcessName))
         {
             try
             {
                 var modulePath = proc.MainModule?.FileName;
-                if (InCurrentSession(proc) && modulePath != null && modulePath.StartsWith(installDir, StringComparison.OrdinalIgnoreCase))
+                if (InCurrentSession(proc) && modulePath != null && modulePath.StartsWith(installDirPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                     Log.Warn("ProcessLauncher",
                         $"Killing orphaned '{orphanChildProcessName}' process (PID {proc.Id}) under '{installDir}' - no live '{launcherProcessName}' launcher owns it.");
