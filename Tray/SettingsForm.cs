@@ -522,6 +522,10 @@ public sealed class SettingsForm : Form
             v => { _config.BaballoniaLifecycle.Enabled = v; _config.Save(_configPath); }));
         layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCFaceTracking", _config.VrcFaceTrackingLifecycle.Enabled,
             v => { _config.VrcFaceTrackingLifecycle.Enabled = v; _config.Save(_configPath); }));
+        layout.Controls.Add(BuildCheckbox("Auto-heal face tracking (restart SRanipal + VRCFaceTracking when it stalls/freezes)", _config.FaceTrackingAutoFix.Enabled,
+            v => { _config.FaceTrackingAutoFix.Enabled = v; _config.Save(_configPath); }));
+        layout.Controls.Add(BuildCheckbox("Restart face tracking when the Vive camera attaches late", _config.FaceTrackingAutoFix.RestartOnCameraReappear,
+            v => { _config.FaceTrackingAutoFix.RestartOnCameraReappear = v; _config.Save(_configPath); }));
         layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCOSC", _config.VrcOscLifecycle.Enabled,
             v => { _config.VrcOscLifecycle.Enabled = v; _config.Save(_configPath); }));
         layout.Controls.Add(BuildCheckbox("Start with Windows", WindowsStartup.IsEnabled(),
