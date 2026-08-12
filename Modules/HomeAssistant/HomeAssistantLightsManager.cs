@@ -81,8 +81,14 @@ public sealed class HomeAssistantLightsManager : IDisposable
             if (action == LightAction.NoChange) continue;
 
             var service = action == LightAction.On ? "turn_on" : "turn_off";
-            var ok = await _client.CallServiceAsync("light", service, entityId).ConfigureAwait(false);
-            Log.Info("HomeAssistant", $"{entityId} -> {service}: {(ok ? "ok" : "failed")}");
+            // Force the command through even when HA already reports the light 'on': light.turn_on
+            // with no attributes gets optimized away by HA, so a Zigbee-desynced bulb that's
+            // physically off (while HA's cached state says on) never relights. Sending brightness
+            // guarantees a real device command; brightness_pct=100 also puts the session "on" scene
+            // at full. (A light with no brightness support simply ignores it.)
+            object? serviceData = action == LightAction.On ? new { brightness_pct = 100 } : null;
+            var ok = await _client.CallServiceAsync("light", service, entityId, serviceData).ConfigureAwait(false);
+            Log.Info("HomeAssistant", $"{entityId} -> {service}{(serviceData is null ? "" : " @100%")}: {(ok ? "ok" : "failed")}");
         }
     }
 

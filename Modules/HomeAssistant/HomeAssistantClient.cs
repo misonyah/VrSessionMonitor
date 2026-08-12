@@ -132,12 +132,14 @@ public sealed class HomeAssistantClient : IDisposable
         }
     }
 
-    public async Task<bool> CallServiceAsync(string domain, string service, string entityId, CancellationToken token = default)
+    public async Task<bool> CallServiceAsync(string domain, string service, string entityId, object? serviceData = null, CancellationToken token = default)
     {
         try
         {
             var id = Interlocked.Increment(ref _nextId);
-            var command = new { id, type = "call_service", domain, service, target = new { entity_id = entityId } };
+            object command = serviceData is null
+                ? new { id, type = "call_service", domain, service, target = new { entity_id = entityId } }
+                : new { id, type = "call_service", domain, service, service_data = serviceData, target = new { entity_id = entityId } };
             var result = await SendCommandAsync(id, command, token).ConfigureAwait(false);
             var success = result.TryGetProperty("success", out var s) && s.GetBoolean();
             if (!success)
