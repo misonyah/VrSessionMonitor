@@ -591,10 +591,11 @@ public sealed class SettingsForm : Form
         header.Controls.Add(new Label
         {
             Text = "Toggles an avatar OSC bool parameter true while you're in a matching VRChat\n" +
-                   "group's instance, false otherwise. Detected from VRChat's own log file - no\n" +
-                   "login needed. Restart the app after changing this list for it to take effect.\n" +
-                   "Tick Represent to also set that group as your VRChat represented group while\n" +
-                   "you're in it (needs VRCX running and logged in).",
+                   "group's instance, false otherwise. Type a group by name, short code, or grp_ ID\n" +
+                   "in the Group column — names/codes autocomplete and resolve to the ID for you\n" +
+                   "(that needs VRCX running + logged in; grp_ IDs also come from VRChat's logs).\n" +
+                   "Restart the app after changing this list for it to take effect. Tick Represent to\n" +
+                   "also set that group as your VRChat represented group while you're in it.",
             AutoSize = true,
             Margin = new Padding(12, 3, 3, 3),
         });
@@ -608,9 +609,10 @@ public sealed class SettingsForm : Form
             AllowUserToDeleteRows = true,
             RowHeadersVisible = false,
         };
-        var groupCol = new DataGridViewTextBoxColumn { HeaderText = "Group ID (grp_...)", DataPropertyName = nameof(GroupAutomationEntry.GroupId), FillWeight = 40 };
+        var groupCol = new DataGridViewTextBoxColumn { HeaderText = "Group (name, code, or grp_ ID)", DataPropertyName = nameof(GroupAutomationEntry.GroupId), FillWeight = 40 };
         grid.Columns.Add(groupCol);
-        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Display name", DataPropertyName = nameof(GroupAutomationEntry.DisplayName), FillWeight = 30 });
+        var nameCol = new DataGridViewTextBoxColumn { HeaderText = "Display name", DataPropertyName = nameof(GroupAutomationEntry.DisplayName), FillWeight = 30 };
+        grid.Columns.Add(nameCol);
         var paramCol = new DataGridViewTextBoxColumn { HeaderText = "OSC parameter name", DataPropertyName = nameof(GroupAutomationEntry.ParamName), FillWeight = 30 };
         grid.Columns.Add(paramCol);
         grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Represent", DataPropertyName = nameof(GroupAutomationEntry.Represent), FillWeight = 15 });
@@ -619,7 +621,29 @@ public sealed class SettingsForm : Form
         grid.DataSource = binding;
 
         void SaveGroups() => _config.Save(_configPath);
-        grid.CellEndEdit += (_, _) => SaveGroups();
+
+        // The Group column accepts a name, short code, or grp_ id. When a committed value matches one
+        // of your groups by name/code (populated below from the VRChat API via VRCX), resolve it to
+        // the grp_ id in place and fill Display name if it's blank — so you never have to paste a raw
+        // grp_ id. A value already starting with grp_, or one we don't recognize, is left untouched.
+        var groupsByKey = new Dictionary<string, VrcGroupInfo>(StringComparer.OrdinalIgnoreCase);
+        grid.CellEndEdit += (_, e) =>
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex == groupCol.Index)
+            {
+                var cell = grid.Rows[e.RowIndex].Cells[groupCol.Index];
+                var typed = (cell.Value as string)?.Trim();
+                if (!string.IsNullOrEmpty(typed) && !typed.StartsWith("grp_", StringComparison.Ordinal)
+                    && groupsByKey.TryGetValue(typed, out var g))
+                {
+                    cell.Value = g.Id;
+                    var nameCell = grid.Rows[e.RowIndex].Cells[nameCol.Index];
+                    if (string.IsNullOrWhiteSpace(nameCell.Value as string))
+                        nameCell.Value = g.Name;
+                }
+            }
+            SaveGroups();
+        };
         grid.UserDeletedRow += (_, _) => SaveGroups();
         grid.RowValidated += (_, _) => SaveGroups();
 
@@ -633,16 +657,43 @@ public sealed class SettingsForm : Form
         // must run on the UI/STA thread, hence the BeginInvoke. Never block the constructor here.
         var groupIdSuggestions = new AutoCompleteStringCollection();
         var oscParamSuggestions = new AutoCompleteStringCollection();
-        _ = Task.Run(() =>
+        _ = Task.Run(async () =>
         {
             try
             {
                 var groupIds = AutomationSuggestionSources.ScanGroupIds(vrchatLow).ToArray();
                 var oscParams = AutomationSuggestionSources.ScanOscBoolParams(Path.Combine(vrchatLow, "OSC")).ToArray();
+
+                // Also fetch the groups you actually belong to (name + short code + grp_ id) so the
+                // Group column can autocomplete by name/code and resolve to the id. Needs VRCX running
+                // and logged in; best-effort — no session just means those name entries are absent and
+                // the log-mined grp_ ids still work.
+                IReadOnlyList<VrcGroupInfo> groups = Array.Empty<VrcGroupInfo>();
+                try
+                {
+                    using var represent = new VrcRepresentClient(new VrcxSessionProvider());
+                    if (represent.HasSession)
+                        groups = await represent.GetMyGroupsAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex) { Log.Debug("SettingsForm", $"Group name fetch failed: {ex.Message}"); }
+
+                var nameAndCodeSuggestions = groups
+                    .SelectMany(g => new[] { g.Name, g.ShortCode })
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s!)
+                    .ToArray();
+
                 BeginInvoke((Action)(() =>
                 {
                     groupIdSuggestions.AddRange(groupIds);
+                    groupIdSuggestions.AddRange(nameAndCodeSuggestions);
                     oscParamSuggestions.AddRange(oscParams);
+                    foreach (var g in groups)
+                    {
+                        if (!string.IsNullOrWhiteSpace(g.Name)) groupsByKey[g.Name] = g;
+                        if (!string.IsNullOrWhiteSpace(g.ShortCode)) groupsByKey[g.ShortCode!] = g;
+                        groupsByKey[g.Id] = g;
+                    }
                 }));
             }
             catch (Exception ex)

@@ -6,6 +6,10 @@ using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Modules;
 
+/// <summary>One of the groups you belong to, as returned by GET users/{id}/groups — enough to let
+/// the Automation tab offer a name/code autocomplete that resolves to the grp_ id.</summary>
+public readonly record struct VrcGroupInfo(string Id, string Name, string? ShortCode);
+
 /// <summary>
 /// Minimal VRChat API client for reading/setting your represented group, authenticated by the
 /// cookies borrowed from VRCX (see VrcxSessionProvider). Endpoints confirmed against VRCX's
@@ -76,6 +80,41 @@ public sealed class VrcRepresentClient : IDisposable
             return null;
         }
         catch (Exception ex) { Log.Warn("VrcRepresent", $"GetRepresentedGroup failed: {ex.Message}"); return null; }
+    }
+
+    /// <summary>The groups you belong to (GET users/{id}/groups), each with its display name and
+    /// short code so the Automation tab can autocomplete by name or code and store the grp_ id.
+    /// Best-effort: any failure (no session, API error) yields an empty list.</summary>
+    public async Task<IReadOnlyList<VrcGroupInfo>> GetMyGroupsAsync()
+    {
+        try
+        {
+            var me = await GetCurrentUserIdAsync().ConfigureAwait(false);
+            if (me is null) return Array.Empty<VrcGroupInfo>();
+            using var resp = await _http.GetAsync($"users/{me}/groups").ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return Array.Empty<VrcGroupInfo>();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync().ConfigureAwait(false));
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return Array.Empty<VrcGroupInfo>();
+
+            var list = new List<VrcGroupInfo>();
+            foreach (var g in doc.RootElement.EnumerateArray())
+            {
+                // The group id lives under "groupId" or "id" depending on the payload shape; pick
+                // whichever actually holds a grp_ value so we never store a member/user id by mistake.
+                string? id = null;
+                foreach (var key in new[] { "groupId", "id" })
+                    if (g.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String &&
+                        el.GetString() is { } v && v.StartsWith("grp_", StringComparison.Ordinal))
+                    { id = v; break; }
+                if (id is null) continue;
+
+                var name = g.TryGetProperty("name", out var nEl) && nEl.ValueKind == JsonValueKind.String ? nEl.GetString() ?? "" : "";
+                var code = g.TryGetProperty("shortCode", out var cEl) && cEl.ValueKind == JsonValueKind.String ? cEl.GetString() : null;
+                list.Add(new VrcGroupInfo(id, name, code));
+            }
+            return list;
+        }
+        catch (Exception ex) { Log.Warn("VrcRepresent", $"GetMyGroups failed: {ex.Message}"); return Array.Empty<VrcGroupInfo>(); }
     }
 
     public async Task<bool> SetRepresentedAsync(string groupId, bool isRepresenting)
