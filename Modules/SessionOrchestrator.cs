@@ -202,19 +202,39 @@ public sealed class SessionOrchestrator
                                               $"{(offlineDuration.HasValue ? $"{offlineDuration.Value.TotalMinutes:F0}m" : "an unknown duration")} " +
                                               $"(>= {_config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs}ms threshold) — treating as a genuine new session, not a ping flap.");
 
-                await FireAsync(SessionTrigger.AwaitStream);      // -> WaitingForStream
-                var streaming = await (_streamWaiterOverride?.Invoke(TimeSpan.FromSeconds(60))
-                                       ?? WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60))).ConfigureAwait(false);
-
-                if (!streaming)
+                bool proceed;
+                if (!_config.SessionFlow.RequireVdStream)
                 {
-                    Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — " +
-                                              "skipping Steam/VRChat/SlimeVR launch. Only VD Streamer itself was started, so it's ready to accept a connection whenever you actually open Virtual Desktop.");
-                    await FireAsync(SessionTrigger.StreamTimedOut); // -> Complete
+                    // SteamVR-direct: no Virtual Desktop stream will ever appear, so don't wait for
+                    // one — the headset being reachable is enough. Stay in LaunchingApps and go
+                    // straight to the launch phases (LaunchingApps already permits VrChatPhase), so
+                    // the overlay + VRChat actually launch instead of timing out on a stream that
+                    // never comes.
+                    Log.Info("Orchestrator", "RequireVdStream is off (SteamVR-direct) — skipping the VD-stream wait and launching now.");
+                    proceed = true;
                 }
                 else
                 {
-                    await FireAsync(SessionTrigger.StreamConfirmed); // -> LaunchingApps (Steam)
+                    await FireAsync(SessionTrigger.AwaitStream);      // -> WaitingForStream
+                    var streaming = await (_streamWaiterOverride?.Invoke(TimeSpan.FromSeconds(60))
+                                           ?? WaitForHeadsetStreamAsync(TimeSpan.FromSeconds(60))).ConfigureAwait(false);
+
+                    if (!streaming)
+                    {
+                        Log.Warn("Orchestrator", "Timed out waiting for a confirmed VD stream connection from the headset — " +
+                                                  "skipping Steam/VRChat/SlimeVR launch. Only VD Streamer itself was started, so it's ready to accept a connection whenever you actually open Virtual Desktop. (If you run SteamVR directly without Virtual Desktop, turn off SessionFlow.RequireVdStream.)");
+                        await FireAsync(SessionTrigger.StreamTimedOut); // -> Complete
+                        proceed = false;
+                    }
+                    else
+                    {
+                        await FireAsync(SessionTrigger.StreamConfirmed); // -> LaunchingApps (Steam)
+                        proceed = true;
+                    }
+                }
+
+                if (proceed)
+                {
                     await LaunchSteamAsync().ConfigureAwait(false);
 
                     await FireAsync(SessionTrigger.VrChatPhase);     // -> LaunchingVrChat

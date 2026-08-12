@@ -413,6 +413,15 @@ public sealed class SessionFlowConfig
     /// else (VD Streamer, Steam, SlimeVR) but skips launching VRChat itself.</summary>
     public bool AutoLaunchVrChat { get; set; } = true;
 
+    /// <summary>When true (default), the launch chain waits for a confirmed Virtual Desktop video
+    /// stream from the headset before launching Steam/VRChat/SlimeVR/overlay — the gate that keeps
+    /// SteamVR from starting on a headset that's merely powered on but not actually streaming.
+    /// Set false for a SteamVR-direct rig (headset over Link/wired, or SteamVR started by hand, with
+    /// no Virtual Desktop stream to wait for): the chain then proceeds as soon as the headset is
+    /// reachable, so the overlay + VRChat actually auto-launch instead of timing out on a stream
+    /// that never comes. The ping-flap / new-session guards still apply. Takes effect next session.</summary>
+    public bool RequireVdStream { get; set; } = true;
+
     /// <summary>Which VR overlay to auto-launch each session (None / OVR Toolkit / XSOverlay).
     /// Chosen from the Settings window's overlay picker. Replaces the old single-overlay
     /// auto-launch bool (fully migrated as of Task 3); defaults to XSOverlay. Takes effect on the

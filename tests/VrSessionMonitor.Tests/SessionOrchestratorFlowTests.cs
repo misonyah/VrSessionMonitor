@@ -188,4 +188,22 @@ public class SessionOrchestratorFlowTests
         Assert.DoesNotContain(c.UriLaunches, u => u.Contains(c.Config.Paths.XSOverlaySteamAppId));
         Assert.DoesNotContain(c.UriLaunches, u => u.Contains(c.Config.Paths.OvrToolkitSteamAppId));
     }
+
+    [Fact]
+    public async Task SteamVR_direct_launches_full_chain_without_a_vd_stream()
+    {
+        // No VD stream will ever confirm (StreamConnects=false) — with RequireVdStream the default
+        // (true) that just launches VD Streamer and completes (see Stream_timeout_* above). With it
+        // off (SteamVR-direct), the chain must skip the wait and launch everything anyway.
+        var c = new Ctx { StreamConnects = false };
+        c.Config.SessionFlow.RequireVdStream = false;
+        var orch = c.Build();
+        await orch.RunSessionStartAsync();
+
+        Assert.Equal(SessionState.Complete, orch.State);
+        Assert.Contains("steam", c.Launcher.EnsureRunningCalls);
+        Assert.Contains("SlimeVR", c.Launcher.EnsureRunningCalls);
+        Assert.Contains(c.UriLaunches, u => u.Contains("rungameid"));                     // VRChat
+        Assert.Contains(c.UriLaunches, u => u.Contains(c.Config.Paths.XSOverlaySteamAppId)); // overlay
+    }
 }
