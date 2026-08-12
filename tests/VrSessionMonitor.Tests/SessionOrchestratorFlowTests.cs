@@ -190,6 +190,24 @@ public class SessionOrchestratorFlowTests
     }
 
     [Fact]
+    public async Task Adopts_in_progress_session_at_startup_instead_of_relaunching()
+    {
+        // A freshly (re)started monitor (no completed launch chain yet) whose first session-start
+        // finds a session already in progress — here VRChat already running — must adopt it rather
+        // than re-run the launch chain. This is the monitor-restart churn guard: without it, a
+        // restart mid-session (or after you've closed apps while the headset stays connected) would
+        // relaunch everything. No steam/SlimeVR launch, and it still reaches Complete.
+        var c = new Ctx();
+        c.Launcher.Running.Add("VRChat");
+        var orch = c.Build();
+        await orch.RunSessionStartAsync();
+
+        Assert.Equal(SessionState.Complete, orch.State);
+        Assert.DoesNotContain("steam", c.Launcher.EnsureRunningCalls);
+        Assert.DoesNotContain("SlimeVR", c.Launcher.EnsureRunningCalls);
+    }
+
+    [Fact]
     public async Task SteamVR_direct_launches_full_chain_without_a_vd_stream()
     {
         // No VD stream will ever confirm (StreamConnects=false) — with RequireVdStream the default

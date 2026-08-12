@@ -189,7 +189,35 @@ public sealed class SessionOrchestrator
             var wasBriefFlap = offlineDuration.HasValue &&
                                offlineDuration.Value.TotalMilliseconds < _config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs;
 
-            if (vdPid.HasValue && vdPid == _launchChainCompletedForVdPid && wasBriefFlap)
+            // Adopt an already-in-progress session instead of re-running the launch chain. A freshly
+            // (re)started monitor has no memory of a launch chain a PREVIOUS process completed
+            // (_launchChainCompletedForVdPid is null), so without this a monitor restart mid-session —
+            // or right after you've closed VRChat/SteamVR while the headset stays connected — would
+            // re-fire the whole chain and relaunch everything you just closed (the real 1am churn).
+            // HeadsetMonitor always assumes offline at startup, so its first "online" event looks
+            // identical whether the headset was already up when the monitor started or just connected;
+            // this state check is what tells them apart. "Session already in progress" = VRChat is
+            // running, or a VD stream from the headset is already established (that stream survives
+            // closing VRChat/SteamVR, which is exactly the churn case). For a genuine new session
+            // neither is true yet at this first launch attempt — the headset is merely pingable; the
+            // stream comes up later, during the wait below — so this never suppresses a real launch.
+            // Only evaluated on the first session-start; after that the ping-flap guard owns re-triggers.
+            var adoptInProgressSession = false;
+            if (_launchChainCompletedForVdPid is null)
+            {
+                var vrChatUp = _launcher.IsRunning("VRChat");
+                var streamUp = IsHeadsetStreamEstablished();
+                adoptInProgressSession = vrChatUp || streamUp;
+                if (adoptInProgressSession)
+                    Log.Info("Orchestrator", $"A VR session is already in progress at startup (VRChat running={vrChatUp}, VD stream established={streamUp}) — adopting it instead of re-running the launch chain, since this monitor just (re)started into an existing session.");
+            }
+
+            if (adoptInProgressSession)
+            {
+                _launchChainCompletedForVdPid = vdPid;
+                await FireAsync(SessionTrigger.PingFlapDetected); // -> Complete (skip launches)
+            }
+            else if (vdPid.HasValue && vdPid == _launchChainCompletedForVdPid && wasBriefFlap)
             {
                 Log.Info("Orchestrator", $"Launch chain already completed for this VD Streamer instance (PID {vdPid}) and the headset was only offline for " +
                                           $"{offlineDuration!.Value.TotalSeconds:F0}s — this is a headset ping flap, not a new VD session. Skipping Steam/VRChat/SlimeVR/OVR Toolkit relaunch.");
@@ -326,26 +354,41 @@ public sealed class SessionOrchestrator
     /// false-positive found in vrc.cmd (it matched VD Streamer's outbound connection to Virtual
     /// Desktop's cloud service, remote IP was a public WAN address, not the headset).
     /// </summary>
+    /// <summary>One-shot: is there an ESTABLISHED TCP connection on the VD port right now whose
+    /// remote address is the headset's own LAN IP? Used both by the wait loop below and by the
+    /// "adopt an already-in-progress session" check in RunSessionStartAsync. Never throws — a
+    /// failure to enumerate connections just reads as "no stream".</summary>
+    private bool IsHeadsetStreamEstablished()
+    {
+        try
+        {
+            var headsetIp = IPAddress.Parse(_config.Network.HeadsetIp);
+            var props = IPGlobalProperties.GetIPGlobalProperties();
+            return props.GetActiveTcpConnections().Any(c =>
+                c.LocalEndPoint.Port == _config.Network.VirtualDesktopPort &&
+                c.State == TcpState.Established &&
+                c.RemoteEndPoint.Address.Equals(headsetIp));
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("Orchestrator", $"IsHeadsetStreamEstablished check threw: {ex.Message}");
+            return false;
+        }
+    }
+
     private async Task<bool> WaitForHeadsetStreamAsync(TimeSpan timeout)
     {
-        var headsetIp = IPAddress.Parse(_config.Network.HeadsetIp);
         var deadline = DateTime.UtcNow + timeout;
 
         while (DateTime.UtcNow < deadline)
         {
-            var props = IPGlobalProperties.GetIPGlobalProperties();
-            var match = props.GetActiveTcpConnections().FirstOrDefault(c =>
-                c.LocalEndPoint.Port == _config.Network.VirtualDesktopPort &&
-                c.State == TcpState.Established &&
-                c.RemoteEndPoint.Address.Equals(headsetIp));
-
-            if (match is not null)
+            if (IsHeadsetStreamEstablished())
             {
-                Log.Info("Orchestrator", $"Confirmed VD stream: {match.LocalEndPoint} <-> {match.RemoteEndPoint} (ESTABLISHED)");
+                Log.Info("Orchestrator", $"Confirmed VD stream from {_config.Network.HeadsetIp} (ESTABLISHED).");
                 return true;
             }
 
-            Log.Trace("Orchestrator", $"No established VD connection from {headsetIp} yet, waiting...");
+            Log.Trace("Orchestrator", $"No established VD connection from {_config.Network.HeadsetIp} yet, waiting...");
             await Task.Delay(1000).ConfigureAwait(false);
         }
 
