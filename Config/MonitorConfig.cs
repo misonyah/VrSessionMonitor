@@ -77,6 +77,18 @@ public sealed class BaballoniaLifecycleConfig
 public sealed class FaceTrackingAutoFixConfig
 {
     public bool Enabled { get; set; } = true;
+
+    /// <summary>Independent of <see cref="Enabled"/>: when the Vive Facial Tracker's camera attaches
+    /// AFTER sr_runtime.exe / VRCFaceTracking already started (e.g. VirtualHere's share came up
+    /// late), the module never picks it up on its own — VRCFaceTracking attempts its SRanipal
+    /// connection once at startup and never retries. When true (default), that specific
+    /// camera-just-appeared-while-not-connected edge triggers a one-shot sr_runtime + VRCFaceTracking
+    /// restart (the same no-UAC relaunch path the stalled-connection fix uses), so the module
+    /// reloads with the camera present. Fires even when <see cref="Enabled"/> is false, since it's a
+    /// narrow edge-triggered recovery, not the broader stalled-connection kill loop. The
+    /// <see cref="CooldownMs"/> throttle applies so rapid camera attach/detach flapping can't loop.</summary>
+    public bool RestartOnCameraReappear { get; set; } = true;
+
     /// <summary>Minimum time between automated sr_runtime.exe kill+relaunch attempts, so a
     /// persistently broken link doesn't get kill-looped.</summary>
     public int CooldownMs { get; set; } = 45000;

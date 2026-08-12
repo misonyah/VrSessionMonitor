@@ -93,6 +93,7 @@ public sealed class FaceTrackingMonitor : IDisposable
     private int _consecutiveFailedFixes;
     private DateTime? _autoFixBackoffUntilUtc;
     private DateTime? _lastSRanipalServiceStartAttemptUtc;
+    private DateTime? _lastCameraReappearFixUtc;
 
     private static readonly string[] FaceOscParamNames = { "JawOpen", "JawX", "MouthClosed", "MouthX", "LipPucker", "TongueOut", "LipSuckLower", "LipSuckUpper" };
     private readonly OscFreshnessTracker _faceOscTracker = new();
@@ -200,9 +201,14 @@ public sealed class FaceTrackingMonitor : IDisposable
                                    $"moduleConnectedToSRanipal={status.ModuleConnectedToSRanipal} " +
                                    $"viveCameraDevicePresent={status.ViveCameraDevicePresent}");
 
+        // Capture the camera-attach edge before _last is overwritten — HandleCameraReappearAsync
+        // needs the previous tick's presence to detect the false->true transition.
+        var cameraJustAppeared = !_last.ViveCameraDevicePresent && status.ViveCameraDevicePresent;
+
         _last = status;
 
         await HandleSRanipalServiceRecoveryAsync(status).ConfigureAwait(false);
+        await HandleCameraReappearAsync(status, cameraJustAppeared).ConfigureAwait(false);
         await HandleStalledConnectionAsync(status).ConfigureAwait(false);
 
         return status;
@@ -423,6 +429,62 @@ public sealed class FaceTrackingMonitor : IDisposable
         Log.Warn("FaceTracking", $"Module<->SRanipal connection has been down for {sustainedFor.TotalSeconds:F0}s while both processes are running (attempt {_consecutiveFailedFixes}) — killing and relaunching sr_runtime.exe{(escalate ? ", and also restarting VRCFaceTracking.exe since sr_runtime-only fixes haven't worked" : "")}.");
         SteamVrNotifier.TryNotify(_config, escalate ? "Face tracking stalled — restarting SRanipal + VRCFaceTracking" : "Face tracking stalled — restarting SRanipal");
 
+        await RestartSRanipalAsync(alsoKillVrcFaceTracking: escalate).ConfigureAwait(false);
+
+        if (escalate)
+            Log.Info("FaceTracking", "VRCFaceTracking.exe killed — VrcFaceTrackingLifecycleManager will relaunch it since a tracker is still present.");
+
+        if (_consecutiveFailedFixes >= _config.FaceTrackingAutoFix.GiveUpAfterAttempts)
+        {
+            _autoFixBackoffUntilUtc = now + TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.GiveUpCooldownMs);
+            Log.Error("FaceTracking", $"Auto-fix attempted {_consecutiveFailedFixes} times without the connection recovering — pausing automatic recovery for {_config.FaceTrackingAutoFix.GiveUpCooldownMs / 60000.0:F0} min. Likely an upstream issue (VirtualHere on the headset, or the physical USB link) that local restarts can't fix — check manually.");
+            SteamVrNotifier.TryNotify(_config, "Face tracking auto-fix giving up — check manually");
+        }
+
+        _disconnectedSinceUtc = null;
+    }
+
+    /// <summary>Targeted camera-ordering recovery (see FaceTrackingAutoFixConfig.RestartOnCameraReappear).
+    /// When the Vive Facial Tracker attaches AFTER sr_runtime + VRCFaceTracking already started, the
+    /// module never connects on its own (VRCFaceTracking attempts its SRanipal connection once at
+    /// startup and never retries), so on that exact attach edge this restarts both once so the module
+    /// reloads with the camera present. Deliberately independent of the broader, Enabled-gated
+    /// stalled-connection recovery: it fires on the attach transition rather than a sustained
+    /// disconnect, and only when the module is genuinely not connected while both processes are
+    /// already up. If VRCFaceTracking isn't running yet, VrcFaceTrackingLifecycleManager will start
+    /// it fresh (with the camera already present), so no restart is needed. CooldownMs-throttled so
+    /// rapid attach/detach flapping can't loop it.</summary>
+    private async Task HandleCameraReappearAsync(FaceTrackingStatus status, bool cameraJustAppeared)
+    {
+        if (!_config.FaceTrackingAutoFix.RestartOnCameraReappear) return;
+        if (!cameraJustAppeared) return;
+        if (status.ModuleConnectedToSRanipal) return;                       // already connected — nothing to fix
+        if (!status.SRanipalRunning || !status.VrcFaceTrackingRunning) return; // nothing that predates the camera to restart
+
+        var now = DateTime.UtcNow;
+        var cooldown = TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.CooldownMs);
+        if (_lastCameraReappearFixUtc is DateTime last && now - last < cooldown)
+        {
+            Log.Trace("FaceTracking", $"Camera-reappear restart on cooldown ({(cooldown - (now - last)).TotalSeconds:F0}s remaining).");
+            return;
+        }
+        _lastCameraReappearFixUtc = now;
+
+        Log.Warn("FaceTracking", "Vive Facial Tracker attached while sr_runtime + VRCFaceTracking were already running with no module connected — they started before the camera and won't pick it up on their own. Restarting sr_runtime.exe + VRCFaceTracking.exe once so the module reloads with the camera present.");
+        SteamVrNotifier.TryNotify(_config, "Face camera attached late — restarting SRanipal + VRCFaceTracking");
+
+        await RestartSRanipalAsync(alsoKillVrcFaceTracking: true).ConfigureAwait(false);
+        Log.Info("FaceTracking", "VRCFaceTracking.exe killed after a late camera attach — VrcFaceTrackingLifecycleManager will relaunch it since a tracker is still present.");
+    }
+
+    /// <summary>The mechanical restart shared by HandleStalledConnectionAsync (escalated) and
+    /// HandleCameraReappearAsync: kill sr_runtime.exe (and, when asked, VRCFaceTracking.exe too),
+    /// wait for the ports to release, then relaunch sr_runtime.exe with no UAC prompt. A killed
+    /// VRCFaceTracking is deliberately NOT relaunched here — VrcFaceTrackingLifecycleManager owns its
+    /// lifecycle and brings it back within one poll cycle (forcing every module to reload and
+    /// re-attempt the SRanipal connection) as long as a tracker is still present.</summary>
+    private async Task RestartSRanipalAsync(bool alsoKillVrcFaceTracking)
+    {
         try
         {
             foreach (var proc in Process.GetProcessesByName("sr_runtime"))
@@ -443,7 +505,7 @@ public sealed class FaceTrackingMonitor : IDisposable
             Log.Error("FaceTracking", "Killing sr_runtime.exe threw", ex);
         }
 
-        if (escalate)
+        if (alsoKillVrcFaceTracking)
         {
             try
             {
@@ -474,20 +536,8 @@ public sealed class FaceTrackingMonitor : IDisposable
             suppressUacPrompt: true).ConfigureAwait(false);
 
         Log.Info("FaceTracking", result.Success
-            ? "sr_runtime.exe relaunched after stalled-connection fix."
+            ? "sr_runtime.exe relaunched."
             : $"sr_runtime.exe relaunch did not confirm success: {result.Error}");
-
-        if (escalate)
-            Log.Info("FaceTracking", "VRCFaceTracking.exe killed — VrcFaceTrackingLifecycleManager will relaunch it since a tracker is still present.");
-
-        if (_consecutiveFailedFixes >= _config.FaceTrackingAutoFix.GiveUpAfterAttempts)
-        {
-            _autoFixBackoffUntilUtc = now + TimeSpan.FromMilliseconds(_config.FaceTrackingAutoFix.GiveUpCooldownMs);
-            Log.Error("FaceTracking", $"Auto-fix attempted {_consecutiveFailedFixes} times without the connection recovering — pausing automatic recovery for {_config.FaceTrackingAutoFix.GiveUpCooldownMs / 60000.0:F0} min. Likely an upstream issue (VirtualHere on the headset, or the physical USB link) that local restarts can't fix — check manually.");
-            SteamVrNotifier.TryNotify(_config, "Face tracking auto-fix giving up — check manually");
-        }
-
-        _disconnectedSinceUtc = null;
     }
 
     /// <summary>Ground-truth check alongside ModuleConnectedToSRanipal's TCP-established test — see
