@@ -27,7 +27,8 @@ public static class RegistryAccessGrant
             $"$k = 'HKLM:\\{p}'; " +
             "New-Item -Path $k -Force | Out-Null; " +
             "$acl = Get-Acl $k; " +
-            $"$rule = New-Object System.Security.AccessControl.RegistryAccessRule('{sid}','FullControl','ContainerInherit','None','Allow'); " +
+            $"$id = New-Object System.Security.Principal.SecurityIdentifier('{sid}'); " +
+            "$rule = New-Object System.Security.AccessControl.RegistryAccessRule($id,'FullControl','ContainerInherit','None','Allow'); " +
             "$acl.AddAccessRule($rule); " +
             "Set-Acl $k $acl"));
 
