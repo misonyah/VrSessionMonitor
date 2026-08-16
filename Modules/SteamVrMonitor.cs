@@ -29,6 +29,12 @@ public sealed class SteamVrMonitor : IDisposable
 
     public SteamVrStatus Current => _last;
 
+    /// <summary>Fires when "vrserver && vrcompositor both running" flips, using the same combined
+    /// signal CheckStuckSession already tracks — so Auto-mode Optimizations semantics (see
+    /// OptimizationsManager) line up with the app's existing definition of "a SteamVR session is
+    /// actually up," not a raw single-process flicker.</summary>
+    public event Action<bool>? FullyRunningChanged;
+
     public SteamVrMonitor(MonitorConfig config)
     {
         _config = config;
@@ -76,6 +82,11 @@ public sealed class SteamVrMonitor : IDisposable
             Log.Info("SteamVR", $"vrcompositor.exe {(status.VrCompositorRunning ? "started" : "stopped")}");
 
         Log.Trace("SteamVR", $"vrserver={status.VrServerRunning} vrmonitor={status.VrMonitorRunning} vrcompositor={status.VrCompositorRunning}");
+
+        var wasFullyRunning = _last.VrServerRunning && _last.VrCompositorRunning;
+        var isFullyRunning = status.VrServerRunning && status.VrCompositorRunning;
+        if (isFullyRunning != wasFullyRunning)
+            FullyRunningChanged?.Invoke(isFullyRunning);
 
         _last = status;
         return status;
