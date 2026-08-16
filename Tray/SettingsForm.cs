@@ -45,6 +45,8 @@ public sealed class SettingsForm : Form
     private readonly OptimizationsManager _optimizations;
 
     private TabControl _tabs = null!;
+    private TabPage _optimizationsTabPage = null!;
+    private bool _refreshingOptimizationsTab;
 
     private Label _sessionStatusLabel = null!;
     private Label _headsetLabel = null!;
@@ -131,7 +133,8 @@ public sealed class SettingsForm : Form
         _tabs.TabPages.Add(BuildAutomationTab());
 #endif
         _tabs.TabPages.Add(BuildAdvancedTab());
-        _tabs.TabPages.Add(BuildOptimizationsTab());
+        _optimizationsTabPage = BuildOptimizationsTab();
+        _tabs.TabPages.Add(_optimizationsTabPage);
 
         var bottomBar = new FlowLayoutPanel
         {
@@ -910,7 +913,15 @@ public sealed class SettingsForm : Form
             fixButton.Click += async (_, _) =>
             {
                 fixButton.Enabled = false;
-                try { await _optimizations.ApplyManualAsync(opt); }
+                try
+                {
+                    await _optimizations.ApplyManualAsync(opt);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("SettingsForm", $"Applying fix for '{opt.Id}' failed: {ex.Message}");
+                    MessageBox.Show(this, ex.Message, "VR Session Monitor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
                 finally
                 {
                     fixButton.Enabled = modeCombo.SelectedItem is OptimizationMode.Manual;
@@ -947,10 +958,24 @@ public sealed class SettingsForm : Form
     }
 
     /// <summary>Called from TrayApplicationContext's existing 5s status timer, alongside
-    /// RefreshStatus — refreshes every row's live Applied/Not applied/Unknown label.</summary>
+    /// RefreshStatus — refreshes every row's live Applied/Not applied/Unknown label. Each check
+    /// spawns real processes (powercfg, SCM queries, adapter enumeration), so this is a no-op
+    /// unless this window is actually visible and showing the Optimizations tab, and
+    /// re-entrancy-guarded in case one pass takes longer than the 5s timer interval.</summary>
     public async Task RefreshOptimizationsTabAsync()
     {
-        foreach (var opt in _optimizations.Optimizations)
-            await RefreshOptimizationRowAsync(opt);
+        if (!Visible || _tabs.SelectedTab != _optimizationsTabPage) return;
+        if (_refreshingOptimizationsTab) return;
+
+        _refreshingOptimizationsTab = true;
+        try
+        {
+            foreach (var opt in _optimizations.Optimizations)
+                await RefreshOptimizationRowAsync(opt);
+        }
+        finally
+        {
+            _refreshingOptimizationsTab = false;
+        }
     }
 }
