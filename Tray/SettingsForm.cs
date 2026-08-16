@@ -5,6 +5,7 @@ using System.Linq;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 using VrSessionMonitor.Modules;
+using VrSessionMonitor.Optimizations;
 #if INCLUDE_HOME_ASSISTANT
 using VrSessionMonitor.Modules.HomeAssistant;
 #endif
@@ -41,6 +42,7 @@ public sealed class SettingsForm : Form
     private readonly SlimeVrLifecycleManager _slimeLifecycle;
     private readonly FirmwareNotificationListener _firmwareNotify;
     private readonly SessionOrchestrator _orchestrator;
+    private readonly OptimizationsManager _optimizations;
 
     private TabControl _tabs = null!;
 
@@ -71,6 +73,9 @@ public sealed class SettingsForm : Form
     };
 #endif
 
+    private readonly Dictionary<string, Label> _optimizationStatusLabels = new();
+    private readonly Dictionary<string, Button> _optimizationFixButtons = new();
+
     public SettingsForm(
         TrayApplicationContext owner,
         MonitorConfig config,
@@ -86,7 +91,8 @@ public sealed class SettingsForm : Form
         VirtualHereSRanipalLifecycleManager vhSranipalLifecycle,
         SlimeVrLifecycleManager slimeLifecycle,
         FirmwareNotificationListener firmwareNotify,
-        SessionOrchestrator orchestrator)
+        SessionOrchestrator orchestrator,
+        OptimizationsManager optimizations)
     {
         _owner = owner;
         _config = config;
@@ -103,6 +109,7 @@ public sealed class SettingsForm : Form
         _slimeLifecycle = slimeLifecycle;
         _firmwareNotify = firmwareNotify;
         _orchestrator = orchestrator;
+        _optimizations = optimizations;
 
         Text = "VR Session Monitor";
         Width = 680;
@@ -124,6 +131,7 @@ public sealed class SettingsForm : Form
         _tabs.TabPages.Add(BuildAutomationTab());
 #endif
         _tabs.TabPages.Add(BuildAdvancedTab());
+        _tabs.TabPages.Add(BuildOptimizationsTab());
 
         var bottomBar = new FlowLayoutPanel
         {
@@ -835,5 +843,114 @@ public sealed class SettingsForm : Form
 
         tab.Controls.Add(layout);
         return tab;
+    }
+
+    // ───────────────────────────── Optimizations tab ─────────────────────────────
+
+    private TabPage BuildOptimizationsTab()
+    {
+        var tab = new TabPage("Optimizations");
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            AutoScroll = true,
+            Padding = new Padding(10),
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 10));
+
+        OptimizationCategory? lastCategory = null;
+        foreach (var opt in _optimizations.Optimizations)
+        {
+            if (opt.Category != lastCategory)
+            {
+                var header = new Label
+                {
+                    Text = opt.Category.ToString(),
+                    AutoSize = true,
+                    Font = new Font(Font, FontStyle.Bold),
+                    Margin = new Padding(3, 12, 3, 3),
+                };
+                layout.Controls.Add(header);
+                layout.SetColumnSpan(header, 4);
+                lastCategory = opt.Category;
+            }
+
+            var nameLabel = new Label { Text = opt.DisplayName, AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
+            var statusLabel = new Label { Text = "Checking...", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
+            _optimizationStatusLabels[opt.Id] = statusLabel;
+
+            var modeCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
+            modeCombo.Items.AddRange(new object[] { OptimizationMode.Off, OptimizationMode.Manual, OptimizationMode.Auto });
+            modeCombo.SelectedItem = _optimizations.GetEntry(opt.Id).Mode;
+
+            var fixButton = new Button { Text = "Fix", AutoSize = true, Enabled = modeCombo.SelectedItem is OptimizationMode.Manual };
+            _optimizationFixButtons[opt.Id] = fixButton;
+
+            modeCombo.SelectedIndexChanged += async (_, _) =>
+            {
+                if (modeCombo.SelectedItem is not OptimizationMode mode) return;
+                try
+                {
+                    await _optimizations.SetModeAsync(opt, mode);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("SettingsForm", $"Setting mode for '{opt.Id}' failed: {ex.Message}");
+                    MessageBox.Show(this, ex.Message, "VR Session Monitor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    modeCombo.SelectedItem = _optimizations.GetEntry(opt.Id).Mode; // reflect the actual (possibly rolled-back) mode
+                }
+                fixButton.Enabled = modeCombo.SelectedItem is OptimizationMode.Manual;
+                await RefreshOptimizationRowAsync(opt);
+            };
+
+            fixButton.Click += async (_, _) =>
+            {
+                fixButton.Enabled = false;
+                try { await _optimizations.ApplyManualAsync(opt); }
+                finally
+                {
+                    fixButton.Enabled = modeCombo.SelectedItem is OptimizationMode.Manual;
+                    await RefreshOptimizationRowAsync(opt);
+                }
+            };
+
+            layout.Controls.Add(nameLabel);
+            layout.Controls.Add(statusLabel);
+            layout.Controls.Add(modeCombo);
+            layout.Controls.Add(fixButton);
+        }
+
+        tab.Controls.Add(layout);
+        return tab;
+    }
+
+    private async Task RefreshOptimizationRowAsync(IOptimization opt)
+    {
+        var status = await _optimizations.CheckAsync(opt);
+        if (!_optimizationStatusLabels.TryGetValue(opt.Id, out var label)) return;
+
+        var text = status switch
+        {
+            OptimizationStatus.Applied => opt is ServiceStateOptimization && _optimizations.GetEntry(opt.Id).Mode == OptimizationMode.Auto
+                ? "Applied (stopped — not auto-restarted)"
+                : "Applied",
+            OptimizationStatus.NotApplied => "Not applied",
+            _ => "Unknown",
+        };
+
+        if (InvokeRequired) Invoke(() => label.Text = text);
+        else label.Text = text;
+    }
+
+    /// <summary>Called from TrayApplicationContext's existing 5s status timer, alongside
+    /// RefreshStatus — refreshes every row's live Applied/Not applied/Unknown label.</summary>
+    public async Task RefreshOptimizationsTabAsync()
+    {
+        foreach (var opt in _optimizations.Optimizations)
+            await RefreshOptimizationRowAsync(opt);
     }
 }

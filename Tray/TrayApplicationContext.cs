@@ -3,6 +3,7 @@ using System.Linq;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 using VrSessionMonitor.Modules;
+using VrSessionMonitor.Optimizations;
 #if INCLUDE_HOME_ASSISTANT
 using VrSessionMonitor.Modules.HomeAssistant;
 #endif
@@ -29,6 +30,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly UpdateChecker _updateChecker;
     private readonly AdbController _adb;
     private readonly SessionOrchestrator _orchestrator;
+    private readonly OptimizationsManager _optimizations;
     private readonly SettingsForm _settingsForm;
 #if INCLUDE_HOME_ASSISTANT
     private readonly HomeAssistantClient _homeAssistantClient;
@@ -87,6 +89,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         _updateChecker = new UpdateChecker(_config);
         _adb = new AdbController(_config);
         _orchestrator = new SessionOrchestrator(_config, _trackers, _updateChecker, _adb);
+        var optimizationChecks = OptimizationRegistry.BuildAll(
+            new RegistryAccessor(), new WindowsServiceController(),
+            CpuInfo.GetName, PowercfgRunner.RunAsync, PowercfgRunner.RunElevatedAsync);
+        _optimizations = new OptimizationsManager(_config, _configPath, optimizationChecks);
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient = new HomeAssistantClient(_config);
         _homeAssistantDiscovery = new HomeAssistantAreaDiscovery(_homeAssistantClient);
@@ -100,7 +106,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // see SettingsForm's own doc comment for why. Created once and shown/hidden from here on,
         // never recreated.
         _settingsForm = new SettingsForm(this, _config, _configPath, _headset, _trackers, _steamVr,
-            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _slimeLifecycle, _firmwareNotify, _orchestrator);
+            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _slimeLifecycle, _firmwareNotify, _orchestrator, _optimizations);
 
         _notifyIcon = new NotifyIcon
         {
@@ -140,6 +146,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _orchestrator.StateChanged += (_, state) => _settingsForm.UpdateSessionStatus(state.ToString());
         _orchestrator.UpdateFindingsAvailable += OnUpdateFindingsAvailable;
         _firmwareNotify.NotificationReceived += (_, _) => _settingsForm.RefreshFirmwareLabel();
+        _steamVr.FullyRunningChanged += running => _ = _optimizations.HandleSteamVrRunningChangedAsync(running);
 
         _headset.Start();
         _trackers.Start();
@@ -171,7 +178,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
-        statusTimer.Tick += (_, _) => _settingsForm.RefreshStatus();
+        statusTimer.Tick += (_, _) => { _settingsForm.RefreshStatus(); _ = _settingsForm.RefreshOptimizationsTabAsync(); };
         statusTimer.Start();
 
         Log.Info("Tray", "VR Session Monitor started and all background monitors running.");
