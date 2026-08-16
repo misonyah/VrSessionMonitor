@@ -292,6 +292,30 @@ public sealed class SlimeVrLifecycleConfig
     public double IdleAngleThresholdDeg { get; set; } = 2.0;
 }
 
+public enum OptimizationMode { Off, Manual, Auto }
+
+/// <summary>Persisted per-check state for the Optimizations tab (see
+/// docs/superpowers/specs/2026-08-16-optimizations-tab-design.md). CapturedOriginalValues is
+/// populated by the owning IOptimization on first Apply and consumed on Revert — keys are
+/// implementation-defined (e.g. RegistryValueTarget.StorageKey), values are always
+/// string-serialized so the whole entry round-trips through plain JSON.</summary>
+public sealed class OptimizationEntry
+{
+    public OptimizationMode Mode { get; set; } = OptimizationMode.Off;
+    /// <summary>True once the one-time elevation grant (if any) for this check has succeeded —
+    /// see RegistryAccessGrant/IServiceController.GrantControlPermissionAsync. Never re-requested
+    /// after this is true.</summary>
+    public bool AccessGranted { get; set; }
+    public Dictionary<string, string?> CapturedOriginalValues { get; set; } = new();
+}
+
+/// <summary>Keyed by each IOptimization's stable Id (see OptimizationRegistry) — never rename an
+/// existing Id, since it's the persistence key here.</summary>
+public sealed class OptimizationsConfig
+{
+    public Dictionary<string, OptimizationEntry> Entries { get; set; } = new();
+}
+
 public sealed class PathsConfig
 {
     public string SteamExe { get; set; } = @"C:\Program Files (x86)\Steam\steam.exe";
@@ -577,6 +601,7 @@ public sealed class MonitorConfig
     public VrcOscLifecycleConfig VrcOscLifecycle { get; set; } = new();
     public VirtualHereSRanipalLifecycleConfig VirtualHereSRanipalLifecycle { get; set; } = new();
     public SlimeVrLifecycleConfig SlimeVrLifecycle { get; set; } = new();
+    public OptimizationsConfig Optimizations { get; set; } = new();
     public SessionFlowConfig SessionFlow { get; set; } = new();
     public VrChatGroupAutomationConfig VrChatGroupAutomation { get; set; } = new();
     public List<TrackerConfig> Trackers { get; set; } = new();
