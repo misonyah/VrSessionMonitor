@@ -25,10 +25,10 @@ public static class RegistryAccessGrant
 
         var script = string.Join(" ; ", paths.Select(p =>
             $"$k = 'HKLM:\\{p}'; " +
-            "New-Item -Path $k -Force | Out-Null; " +
+            "if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }; " +
             "$acl = Get-Acl $k; " +
             $"$id = New-Object System.Security.Principal.SecurityIdentifier('{sid}'); " +
-            "$rule = New-Object System.Security.AccessControl.RegistryAccessRule($id,'FullControl','ContainerInherit','None','Allow'); " +
+            "$rule = New-Object System.Security.AccessControl.RegistryAccessRule($id,'SetValue,QueryValues,EnumerateSubKeys,ReadKey','None','None','Allow'); " +
             "$acl.AddAccessRule($rule); " +
             "Set-Acl $k $acl"));
 
