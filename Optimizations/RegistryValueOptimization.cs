@@ -43,11 +43,24 @@ public sealed class RegistryValueOptimization : IOptimization
         return Task.FromResult(status);
     }
 
-    public Task EnsureAccessGrantedAsync(OptimizationEntry entry)
+    public async Task EnsureAccessGrantedAsync(OptimizationEntry entry)
     {
-        // Replaced in Task 4 with the real HKLM ACL-grant call.
-        entry.AccessGranted = true;
-        return Task.CompletedTask;
+        if (entry.AccessGranted) return;
+
+        var hklmPaths = _targetsProvider()
+            .Where(t => t.Hive == OptRegistryHive.LocalMachine)
+            .Select(t => t.SubKeyPath)
+            .Distinct()
+            .ToList();
+
+        if (hklmPaths.Count == 0)
+        {
+            entry.AccessGranted = true; // HKCU-only — already writable, no elevation needed
+            return;
+        }
+
+        if (await RegistryAccessGrant.GrantWriteAccessAsync(hklmPaths).ConfigureAwait(false))
+            entry.AccessGranted = true;
     }
 
     public Task ApplyAsync(OptimizationEntry entry)
