@@ -93,4 +93,35 @@ public class ServiceStateOptimizationTests
 
         Assert.False(entry.AccessGranted);
     }
+
+    /// <summary>Proves the fix for the "grant-once model doesn't handle dynamic target sets"
+    /// finding: stray-vm-services-stopped set AccessGranted=true permanently the moment none of
+    /// the 3 services existed yet, so a service installed LATER (e.g. WSL enabled after the app
+    /// was already configured) would never get its own elevation grant requested. With per-target
+    /// tracking via GrantedTargets, a newly-appeared service must trigger a fresh grant request
+    /// for itself only — an already-granted service must NOT be re-requested.</summary>
+    [Fact]
+    public async Task EnsureAccessGrantedAsync_only_regrants_for_a_newly_appeared_service()
+    {
+        var services = new FakeServiceController();
+        services.ExistingServices.Add("vmms");
+        services.GrantSucceedsFor.Add("vmms");
+        var opt = Build(services);
+        var entry = new OptimizationEntry();
+
+        await opt.EnsureAccessGrantedAsync(entry); // grants vmms only
+        Assert.True(entry.AccessGranted);
+        Assert.Contains("vmms", services.GrantCalls);
+        services.GrantCalls.Clear();
+
+        // vboxdrv "installed" later, after the first grant already succeeded.
+        services.ExistingServices.Add("vboxdrv");
+        services.GrantSucceedsFor.Add("vboxdrv");
+
+        await opt.EnsureAccessGrantedAsync(entry);
+
+        Assert.Contains("vboxdrv", services.GrantCalls);
+        Assert.DoesNotContain("vmms", services.GrantCalls); // already granted — not re-requested
+        Assert.True(entry.AccessGranted);
+    }
 }

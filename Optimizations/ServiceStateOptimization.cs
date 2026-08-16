@@ -29,18 +29,32 @@ public sealed class ServiceStateOptimization : IOptimization
         return Task.FromResult(anyRunning ? OptimizationStatus.NotApplied : OptimizationStatus.Applied);
     }
 
+    /// <summary>Diffs the CURRENTLY-existing service set against entry.GrantedTargets, and only
+    /// requests a grant for services not already covered — so a service installed AFTER the first
+    /// grant (e.g. WslService added later) gets its own grant request instead of being silently
+    /// skipped forever by the old "granted once, ever" semantics.</summary>
     public async Task EnsureAccessGrantedAsync(OptimizationEntry entry)
     {
-        if (entry.AccessGranted) return;
-
         var existing = _serviceNames.Where(_services.Exists).ToList();
         if (existing.Count == 0) { entry.AccessGranted = true; return; } // nothing present — nothing to grant on
 
-        var allGranted = true;
-        foreach (var name in existing)
-            allGranted &= await _services.GrantControlPermissionAsync(name).ConfigureAwait(false);
+        var newTargets = existing.Where(name => !entry.GrantedTargets.Contains(name)).ToList();
+        if (newTargets.Count == 0) { entry.AccessGranted = true; return; } // every existing service already covered
 
-        if (allGranted) entry.AccessGranted = true;
+        var allGranted = true;
+        foreach (var name in newTargets)
+        {
+            if (await _services.GrantControlPermissionAsync(name).ConfigureAwait(false))
+                entry.GrantedTargets.Add(name);
+            else
+                allGranted = false;
+        }
+
+        // Explicit assignment (not just "if (allGranted) ... = true"): without the early return
+        // this method used to have, AccessGranted needs to accurately reflect "every CURRENTLY
+        // known target granted" on every call — including flipping back to false if a newly
+        // appeared target fails to grant even though earlier targets already succeeded.
+        entry.AccessGranted = allGranted;
     }
 
     public async Task ApplyAsync(OptimizationEntry entry)

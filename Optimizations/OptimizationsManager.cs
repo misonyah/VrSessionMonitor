@@ -9,6 +9,15 @@ namespace VrSessionMonitor.Optimizations;
 /// real SteamVrMonitor — TrayApplicationContext does the actual event wiring.</summary>
 public sealed class OptimizationsManager
 {
+    // Guards _config.Save(_configPath) calls made from this class: HandleSteamVrRunningChangedAsync
+    // runs on SteamVrMonitor's background polling thread, while SetModeAsync/ApplyManualAsync are
+    // called from the UI thread — without this, concurrent File.WriteAllText calls can race (the
+    // loser throws IOException, unobserved on the fire-and-forget background path, silently
+    // losing that save). Only protects Save calls that go through OptimizationsManager — that's
+    // sufficient since this is the only place introducing a background-thread Save; other Save
+    // call sites in the app are UI-thread-only and already implicitly serialized.
+    private static readonly object _saveLock = new();
+
     private readonly MonitorConfig _config;
     private readonly string _configPath;
     private readonly List<IOptimization> _optimizations;
@@ -27,6 +36,14 @@ public sealed class OptimizationsManager
     public IReadOnlyList<IOptimization> Optimizations => _optimizations;
 
     public OptimizationEntry GetEntry(string id) => _config.Optimizations.Entries[id];
+
+    private void SaveConfig()
+    {
+        lock (_saveLock)
+        {
+            _config.Save(_configPath);
+        }
+    }
 
     public async Task<OptimizationStatus> CheckAsync(IOptimization optimization)
     {
@@ -48,7 +65,7 @@ public sealed class OptimizationsManager
         if (mode == OptimizationMode.Off)
         {
             entry.Mode = OptimizationMode.Off;
-            _config.Save(_configPath);
+            SaveConfig();
             return;
         }
 
@@ -56,12 +73,12 @@ public sealed class OptimizationsManager
         if (!entry.AccessGranted)
         {
             entry.Mode = OptimizationMode.Off;
-            _config.Save(_configPath);
+            SaveConfig();
             throw new InvalidOperationException($"Could not obtain the access needed for '{optimization.DisplayName}'.");
         }
 
         entry.Mode = mode;
-        _config.Save(_configPath);
+        SaveConfig();
     }
 
     public async Task ApplyManualAsync(IOptimization optimization)
@@ -74,7 +91,7 @@ public sealed class OptimizationsManager
             return;
         }
         await optimization.ApplyAsync(entry).ConfigureAwait(false);
-        _config.Save(_configPath);
+        SaveConfig();
     }
 
     public async Task HandleSteamVrRunningChangedAsync(bool running)
@@ -105,6 +122,6 @@ public sealed class OptimizationsManager
                 Log.Warn("Optimizations", $"Auto {(running ? "apply" : "revert")} for '{opt.Id}' failed: {ex.Message}");
             }
         }
-        _config.Save(_configPath);
+        SaveConfig();
     }
 }

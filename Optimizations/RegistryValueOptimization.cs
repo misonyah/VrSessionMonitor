@@ -43,10 +43,13 @@ public sealed class RegistryValueOptimization : IOptimization
         return Task.FromResult(status);
     }
 
+    /// <summary>Diffs the CURRENT HKLM target set (which can grow — e.g. tcp-low-latency-tuning
+    /// re-enumerates network adapters on every call) against entry.GrantedTargets, and only
+    /// requests elevation for paths not already covered. A newly-connected adapter (or any other
+    /// dynamically-discovered path) that appears after the first grant gets its own grant request
+    /// instead of silently staying ungranted forever.</summary>
     public async Task EnsureAccessGrantedAsync(OptimizationEntry entry)
     {
-        if (entry.AccessGranted) return;
-
         var hklmPaths = _targetsProvider()
             .Where(t => t.Hive == OptRegistryHive.LocalMachine)
             .Select(t => t.SubKeyPath)
@@ -59,8 +62,28 @@ public sealed class RegistryValueOptimization : IOptimization
             return;
         }
 
-        if (await RegistryAccessGrant.GrantWriteAccessAsync(hklmPaths).ConfigureAwait(false))
+        var newPaths = hklmPaths.Where(p => !entry.GrantedTargets.Contains(p)).ToList();
+        if (newPaths.Count == 0)
+        {
+            entry.AccessGranted = true; // every currently-known target already covered
+            return;
+        }
+
+        // Explicit assignment either way (not just on success): without the early return this
+        // method used to have, AccessGranted needs to accurately reflect "every CURRENTLY known
+        // target granted" on every call — including flipping back to false if a newly appeared
+        // path (e.g. a just-connected network adapter) fails to grant even though earlier paths
+        // already succeeded.
+        if (await RegistryAccessGrant.GrantWriteAccessAsync(newPaths).ConfigureAwait(false))
+        {
+            foreach (var p in newPaths)
+                entry.GrantedTargets.Add(p);
             entry.AccessGranted = true;
+        }
+        else
+        {
+            entry.AccessGranted = false;
+        }
     }
 
     public Task ApplyAsync(OptimizationEntry entry)

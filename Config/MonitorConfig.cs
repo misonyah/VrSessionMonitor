@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
+using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Config;
 
@@ -303,9 +304,21 @@ public sealed class OptimizationEntry
 {
     public OptimizationMode Mode { get; set; } = OptimizationMode.Off;
     /// <summary>True once the one-time elevation grant (if any) for this check has succeeded —
-    /// see RegistryAccessGrant/IServiceController.GrantControlPermissionAsync. Never re-requested
-    /// after this is true.</summary>
+    /// see RegistryAccessGrant/IServiceController.GrantControlPermissionAsync. For checks with a
+    /// static target set this is never re-requested once true. For checks with a DYNAMIC target
+    /// set (RegistryValueOptimization's tcp-low-latency-tuning, ServiceStateOptimization's
+    /// stray-vm-services-stopped), this reflects whether every target CURRENTLY known was granted
+    /// as of the last EnsureAccessGrantedAsync call — see GrantedTargets, which those two checks
+    /// consult to grant only newly-appeared targets rather than re-requesting everything.</summary>
     public bool AccessGranted { get; set; }
+    /// <summary>Per-target record of which specific grant targets (HKLM subkey paths, service
+    /// names) have already been successfully granted — lets RegistryValueOptimization/
+    /// ServiceStateOptimization diff a freshly-enumerated target set against what's already
+    /// covered and only request elevation for the new ones (e.g. a newly-connected network
+    /// adapter, or a service installed after the first grant). Unused by checks with a static
+    /// target set (PowerPlanOptimization, UsbSelectiveSuspendOptimization), which keep using the
+    /// plain AccessGranted bool.</summary>
+    public HashSet<string> GrantedTargets { get; set; } = new();
     public Dictionary<string, string?> CapturedOriginalValues { get; set; } = new();
 }
 
@@ -632,15 +645,31 @@ public sealed class MonitorConfig
     {
         if (File.Exists(path))
         {
-            var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
-            var configuration = new ConfigurationBuilder()
-                .SetBasePath(directory)
-                .AddJsonFile(Path.GetFileName(path), optional: false, reloadOnChange: false)
-                .Build();
+            try
+            {
+                var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
+                var configuration = new ConfigurationBuilder()
+                    .SetBasePath(directory)
+                    .AddJsonFile(Path.GetFileName(path), optional: false, reloadOnChange: false)
+                    .Build();
 
-            var loaded = configuration.Get<MonitorConfig>();
-            if (loaded is not null)
-                return loaded;
+                var loaded = configuration.Get<MonitorConfig>();
+                if (loaded is not null)
+                    return loaded;
+
+                Log.Warn("Config", $"'{path}' parsed to nothing usable — starting with in-memory defaults instead. The file itself is left untouched; fix it by hand or re-save settings from the app to overwrite it.");
+            }
+            catch (Exception ex)
+            {
+                // A crash or a race mid-write (see Save's atomic-replace below) could otherwise
+                // leave appsettings.json truncated/corrupt, which used to prevent the app from
+                // starting at all — nothing further up the call chain to Program.Main caught this.
+                // Deliberately does NOT overwrite the file here: it's left in place for manual
+                // recovery/inspection, and only gets replaced if/when the app later saves settings.
+                Log.Warn("Config", $"Failed to load '{path}' ({ex.GetType().Name}: {ex.Message}) — starting with in-memory defaults instead of crashing. The file itself is left untouched.");
+            }
+
+            return CreateDefault();
         }
 
         var defaultConfig = CreateDefault();
@@ -649,10 +678,22 @@ public sealed class MonitorConfig
         return defaultConfig;
     }
 
+    /// <summary>Writes via a temp file + atomic swap rather than a direct File.WriteAllText, so a
+    /// crash or a concurrent Save race (see OptimizationsManager's _saveLock — this method itself
+    /// isn't synchronized, callers are responsible for that) can't leave appsettings.json
+    /// truncated/half-written on disk.</summary>
     public void Save(string path)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+        var directory = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(directory);
+
+        var tempPath = path + ".tmp";
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(this, JsonOptions));
+
+        if (File.Exists(path))
+            File.Replace(tempPath, path, null);
+        else
+            File.Move(tempPath, path);
     }
 
     // Deliberately empty — this is what a fresh clone gets. Trackers/cameras are entirely
