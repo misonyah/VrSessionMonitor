@@ -383,8 +383,14 @@ public sealed class PollingConfig
     /// HeadsetOffActions fire on every transition, so this was toggling real lights on and off
     /// every 20-45s while the headset sat mostly-connected but occasionally missed one ping. Only
     /// the online-to-offline direction is debounced; a single successful ping still brings the
-    /// headset back online immediately, matching the eye-camera precedent's reasoning.</summary>
-    public int HeadsetOfflineDebounceFailures { get; set; } = 3;
+    /// headset back online immediately, matching the eye-camera precedent's reasoning.
+    /// Raised 3 -> 8 on 2026-08-14: an idle Quest 2 (screen off, not worn, WiFi radio power-saving)
+    /// was observed duty-cycling — answering pings for ~40s bursts, then going silent for 16-22s —
+    /// for 7+ consecutive minutes. That 16-22s silent gap already exceeds the old 3-failure/15s
+    /// threshold, so the old value still declared it offline every cycle and re-toggled the lights
+    /// on the very next successful ping. 8 failures = 40s comfortably clears the largest observed
+    /// gap (22s) with margin for jitter.</summary>
+    public int HeadsetOfflineDebounceFailures { get; set; } = 8;
     public int TrackerCheckIntervalMs { get; set; } = 10000;
     public int TrackerPingTimeoutMs { get; set; } = 500;
     public int ProcessPollIntervalMs { get; set; } = 1000;
