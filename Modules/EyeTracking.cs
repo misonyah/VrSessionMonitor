@@ -453,6 +453,7 @@ public sealed class EyeTrackingMonitor : IDisposable
     private List<EyeCameraStatus> _last = new();
 
     private readonly Dictionary<string, DateTime> _lastRestartAttemptUtc = new();
+    private readonly EyeCameraRestartGiveUpPolicy _restartGiveUp = new();
     private readonly Dictionary<string, int> _consecutivePingFailures = new();
     private readonly HashSet<string> _everConfirmedOnline = new();
     private DateTime? _allCamerasOfflineSinceUtc;
@@ -596,10 +597,18 @@ public sealed class EyeTrackingMonitor : IDisposable
             {
                 MaybeAutoRestart(cam);
             }
-            else if (cameraJustCameBackOnline)
+            else
             {
-                Log.Info("EyeTracking", $"Eye camera '{cam.Name}' just came back online after being unreachable — forcing a restart in case Baballonia's connection is stale.");
-                MaybeAutoRestart(cam, bypassCooldown: true);
+                // Frames are actually flowing — the only real success signal (a restart
+                // "succeeding" only means the clicks landed). Clears any failure ladder so a
+                // later, unrelated fault gets the full allowance again.
+                _restartGiveUp.RecordSuccess(cam.Name);
+
+                if (cameraJustCameBackOnline)
+                {
+                    Log.Info("EyeTracking", $"Eye camera '{cam.Name}' just came back online after being unreachable — forcing a restart in case Baballonia's connection is stale.");
+                    MaybeAutoRestart(cam, bypassCooldown: true);
+                }
             }
         }
 
@@ -665,6 +674,17 @@ public sealed class EyeTrackingMonitor : IDisposable
         }
 
         var now = DateTime.UtcNow;
+
+        // A power-cycle/reseat is new hardware evidence — clear any earned backoff rather than
+        // staying blocked by a ladder the previous fault filled up.
+        if (bypassCooldown) _restartGiveUp.Reset(cam.Name);
+
+        if (_restartGiveUp.GiveUpRemaining(cam.Name, now) is TimeSpan giveUpLeft)
+        {
+            Log.Trace("EyeTracking", $"Eye camera '{cam.Name}': auto-restart paused {giveUpLeft.TotalSeconds:F0}s (too many attempts produced no stream — likely a hardware fault, not a stuck connection).");
+            return;
+        }
+
         var cooldown = TimeSpan.FromMilliseconds(_config.EyeCameraAutoRestart.CooldownMs);
         if (!bypassCooldown && _lastRestartAttemptUtc.TryGetValue(cam.Name, out var last) && now - last < cooldown)
         {
@@ -673,6 +693,16 @@ public sealed class EyeTrackingMonitor : IDisposable
         }
 
         _lastRestartAttemptUtc[cam.Name] = now;
+
+        if (_restartGiveUp.RecordAttempt(
+                cam.Name, now,
+                _config.EyeCameraAutoRestart.GiveUpAfterAttempts,
+                TimeSpan.FromMilliseconds(_config.EyeCameraAutoRestart.GiveUpCooldownMs)))
+        {
+            Log.Error("EyeTracking", $"Eye camera '{cam.Name}' has not started streaming after {_config.EyeCameraAutoRestart.GiveUpAfterAttempts} restart attempts — pausing automatic restarts for {_config.EyeCameraAutoRestart.GiveUpCooldownMs / 60000} minute(s). This usually means a hardware/firmware fault (bad cable, failed camera) that no amount of Stop+Start clicking can fix — check the camera itself.");
+            SteamVrNotifier.TryNotify(_config, $"Giving up on eye camera '{cam.Name}' — check hardware");
+            return;
+        }
         var delayMs = _config.EyeCameraAutoRestart.StopToStartDelayMs;
         var sectionLabel = cam.BaballoniaSectionLabel;
         var camName = cam.Name;
@@ -746,6 +776,14 @@ public sealed class EyeTrackingMonitor : IDisposable
             var cooldown = TimeSpan.FromMilliseconds(_config.EyeCameraAutoRestart.CooldownMs);
             foreach (var (name, last) in _lastRestartAttemptUtc)
             {
+                // A camera that's been given up on isn't merely cooling down — say so, so the tray
+                // doesn't imply a retry is imminent when restarts are actually paused.
+                if (_restartGiveUp.GiveUpRemaining(name, now) is TimeSpan givenUpFor)
+                {
+                    pending.Add($"{name} restarts paused {givenUpFor.TotalMinutes:F0}m (check hardware)");
+                    continue;
+                }
+
                 var remaining = cooldown - (now - last);
                 if (remaining > TimeSpan.Zero)
                     pending.Add($"{name} restart cooldown {remaining.TotalSeconds:F0}s");

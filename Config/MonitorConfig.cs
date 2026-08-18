@@ -36,6 +36,24 @@ public sealed class EyeCameraAutoRestartConfig
     /// "not streaming") before BaballoniaLifecycleManager auto-closes Baballonia. Gated by
     /// BaballoniaLifecycleConfig.Enabled, not here — this is just the timing.</summary>
     public int AutoCloseAfterAllOfflineMs { get; set; } = 30000;
+
+    /// <summary>Safety valve matching the pattern in FaceTrackingAutoFixConfig and
+    /// SteamVrStuckSessionConfig, which this auto-restart was previously missing entirely.
+    /// Confirmed live 2026-08-17/18: a left eye camera whose firmware had failed (outputting an
+    /// error code as its frame instead of an image — a genuine hardware fault) stayed reachable on
+    /// the network but never streamed once for an entire 2h11m session. With no failure ceiling,
+    /// the Stop+Start automation fired 170 times and produced 171 errors that buried the real
+    /// face-tracking signals in the same log. No amount of clicking Baballonia's buttons can fix
+    /// broken hardware, so after this many consecutive restart attempts that never result in the
+    /// camera actually streaming, back off for <see cref="GiveUpCooldownMs"/> instead of retrying
+    /// forever. 0 disables the ceiling (retry indefinitely, the old behavior).</summary>
+    public int GiveUpAfterAttempts { get; set; } = 5;
+
+    /// <summary>How long to stop attempting restarts for a camera that hit
+    /// <see cref="GiveUpAfterAttempts"/>, before trying the ladder again from scratch in case
+    /// conditions changed. A camera actually streaming again, or going offline and coming back
+    /// (a real power-cycle — new evidence), clears the backoff immediately regardless.</summary>
+    public int GiveUpCooldownMs { get; set; } = 600000; // 10 minutes
 }
 
 /// <summary>Confirmed live 2026-07-30: EyeTrackingMonitor's "streaming" check (an ESTABLISHED TCP
