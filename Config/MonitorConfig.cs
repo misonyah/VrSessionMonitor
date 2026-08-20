@@ -582,7 +582,11 @@ public sealed class AdbConfig
 /// IVRNotifications (see SteamVrNotifier), not the overlay app.</summary>
 public enum VrOverlayChoice { None, OvrToolkit, XSOverlay }
 
-#if INCLUDE_HOME_ASSISTANT
+// LightAction/LightSetting deliberately sit OUTSIDE the INCLUDE_HOME_ASSISTANT guard below: they
+// are pure value types with no Home Assistant dependency, and the test project doesn't define that
+// constant, so anything inside the guard can't be unit-tested. Keeping the parsing out here is what
+// makes LightSetting's backward-compatibility guarantees testable without entangling the
+// -p:IncludeHomeAssistant=false build.
 public enum LightAction { NoChange, On, Off }
 
 public static class LightActionExtensions
@@ -593,11 +597,65 @@ public static class LightActionExtensions
     public static string ToConfigString(this LightAction action) => action.ToString();
 }
 
+/// <summary>
+/// One light's configured reaction to a trigger event: what to do, and (for <see cref="LightAction.On"/>)
+/// what colour and brightness to use.
+///
+/// Persisted as a single string inside the existing Dictionary&lt;string,string&gt; action maps rather
+/// than as a nested object, so configs written before colour/brightness existed keep loading
+/// untouched — a bare "On" parses to exactly the old behaviour (no colour, brightness 100, which is
+/// the value HomeAssistantLightsManager used to hardcode). Format: "Action|#RRGGBB|Brightness",
+/// with either optional: "On", "On|#FF8800", "On|#FF8800|75", "On||40".
+/// </summary>
+/// <param name="Rgb">Packed 0xRRGGBB, or null to leave the light's colour alone. Deliberately an
+/// int rather than a System.Drawing.Color so the config layer carries no UI dependency.</param>
+public sealed record LightSetting(LightAction Action, int? Rgb, int BrightnessPct)
+{
+    public const int DefaultBrightnessPct = 100;
+
+    public static LightSetting Parse(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return new LightSetting(LightAction.NoChange, null, DefaultBrightnessPct);
+
+        var parts = raw.Split('|');
+        var action = parts[0].Trim().ParseOrDefault();
+
+        int? rgb = null;
+        if (parts.Length > 1)
+        {
+            var colour = parts[1].Trim().TrimStart('#');
+            // A malformed colour is dropped rather than failing the whole value — losing the colour
+            // is recoverable, losing the On/Off action would silently stop the light reacting at all.
+            if (colour.Length == 6 && int.TryParse(colour, System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture, out var parsedRgb))
+                rgb = parsedRgb;
+        }
+
+        var brightness = DefaultBrightnessPct;
+        if (parts.Length > 2 && int.TryParse(parts[2].Trim(), out var parsedBrightness))
+            brightness = parsedBrightness;
+
+        // 0% is indistinguishable from Off but leaves the light "on" — clamp to a visible minimum
+        // so a mis-set brightness can't look like a broken light.
+        brightness = Math.Clamp(brightness, 1, 100);
+
+        return new LightSetting(action, rgb, brightness);
+    }
+
+    /// <summary>Serialises back to the bare legacy form when nothing beyond the action is set, so
+    /// enabling this feature doesn't rewrite every existing entry into a noisier format.</summary>
+    public string ToConfigString() =>
+        Rgb is null && BrightnessPct == DefaultBrightnessPct
+            ? Action.ToConfigString()
+            : $"{Action.ToConfigString()}|{(Rgb is int c ? $"#{c:X6}" : "")}|{BrightnessPct}";
+}
+
+#if INCLUDE_HOME_ASSISTANT
 /// <summary>See docs/superpowers/specs/2026-07-26-home-assistant-lights-design.md. Three
-/// independent tri-state light maps (entityId -> On/Off/NoChange), one per trigger event:
-/// headset coming online (also re-applied when AFK ends), headset going offline, and AFK
-/// starting (HMD proximity OR VRChat's own AFK OSC parameter, OR'd — see
-/// HomeAssistantLightsManager).</summary>
+/// independent light maps (entityId -> LightSetting string), one per trigger event: headset coming
+/// online (also re-applied when AFK ends), headset going offline, and AFK starting (HMD proximity
+/// OR VRChat's own AFK OSC parameter, OR'd — see HomeAssistantLightsManager). Values parse via
+/// LightSetting.Parse, so entries predating colour/brightness still load as plain On/Off/NoChange.</summary>
 public sealed class HomeAssistantConfig
 {
     public bool Enabled { get; set; } = false;

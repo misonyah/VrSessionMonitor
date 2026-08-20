@@ -67,12 +67,6 @@ public sealed class SettingsForm : Form
     private FlowLayoutPanel _homeAssistantAfkLightsPanel = null!;
     private List<LightInfo> _homeAssistantLightsInSelectedArea = new();
 
-    private static readonly Dictionary<LightAction, Color> LightActionColors = new()
-    {
-        [LightAction.On] = Color.LimeGreen,
-        [LightAction.Off] = Color.Firebrick,
-        [LightAction.NoChange] = Color.Gainsboro,
-    };
 #endif
 
     private readonly Dictionary<string, Label> _optimizationStatusLabels = new();
@@ -343,40 +337,125 @@ public sealed class SettingsForm : Form
         foreach (var light in _homeAssistantLightsInSelectedArea)
         {
             var entityId = light.EntityId;
-            var current = actions.GetValueOrDefault(entityId, LightAction.NoChange.ToConfigString()).ParseOrDefault();
+            var setting = LightSetting.Parse(actions.GetValueOrDefault(entityId));
 
             var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
-            var dot = new PictureBox { Image = CreateStatusDot(LightActionColors[current]), Width = 16, Height = 16, Margin = new Padding(3, 6, 3, 3) };
+            var dot = new PictureBox { Image = CreateStatusDot(DotColorFor(setting)), Width = 16, Height = 16, Margin = new Padding(3, 6, 3, 3) };
             var nameLabel = new Label { Text = light.DisplayName, AutoSize = true, Margin = new Padding(3, 6, 8, 3), MinimumSize = new Size(160, 0) };
             var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
             foreach (var option in new[] { LightAction.On, LightAction.Off, LightAction.NoChange })
                 combo.Items.Add(option.ToConfigString());
-            combo.SelectedIndex = current switch { LightAction.On => 0, LightAction.Off => 1, _ => 2 };
+            combo.SelectedIndex = setting.Action switch { LightAction.On => 0, LightAction.Off => 1, _ => 2 };
+
+            var colourButton = new Button { Text = "Colour...", AutoSize = true, Margin = new Padding(6, 3, 3, 3) };
+            var brightness = new NumericUpDown { Minimum = 1, Maximum = 100, Value = setting.BrightnessPct, Width = 60, Margin = new Padding(3, 4, 3, 3) };
+            var pctLabel = new Label { Text = "%", AutoSize = true, Margin = new Padding(0, 7, 6, 3) };
+
+            // Colour/brightness only mean anything when the light is being turned ON — an Off or
+            // NoChange row shouldn't imply they'll be applied.
+            void SyncEnabled()
+            {
+                var isOn = combo.SelectedIndex == 0;
+                colourButton.Enabled = isOn;
+                brightness.Enabled = isOn;
+                pctLabel.Enabled = isOn;
+            }
+
+            void Persist(LightSetting s)
+            {
+                setting = s;
+                actions[entityId] = s.ToConfigString();
+                _config.Save(_configPath);
+                dot.Image = CreateStatusDot(DotColorFor(s));
+                colourButton.BackColor = s.Rgb is int c ? Color.FromArgb(c | unchecked((int)0xFF000000)) : SystemColors.Control;
+                colourButton.ForeColor = s.Rgb is int c2 && IsDark(c2) ? Color.White : SystemColors.ControlText;
+                SyncEnabled();
+            }
+
             combo.SelectedIndexChanged += (_, _) =>
             {
                 var chosen = combo.SelectedIndex switch { 0 => LightAction.On, 1 => LightAction.Off, _ => LightAction.NoChange };
-                actions[entityId] = chosen.ToConfigString();
-                _config.Save(_configPath);
-                dot.Image = CreateStatusDot(LightActionColors[chosen]);
+                Persist(setting with { Action = chosen });
                 Log.Info("SettingsForm", $"Home Assistant: {light.DisplayName} ({entityId}) set to {chosen} for this trigger.");
             };
+
+            colourButton.Click += (_, _) =>
+            {
+                using var dialog = new ColorDialog
+                {
+                    FullOpen = true,
+                    Color = setting.Rgb is int c ? Color.FromArgb(c | unchecked((int)0xFF000000)) : Color.White,
+                };
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                var rgb = (dialog.Color.R << 16) | (dialog.Color.G << 8) | dialog.Color.B;
+                Persist(setting with { Rgb = rgb });
+                Log.Info("SettingsForm", $"Home Assistant: {light.DisplayName} ({entityId}) colour set to #{rgb:X6}.");
+            };
+
+            brightness.ValueChanged += (_, _) => Persist(setting with { BrightnessPct = (int)brightness.Value });
 
             row.Controls.Add(dot);
             row.Controls.Add(nameLabel);
             row.Controls.Add(combo);
+            row.Controls.Add(colourButton);
+            row.Controls.Add(brightness);
+            row.Controls.Add(pctLabel);
             panel.Controls.Add(row);
+
+            // Paints the initial swatch/enabled state without re-saving config on load.
+            colourButton.BackColor = setting.Rgb is int initial ? Color.FromArgb(initial | unchecked((int)0xFF000000)) : SystemColors.Control;
+            colourButton.ForeColor = setting.Rgb is int initial2 && IsDark(initial2) ? Color.White : SystemColors.ControlText;
+            SyncEnabled();
         }
 
         panel.ResumeLayout();
     }
 
-    private static Bitmap CreateStatusDot(Color color)
+    /// <summary>
+    /// The dot previews what the light will actually do, so a tab reads as a scene at a glance:
+    /// the configured colour scaled by the configured brightness. With no colour set that scaling
+    /// falls out as plain greyscale — white at 100%, mid-grey at 50%, near-black at 1% — so
+    /// intensity is still visible. Off is black, and NoChange draws nothing at all (null).
+    /// </summary>
+    private static Color? DotColorFor(LightSetting setting)
+    {
+        if (setting.Action == LightAction.NoChange) return null;
+        if (setting.Action == LightAction.Off) return Color.Black;
+
+        // On: base colour (or white when unset) dimmed by brightness.
+        var (r, g, b) = setting.Rgb is int rgb
+            ? ((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF)
+            : (255, 255, 255);
+
+        var scale = setting.BrightnessPct / 100.0;
+        return Color.FromArgb((int)(r * scale), (int)(g * scale), (int)(b * scale));
+    }
+
+    /// <summary>Perceived-luminance test (Rec. 601 weights) so the swatch button's label stays
+    /// readable against whatever colour was picked.</summary>
+    private static bool IsDark(int rgb)
+    {
+        var r = (rgb >> 16) & 0xFF;
+        var g = (rgb >> 8) & 0xFF;
+        var b = rgb & 0xFF;
+        return (0.299 * r + 0.587 * g + 0.114 * b) < 140;
+    }
+
+    /// <summary>Draws the row's status dot. A null colour means "nothing to show" (NoChange) and
+    /// yields a fully transparent bitmap rather than a hidden control — the space is kept so the
+    /// light names below it stay aligned in the column instead of jumping left.
+    /// The black outline keeps a black (Off) or dimmed dot visible against the window background.</summary>
+    private static Bitmap CreateStatusDot(Color? color)
     {
         var bmp = new Bitmap(16, 16);
+        if (color is not Color fill) return bmp; // transparent — NoChange
+
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brush = new SolidBrush(color);
+        using var brush = new SolidBrush(fill);
         g.FillEllipse(brush, 3, 3, 10, 10);
+        using var pen = new Pen(Color.Black, 1f);
+        g.DrawEllipse(pen, 3, 3, 10, 10);
         return bmp;
     }
 #endif

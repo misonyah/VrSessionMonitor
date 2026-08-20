@@ -77,18 +77,37 @@ public sealed class HomeAssistantLightsManager : IDisposable
 
         foreach (var (entityId, actionText) in actions)
         {
-            var action = actionText.ParseOrDefault();
-            if (action == LightAction.NoChange) continue;
+            var setting = LightSetting.Parse(actionText);
+            if (setting.Action == LightAction.NoChange) continue;
 
-            var service = action == LightAction.On ? "turn_on" : "turn_off";
+            var service = setting.Action == LightAction.On ? "turn_on" : "turn_off";
             // Force the command through even when HA already reports the light 'on': light.turn_on
             // with no attributes gets optimized away by HA, so a Zigbee-desynced bulb that's
             // physically off (while HA's cached state says on) never relights. Sending brightness
-            // guarantees a real device command; brightness_pct=100 also puts the session "on" scene
-            // at full. (A light with no brightness support simply ignores it.)
-            object? serviceData = action == LightAction.On ? new { brightness_pct = 100 } : null;
+            // guarantees a real device command. (A light with no brightness support simply ignores it.)
+            object? serviceData = setting.Action == LightAction.On
+                ? (setting.Rgb is int rgb
+                    ? new { brightness_pct = setting.BrightnessPct, rgb_color = new[] { (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF } }
+                    : (object)new { brightness_pct = setting.BrightnessPct })
+                : null;
+
             var ok = await _client.CallServiceAsync("light", service, entityId, serviceData).ConfigureAwait(false);
-            Log.Info("HomeAssistant", $"{entityId} -> {service}{(serviceData is null ? "" : " @100%")}: {(ok ? "ok" : "failed")}");
+
+            // LightInfo carries no capability data (it's just entity id + name), so we can't know
+            // up front whether a bulb accepts rgb_color. Rather than discover capabilities for
+            // every light, retry once without the colour — a colour-incapable bulb still ends up
+            // at the right on/off state and brightness instead of the whole command failing.
+            if (!ok && setting.Rgb is not null && setting.Action == LightAction.On)
+            {
+                Log.Debug("HomeAssistant", $"{entityId} rejected rgb_color — retrying without colour (light may not support it).");
+                ok = await _client.CallServiceAsync("light", service, entityId,
+                    new { brightness_pct = setting.BrightnessPct }).ConfigureAwait(false);
+            }
+
+            var detail = setting.Action == LightAction.On
+                ? $" @{setting.BrightnessPct}%{(setting.Rgb is int c ? $" #{c:X6}" : "")}"
+                : "";
+            Log.Info("HomeAssistant", $"{entityId} -> {service}{detail}: {(ok ? "ok" : "failed")}");
         }
     }
 
