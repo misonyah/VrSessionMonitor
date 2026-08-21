@@ -993,16 +993,17 @@ public sealed class SettingsForm : Form
 
         var index = previouslySelectedId is null ? -1 : apps.FindIndex(a => a.Id == previouslySelectedId);
         if (index < 0 && apps.Count > 0) index = 0;
-        if (index >= 0)
-        {
-            _appsList.SelectedIndex = index;
-            _selectedApp = apps[index];
-        }
-        else
-        {
-            _selectedApp = null;
-        }
-        RebuildAppDetailPanel();
+
+        // SelectedIndexChanged fires synchronously the moment the assignment below actually
+        // changes the value, and its handler already calls RebuildAppDetailPanel(). Most refreshes
+        // (any edit that doesn't reorder the list) leave the index unchanged, so the assignment is
+        // a no-op and nothing rebuilds the panel unless we do it here; a real change (remove,
+        // reorder) does fire the handler, so doing it again here would build the panel twice for
+        // every such refresh. Rebuild here only when the handler won't.
+        var selectionChanges = _appsList.SelectedIndex != index;
+        if (selectionChanges) _appsList.SelectedIndex = index;
+        _selectedApp = index >= 0 ? apps[index] : null;
+        if (!selectionChanges) RebuildAppDetailPanel();
     }
 
     /// <summary>Short suffix so the list conveys each app's window rules without needing to click
@@ -1017,9 +1018,160 @@ public sealed class SettingsForm : Form
         return parts.Count == 0 ? "" : $"  [{string.Join(", ", parts)}]";
     }
 
+    /// <summary>Rebuilds the right-hand editor for the selected app. Rebuilt wholesale on each
+    /// selection change rather than rebound, matching how this form handles the Home Assistant
+    /// light rows — simpler than tracking per-control bindings, and these panels are small.</summary>
     private void RebuildAppDetailPanel()
     {
-        // Filled in by Task 2.
+        _appDetailPanel.SuspendLayout();
+        foreach (Control c in _appDetailPanel.Controls) c.Dispose();
+        _appDetailPanel.Controls.Clear();
+
+        if (_selectedApp is not ManagedApp app)
+        {
+            _appDetailPanel.Controls.Add(new Label { Text = "No app selected.", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
+            _appDetailPanel.ResumeLayout();
+            return;
+        }
+
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, AutoScroll = true, WrapContents = false };
+
+        // Persist + refresh the list so its label/suffix reflects the change immediately.
+        void Save()
+        {
+            _config.Save(_configPath);
+            RefreshAppsList();
+        }
+
+        layout.Controls.Add(new Label
+        {
+            Text = app.DisplayName,
+            AutoSize = true,
+            Font = new Font(Font, FontStyle.Bold),
+            Margin = new Padding(3, 3, 3, 8),
+        });
+
+        layout.Controls.Add(BuildCheckbox("Enabled (participates in auto-start/stop)", app.Enabled, v =>
+        {
+            app.Enabled = v;
+            SyncLegacyEnabledFlag(app, v);
+            Save();
+        }));
+
+        layout.Controls.Add(BuildTextRow("Display name", app.DisplayName, v =>
+        {
+            if (string.IsNullOrWhiteSpace(v)) return; // an unnamed row is unusable in the list
+            app.DisplayName = v.Trim();
+            Save();
+        }));
+
+        // ── launch
+        var launchGroup = new GroupBox { Text = "Launch", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(360, 0) };
+        var launchLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+
+        var methodRow = new FlowLayoutPanel { AutoSize = true };
+        methodRow.Controls.Add(new Label { Text = "Method", AutoSize = true, Width = 140, Margin = new Padding(3, 6, 3, 3) });
+        var methodCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+        methodCombo.Items.AddRange(new object[] { AppLaunchMethod.Executable, AppLaunchMethod.SteamAppId });
+        methodCombo.SelectedItem = app.LaunchMethod;
+        methodCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (methodCombo.SelectedItem is AppLaunchMethod m) { app.LaunchMethod = m; Save(); }
+        };
+        methodRow.Controls.Add(methodCombo);
+        launchLayout.Controls.Add(methodRow);
+
+        launchLayout.Controls.Add(BuildTextRow("Target (exe path or Steam app id)", app.Target, v => { app.Target = v.Trim(); Save(); }));
+        launchLayout.Controls.Add(BuildTextRow("Process name (no .exe)", app.ProcessName, v => { app.ProcessName = v.Trim(); Save(); }));
+        launchGroup.Controls.Add(launchLayout);
+        layout.Controls.Add(launchGroup);
+
+        // ── window
+        var windowGroup = new GroupBox { Text = "Window", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(360, 0) };
+        var windowLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+
+        var stateRow = new FlowLayoutPanel { AutoSize = true };
+        stateRow.Controls.Add(new Label { Text = "State on launch", AutoSize = true, Width = 140, Margin = new Padding(3, 6, 3, 3) });
+        var stateCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+        stateCombo.Items.AddRange(new object[]
+        {
+            AppWindowState.Unchanged, AppWindowState.Normal, AppWindowState.Minimized,
+            AppWindowState.Maximized, AppWindowState.Fullscreen,
+        });
+        stateCombo.SelectedItem = app.WindowState;
+        stateCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (stateCombo.SelectedItem is AppWindowState s) { app.WindowState = s; Save(); }
+        };
+        stateRow.Controls.Add(stateCombo);
+        windowLayout.Controls.Add(stateRow);
+
+        windowLayout.Controls.Add(BuildCheckbox("Bring to front after launch", app.BringToFront, v =>
+        {
+            app.BringToFront = v;
+            // Both at once is contradictory; WindowController resolves it in favour of
+            // BringToFront, so make the UI reflect that rather than letting the config lie.
+            if (v) app.KeepInBackground = false;
+            Save();
+            RebuildAppDetailPanel();
+        }));
+
+        windowLayout.Controls.Add(BuildCheckbox("Keep in background (never steal focus)", app.KeepInBackground, v =>
+        {
+            app.KeepInBackground = v;
+            if (v) app.BringToFront = false;
+            Save();
+            RebuildAppDetailPanel();
+        }));
+
+        // 0 means "any monitor" — NumericUpDown has no null, and a nullable spinner would be more
+        // UI than this is worth.
+        windowLayout.Controls.Add(BuildNumericRow("Monitor (0 = any)", app.TargetMonitor ?? 0, v =>
+        {
+            app.TargetMonitor = v <= 0 ? null : v;
+            Save();
+        }));
+
+        windowLayout.Controls.Add(BuildCheckbox("Apply window rules even when started manually", app.ApplyWindowRulesWhenStartedManually, v =>
+        {
+            app.ApplyWindowRulesWhenStartedManually = v;
+            Save();
+        }));
+
+        windowGroup.Controls.Add(windowLayout);
+        layout.Controls.Add(windowGroup);
+
+        _appDetailPanel.Controls.Add(layout);
+        _appDetailPanel.ResumeLayout();
+    }
+
+    /// <summary>Keeps the legacy per-app config properties in sync for apps whose old flag is still
+    /// read elsewhere. The foundation plan's final review found that writing only one side turns
+    /// controls into silent no-ops, so both are written until those legacy readers are retired.</summary>
+    private void SyncLegacyEnabledFlag(ManagedApp app, bool enabled)
+    {
+        switch (app.Id)
+        {
+            case "vrchat": _config.SessionFlow.AutoLaunchVrChat = enabled; break;
+            case "slimevr": _config.SlimeVrLifecycle.Enabled = enabled; break;
+            case "vrcosc": _config.VrcOscLifecycle.Enabled = enabled; break;
+            case "vrcfacetracking": _config.VrcFaceTrackingLifecycle.Enabled = enabled; break;
+            case "baballonia": _config.BaballoniaLifecycle.Enabled = enabled; break;
+            case "sranipal":
+            case "virtualhere": _config.VirtualHereSRanipalLifecycle.Enabled = enabled; break;
+            // The overlay picker is an enum, not a bool: enabling one overlay must disable the
+            // other, and disabling either means None.
+            case "ovrtoolkit":
+                _config.SessionFlow.VrOverlay = enabled ? VrOverlayChoice.OvrToolkit
+                    : _config.SessionFlow.VrOverlay == VrOverlayChoice.OvrToolkit ? VrOverlayChoice.None : _config.SessionFlow.VrOverlay;
+                if (enabled && _config.GetApp("xsoverlay") is { } xs) xs.Enabled = false;
+                break;
+            case "xsoverlay":
+                _config.SessionFlow.VrOverlay = enabled ? VrOverlayChoice.XSOverlay
+                    : _config.SessionFlow.VrOverlay == VrOverlayChoice.XSOverlay ? VrOverlayChoice.None : _config.SessionFlow.VrOverlay;
+                if (enabled && _config.GetApp("ovrtoolkit") is { } ovr) ovr.Enabled = false;
+                break;
+        }
     }
 
     private void AddManagedApp()
