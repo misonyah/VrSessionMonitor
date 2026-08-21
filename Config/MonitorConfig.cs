@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
@@ -695,6 +696,16 @@ public sealed class MonitorConfig
     public VrChatGroupAutomationConfig VrChatGroupAutomation { get; set; } = new();
     public List<TrackerConfig> Trackers { get; set; } = new();
     public List<EyeCameraConfig> EyeCameras { get; set; } = new();
+    /// <summary>Per-app launch and window settings — see Config/ManagedApp.cs. Seeded once from the
+    /// older scattered per-app toggles when empty (see LoadOrCreateDefault), so upgrading changes
+    /// nothing observable.</summary>
+    public List<ManagedApp> ManagedApps { get; set; } = new();
+
+    /// <summary>The managed-app entry with this id, or null if it isn't configured. Callers treat
+    /// null as "fall back to previous behaviour" rather than as an error, so a hand-edited config
+    /// that drops an entry degrades instead of crashing.</summary>
+    public ManagedApp? GetApp(string id) =>
+        ManagedApps.FirstOrDefault(a => string.Equals(a.Id, id, StringComparison.OrdinalIgnoreCase));
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -731,7 +742,14 @@ public sealed class MonitorConfig
 
                 var loaded = configuration.Get<MonitorConfig>();
                 if (loaded is not null)
+                {
+                    // One-time migration: an empty list means this config predates ManagedApps, so
+                    // seed it from the older per-app toggles. Deliberately not written back here —
+                    // the first Save() persists it, so a read-only run doesn't rewrite the file.
+                    if (loaded.ManagedApps.Count == 0)
+                        loaded.ManagedApps = ManagedAppDefaults.SeedFrom(loaded);
                     return loaded;
+                }
 
                 Log.Warn("Config", $"'{path}' parsed to nothing usable — starting with in-memory defaults instead. The file itself is left untouched; fix it by hand or re-save settings from the app to overwrite it.");
             }
@@ -778,9 +796,14 @@ public sealed class MonitorConfig
     // the shape) or use the tray menu's "Auto-detect trackers/cameras" action, which queries
     // SlimeVR's own API and reads Baballonia's camera fields directly (see SlimeVrDiscovery /
     // BaballoniaAutomation.TryReadCameraAddress).
-    public static MonitorConfig CreateDefault() => new()
+    public static MonitorConfig CreateDefault()
     {
-        Trackers = new List<TrackerConfig>(),
-        EyeCameras = new List<EyeCameraConfig>(),
-    };
+        var config = new MonitorConfig
+        {
+            Trackers = new List<TrackerConfig>(),
+            EyeCameras = new List<EyeCameraConfig>(),
+        };
+        config.ManagedApps = ManagedAppDefaults.SeedFrom(config);
+        return config;
+    }
 }
