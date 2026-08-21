@@ -30,7 +30,11 @@ public sealed class FakeProcessLauncher : IProcessLauncher
         EnsureRunningCalls.Add(processName);
         var already = Running.Contains(processName);
         Running.Add(processName);
-        if (GetProcessId(processName) is int pid) Provenance.RecordLaunched(processName, pid);
+        // Mirrors the real launcher: the "already running" path never records provenance, because
+        // that process was started by someone else (see ProcessLauncher.cs — the early-return
+        // "already running, skipping launch" block vs. the post-launch confirmation block).
+        if (!already && GetProcessId(processName) is int pid)
+            Provenance.RecordLaunched(processName, pid);
         return Task.FromResult(new ProcessLauncher.LaunchResult(
             AlreadyRunning: already, Started: !already, Success: true, Error: null));
     }

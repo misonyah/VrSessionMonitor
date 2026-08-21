@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace VrSessionMonitor.Modules;
 
 public enum AppStartOrigin
@@ -15,15 +17,19 @@ public enum AppStartOrigin
 /// restarting VRChat by hand after the monitor launched it produces the same name with a new PID,
 /// and that must read as manual rather than inheriting the old verdict.
 ///
-/// Pure in-memory state with no clock or I/O — see LaunchProvenanceTests.
+/// Safe for concurrent use: on the real launcher (ProcessLauncher.SharedProvenance) this is one
+/// process-wide static shared across independent launch paths — SessionOrchestrator launching
+/// VRChat and, say, SlimeVrLifecycleManager launching SlimeVR can call RecordLaunched from
+/// different threads at the same time — and it's also read from a polling loop, so plain
+/// Dictionary reads/writes are not an option here.
 /// </summary>
 public sealed class LaunchProvenance
 {
-    private readonly Dictionary<string, int> _launchedPids = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _launchedPids = new(StringComparer.OrdinalIgnoreCase);
 
     public void RecordLaunched(string processName, int pid) => _launchedPids[processName] = pid;
 
-    public void Forget(string processName) => _launchedPids.Remove(processName);
+    public void Forget(string processName) => _launchedPids.TryRemove(processName, out _);
 
     public AppStartOrigin Classify(string processName, int? currentPid)
     {

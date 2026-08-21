@@ -30,7 +30,8 @@ public interface IProcessLauncher
     void KillOrphanedChildIfLauncherGone(string launcherProcessName, string launcherExePath, string orphanChildProcessName);
 
     /// <summary>Which PIDs were started by VrSessionMonitor — used to tell a managed start from a
-    /// manual one. Process-wide on the real launcher (see ProcessLauncher.Shared): several
-    /// components construct their own ProcessLauncher, and provenance must span all of them.</summary>
+    /// manual one. Process-wide on the real launcher (see ProcessLauncher.SharedProvenance):
+    /// several components construct their own ProcessLauncher, and provenance must span all of
+    /// them.</summary>
     LaunchProvenance Provenance { get; }
 }

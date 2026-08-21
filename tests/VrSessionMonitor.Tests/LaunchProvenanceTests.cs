@@ -1,4 +1,5 @@
 using VrSessionMonitor.Modules;
+using VrSessionMonitor.Tests.Fakes;
 using Xunit;
 
 namespace VrSessionMonitor.Tests;
@@ -82,5 +83,22 @@ public class LaunchProvenanceTests
         p.RecordLaunched("VRChat", 1234);
 
         Assert.Equal(AppStartOrigin.Managed, p.Classify("vrchat", 1234));
+    }
+
+    /// <summary>Regression test for FakeProcessLauncher reproducing the real launcher's Trap 2:
+    /// the "already running, skipping launch" path must never record provenance, since that
+    /// process was started by someone else. Without this guard, EnsureRunningAsync against a
+    /// pre-seeded "already running" process would misclassify it as Managed instead of Manual —
+    /// which is the exact scenario Task 6's consumer tests need to exercise.</summary>
+    [Fact]
+    public async System.Threading.Tasks.Task Fake_launcher_does_not_record_provenance_for_an_already_running_process()
+    {
+        var fake = new FakeProcessLauncher();
+        fake.Running.Add("VRChat");
+        fake.ProcessIds["VRChat"] = 9999;
+
+        await fake.EnsureRunningAsync("VRChat", "C:\\fake\\VRChat.exe", null, 1000, 100);
+
+        Assert.Equal(AppStartOrigin.Manual, fake.Provenance.Classify("VRChat", 9999));
     }
 }
