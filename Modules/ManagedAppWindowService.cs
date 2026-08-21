@@ -60,7 +60,7 @@ public sealed class ManagedAppWindowService : IDisposable
 
     private async Task CheckOnceAsync()
     {
-        foreach (var app in _config.ManagedApps)
+        foreach (var app in _config.ManagedApps.ToArray())
         {
             if (string.IsNullOrWhiteSpace(app.ProcessName)) continue;
 

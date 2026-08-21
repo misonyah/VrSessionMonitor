@@ -279,13 +279,16 @@ the default value it does.
   VRChat's launcher at all; it's launched standalone in the background (confirmed live that VD's
   streaming only needs VD Streamer running, not to be VRChat's parent process).
 
-- **VRChat's background-mode window now gets explicitly minimized via `ShowWindow`/`SW_MINIMIZE`**
+- **VRChat's background-mode window used to get explicitly minimized via `ShowWindow`/`SW_MINIMIZE`**
   (`SessionOrchestrator.MinimizeVrChatWindowAsync`, added 2026-07-28) — `ProcessLauncher`'s
   `WindowStyle=Minimized` hint never reached VRChat's actual window (STARTUPINFO hints don't
   propagate to processes a launched process spawns internally, which mattered back when VD
   Streamer still wrapped the launch — now VRChat launches via `steam://` instead, so there's no
-  process handle of ours to set that hint on at all either way). This explicit minimize-after-launch
-  step is unaffected by the steam:// launch change and still runs the same way.
+  process handle of ours to set that hint on at all either way). Removed 2026-08-21: this duplicated
+  the managed-app window model (`ManagedAppWindowService`/`WindowController`), which now owns
+  applying VRChat's `WindowState`/`TargetMonitor` rules for both managed launches and manually
+  started instances — having both meant a visible flicker as one restored/repositioned what the
+  other had just minimized.
 
 - ~~Root cause of the 2026-07-27 face-tracking outage was never conclusively found~~ — **resolved
   2026-07-30**, generalized rather than root-caused for that specific incident. The exact trigger

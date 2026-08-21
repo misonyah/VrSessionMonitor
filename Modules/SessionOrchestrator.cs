@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
 using Stateless;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
@@ -457,7 +456,6 @@ public sealed class SessionOrchestrator
             return;
         }
 
-        var sf = _config.SessionFlow;
         Log.Info("Orchestrator", $"Launching VRChat via steam://rungameid/{_config.Paths.VrChatSteamAppId}.");
         try
         {
@@ -478,48 +476,13 @@ public sealed class SessionOrchestrator
             if (_launcher.IsRunning("VRChat"))
             {
                 Log.Info("Orchestrator", $"VRChat confirmed running after {elapsed}ms.");
-                if (sf.VrChatBackgroundMode)
-                    await MinimizeVrChatWindowAsync().ConfigureAwait(false);
+                if (_launcher.GetProcessId("VRChat") is int vrchatPid)
+                    _launcher.Provenance.RecordLaunched("VRChat", vrchatPid);
                 return;
             }
         }
 
         Log.Warn("Orchestrator", $"VRChat did not appear in the process list within {_config.Polling.ProcessLaunchTimeoutMs}ms after the steam:// launch.");
-    }
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    private const int SW_MINIMIZE = 6;
-
-    /// <summary>VRChat is launched via steam://rungameid (see DoLaunchVrChatAsync), so there's no
-    /// process handle of our own to set a WindowStyle=Minimized STARTUPINFO hint on — Steam is
-    /// what actually spawns it. Confirmed live 2026-07-28 (back when VD Streamer still wrapped the
-    /// launch instead): VRChat's background windowed instance showed up fully visible instead of
-    /// minimized regardless, since Windows doesn't propagate that hint to a process a launched
-    /// process spawns internally either way — so this explicit minimize-after-launch is needed
-    /// regardless of launch method. Only background mode gets this treatment — full mode is
-    /// fullscreen on a second monitor and is meant to actually be seen (spectating/streaming), so
-    /// it's left alone.</summary>
-    private static async Task MinimizeVrChatWindowAsync()
-    {
-        for (var i = 0; i < 20; i++)
-        {
-            using var proc = Process.GetProcessesByName("VRChat").FirstOrDefault();
-            if (proc is null) return; // exited already, nothing to minimize
-
-            var hwnd = proc.MainWindowHandle;
-            if (hwnd != IntPtr.Zero)
-            {
-                ShowWindow(hwnd, SW_MINIMIZE);
-                Log.Debug("Orchestrator", "Minimized VRChat's background-mode window.");
-                return;
-            }
-
-            await Task.Delay(500).ConfigureAwait(false);
-        }
-
-        Log.Debug("Orchestrator", "VRChat's main window never appeared within 10s — couldn't minimize it.");
     }
 
     private async Task LaunchSlimeVrAsync()
@@ -543,6 +506,14 @@ public sealed class SessionOrchestrator
     /// elevation-safe path OVR Toolkit always needed (see PathsConfig.OvrToolkitSteamAppId's doc).
     /// None = skip. Fire-and-forget: Steam handles a not-installed app itself, so this only logs an
     /// informational "Launching …". Notifications are unaffected (OpenVR IVRNotifications).
+    ///
+    /// Deliberately does NOT confirm-and-record into LaunchProvenance the way DoLaunchVrChatAsync
+    /// does: unlike VRChat, OVR Toolkit/XSOverlay have no downstream logic that branches on
+    /// Manual-vs-Managed (ManagedAppWindowService applies window rules to both alike), so a
+    /// confirm-with-timeout loop here would only add launch latency for no observable behaviour
+    /// change. Net effect: these two overlays always report AppStartOrigin.Manual in
+    /// ManagedAppWindowService.CurrentOrigins even when this monitor launched them — acceptable
+    /// today since nothing reads that origin for them, but worth revisiting if that changes.
     /// </summary>
     private Task LaunchVrOverlayAsync()
     {
