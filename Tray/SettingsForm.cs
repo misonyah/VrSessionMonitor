@@ -593,80 +593,18 @@ public sealed class SettingsForm : Form
             Padding = new Padding(10),
         };
 
-        layout.Controls.Add(BuildCheckbox("Auto-start VRChat", _config.SessionFlow.AutoLaunchVrChat,
-            v => { _config.SessionFlow.AutoLaunchVrChat = v; _config.Save(_configPath); }));
-        var overlayRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
-        overlayRow.Controls.Add(new Label { Text = "VR overlay to auto-start:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
-        var overlayCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140, FormattingEnabled = true };
-        overlayCombo.Format += (_, e) =>
+        layout.Controls.Add(new Label
         {
-            if (e.ListItem is VrOverlayChoice c)
-                e.Value = c switch
-                {
-                    VrOverlayChoice.None => "None",
-                    VrOverlayChoice.OvrToolkit => "OVR Toolkit",
-                    VrOverlayChoice.XSOverlay => "XSOverlay",
-                    _ => c.ToString(),
-                };
-        };
-        overlayCombo.Items.AddRange(new object[] { VrOverlayChoice.None, VrOverlayChoice.OvrToolkit, VrOverlayChoice.XSOverlay });
-        overlayCombo.SelectedItem = _config.SessionFlow.VrOverlay;
-        overlayCombo.SelectedIndexChanged += (_, _) =>
-        {
-            if (overlayCombo.SelectedItem is VrOverlayChoice choice)
-            {
-                _config.SessionFlow.VrOverlay = choice;
-                _config.Save(_configPath);
-            }
-        };
-        overlayRow.Controls.Add(overlayCombo);
-        layout.Controls.Add(overlayRow);
-        layout.Controls.Add(BuildCheckbox("Auto-start/stop Baballonia",
-            _config.GetApp("baballonia")?.Enabled ?? _config.BaballoniaLifecycle.Enabled,
-            v =>
-            {
-                // Write both: ManagedApp is what EyeTracking's lifecycle logic reads, the legacy
-                // property is kept in sync so a hand-edited or pre-migration config still behaves
-                // predictably.
-                if (_config.GetApp("baballonia") is { } app) app.Enabled = v;
-                _config.BaballoniaLifecycle.Enabled = v;
-                _config.Save(_configPath);
-            }));
-        layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCFaceTracking",
-            _config.GetApp("vrcfacetracking")?.Enabled ?? _config.VrcFaceTrackingLifecycle.Enabled,
-            v =>
-            {
-                if (_config.GetApp("vrcfacetracking") is { } app) app.Enabled = v;
-                _config.VrcFaceTrackingLifecycle.Enabled = v;
-                _config.Save(_configPath);
-            }));
+            Text = "Per-app start-up and window settings now live in the Apps tab.",
+            AutoSize = true,
+            Margin = new Padding(3, 3, 3, 10),
+        });
         layout.Controls.Add(BuildCheckbox("Auto-heal face tracking (restart SRanipal + VRCFaceTracking when it stalls/freezes)", _config.FaceTrackingAutoFix.Enabled,
             v => { _config.FaceTrackingAutoFix.Enabled = v; _config.Save(_configPath); }));
         layout.Controls.Add(BuildCheckbox("Restart face tracking when the Vive camera attaches late", _config.FaceTrackingAutoFix.RestartOnCameraReappear,
             v => { _config.FaceTrackingAutoFix.RestartOnCameraReappear = v; _config.Save(_configPath); }));
-        layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCOSC",
-            _config.GetApp("vrcosc")?.Enabled ?? _config.VrcOscLifecycle.Enabled,
-            v =>
-            {
-                if (_config.GetApp("vrcosc") is { } app) app.Enabled = v;
-                _config.VrcOscLifecycle.Enabled = v;
-                _config.Save(_configPath);
-            }));
         layout.Controls.Add(BuildCheckbox("Start with Windows", WindowsStartup.IsEnabled(),
             v => WindowsStartup.SetEnabled(v)));
-
-        var bgGroup = new GroupBox { Text = "VRChat background mode", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(380, 0) };
-        var bgLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-        bgLayout.Controls.Add(BuildCheckbox("Run VRChat in the background (small, minimized)", _config.SessionFlow.VrChatBackgroundMode,
-            v => { _config.SessionFlow.VrChatBackgroundMode = v; _config.Save(_configPath); }));
-        bgLayout.Controls.Add(BuildNumericRow("Width", _config.SessionFlow.VrChatBackgroundWidth,
-            v => { _config.SessionFlow.VrChatBackgroundWidth = v; _config.Save(_configPath); }));
-        bgLayout.Controls.Add(BuildNumericRow("Height", _config.SessionFlow.VrChatBackgroundHeight,
-            v => { _config.SessionFlow.VrChatBackgroundHeight = v; _config.Save(_configPath); }));
-        bgLayout.Controls.Add(BuildNumericRow("Monitor", _config.SessionFlow.VrChatBackgroundMonitor,
-            v => { _config.SessionFlow.VrChatBackgroundMonitor = v; _config.Save(_configPath); }));
-        bgGroup.Controls.Add(bgLayout);
-        layout.Controls.Add(bgGroup);
 
         var netGroup = new GroupBox { Text = "Network", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(380, 0) };
         var netLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
