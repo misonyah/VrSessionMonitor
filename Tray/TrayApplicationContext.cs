@@ -204,9 +204,14 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         var text = $"VR Session Monitor — headset {(_headset.IsOnline ? "online" : "offline")}";
 
+        // Snapshot: this runs on HeadsetMonitor's polling thread, while the UI thread can be
+        // adding/removing entries. Enumerating the live List<ManagedApp> here can throw
+        // InvalidOperationException on a background thread — process-fatal. Same reason
+        // ManagedAppWindowService.CheckOnceAsync enumerates a copy.
+        var snapshot = _config.ManagedApps.ToArray();
         var manual = _managedApps.CurrentOrigins
             .Where(kv => kv.Value == AppStartOrigin.Manual)
-            .Select(kv => _config.GetApp(kv.Key)?.DisplayName ?? kv.Key)
+            .Select(kv => snapshot.FirstOrDefault(a => a.Id == kv.Key)?.DisplayName ?? kv.Key)
             .ToList();
         if (manual.Count > 0) text += $" — manual: {string.Join(", ", manual)}";
 

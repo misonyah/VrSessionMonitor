@@ -977,6 +977,25 @@ public sealed class SettingsForm : Form
     private List<ManagedApp> SortedApps() =>
         _config.ManagedApps.OrderBy(a => a.Order).ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
 
+    /// <summary>The list row text for one app: name, disabled marker, window-rule summary, and
+    /// current run state. Extracted so the periodic refresh can update labels in place without
+    /// rebuilding the list (which would tear down the detail panel mid-edit).</summary>
+    private string FormatAppListItem(ManagedApp app)
+    {
+        var enabled = app.Enabled ? "" : "  (disabled)";
+        var rules = DescribeWindowRules(app);
+        var origin = _managedAppService.CurrentOrigins.TryGetValue(app.Id, out var o) ? o : AppStartOrigin.NotRunning;
+        // "manual" is worth surfacing: it explains why an app's window rules were applied (or,
+        // if ApplyWindowRulesWhenStartedManually is off, why they weren't).
+        var originText = origin switch
+        {
+            AppStartOrigin.Managed => "  • running (managed)",
+            AppStartOrigin.Manual => "  • running (manual)",
+            _ => "",
+        };
+        return $"{app.DisplayName}{enabled}{rules}{originText}";
+    }
+
     /// <summary>Repopulates the list, preserving the selected app by Id where possible — index
     /// alone is wrong after a reorder or removal.</summary>
     private void RefreshAppsList()
@@ -987,20 +1006,7 @@ public sealed class SettingsForm : Form
         _appsList.Items.Clear();
         var apps = SortedApps();
         foreach (var app in apps)
-        {
-            var enabled = app.Enabled ? "" : "  (disabled)";
-            var rules = DescribeWindowRules(app);
-            var origin = _managedAppService.CurrentOrigins.TryGetValue(app.Id, out var o) ? o : AppStartOrigin.NotRunning;
-            // "manual" is worth surfacing: it explains why an app's window rules were applied (or,
-            // if ApplyWindowRulesWhenStartedManually is off, why they weren't).
-            var originText = origin switch
-            {
-                AppStartOrigin.Managed => "  • running (managed)",
-                AppStartOrigin.Manual => "  • running (manual)",
-                _ => "",
-            };
-            _appsList.Items.Add($"{app.DisplayName}{enabled}{rules}{originText}");
-        }
+            _appsList.Items.Add(FormatAppListItem(app));
         _appsList.EndUpdate();
 
         var index = previouslySelectedId is null ? -1 : apps.FindIndex(a => a.Id == previouslySelectedId);
@@ -1409,12 +1415,28 @@ public sealed class SettingsForm : Form
         }
     }
 
-    /// <summary>Refreshes the Apps list so running/manual state stays current. Gated on the tab
-    /// actually being visible for the same reason RefreshOptimizationsTabAsync is — no point
-    /// rebuilding a list nobody is looking at.</summary>
+    /// <summary>Keeps the Apps list's run-state suffixes current without rebuilding anything.
+    /// Deliberately does NOT call RefreshAppsList(): that clears the list and reselects, which
+    /// rebuilds the detail panel — destroying whatever control the user is currently editing
+    /// (text rows only commit on Leave, so in-progress keystrokes would be lost every 5s).
+    /// Falls back to a full refresh only when the app count changed, i.e. the list is genuinely
+    /// stale rather than just needing new labels.</summary>
     public void RefreshAppsTab()
     {
         if (!Visible || _tabs.SelectedIndex != AppsTabIndex) return;
-        RefreshAppsList();
+
+        var apps = SortedApps();
+        if (apps.Count != _appsList.Items.Count)
+        {
+            RefreshAppsList();
+            return;
+        }
+
+        for (var i = 0; i < apps.Count; i++)
+        {
+            var text = FormatAppListItem(apps[i]);
+            if (!string.Equals(_appsList.Items[i] as string, text, StringComparison.Ordinal))
+                _appsList.Items[i] = text;
+        }
     }
 }
