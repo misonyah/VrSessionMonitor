@@ -5,9 +5,11 @@ namespace VrSessionMonitor.Config;
 /// (Auto-start VRChat, the overlay picker, the various lifecycle Enabled flags, VRChat background
 /// mode). Runs once, when ManagedApps is empty — see MonitorConfig.LoadOrCreateDefault.
 ///
-/// The point is that upgrading changes nothing observable: whatever auto-started before still
-/// auto-starts, and VRChat's background mode carries over as a real window rule instead of being
-/// silently dropped.
+/// The point is to preserve which apps auto-start, not to leave every observable behaviour
+/// unchanged — some apps (e.g. SlimeVR, which gains BringToFront here) pick up new default window
+/// rules that didn't exist before this model. What must not regress is that whatever auto-started
+/// before still auto-starts, and VRChat's background mode carries over as "start minimized"
+/// instead of being silently dropped.
 /// </summary>
 public static class ManagedAppDefaults
 {
@@ -26,9 +28,14 @@ public static class ManagedAppDefaults
                 Target = config.Paths.VrChatSteamAppId,
                 ProcessName = "VRChat",
                 // Background mode was the only pre-existing window setting; carry it across so the
-                // behaviour doesn't silently change on upgrade.
+                // behaviour doesn't silently change on upgrade. TargetMonitor is deliberately NOT
+                // seeded from VrChatBackgroundMonitor: the old background-mode code never relocated
+                // the window (VrChatBackgroundMonitor was unused for that purpose), and MoveToMonitor
+                // preserves the window's current size rather than resizing it — seeding a monitor
+                // here would just move VRChat's deliberately-small background window to a monitor it
+                // never used to move to, which is a real behaviour change, not upgrade-safe carryover.
                 WindowState = config.SessionFlow.VrChatBackgroundMode ? AppWindowState.Minimized : AppWindowState.Unchanged,
-                TargetMonitor = config.SessionFlow.VrChatBackgroundMode ? config.SessionFlow.VrChatBackgroundMonitor : null,
+                TargetMonitor = null,
             },
             new()
             {

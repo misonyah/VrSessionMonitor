@@ -54,9 +54,13 @@ public class ManagedAppDefaultsTests
     }
 
     /// <summary>Background mode was the only existing window-ish setting — it must carry over as a
-    /// real window rule rather than being silently dropped.</summary>
+    /// real window rule (start minimized) rather than being silently dropped. TargetMonitor must
+    /// NOT be seeded from VrChatBackgroundMonitor: the old background-mode code never relocated the
+    /// window, and MoveToMonitor preserves window size rather than resizing it, so seeding a
+    /// monitor here would move VRChat's deliberately-small background window somewhere it never
+    /// used to go — a real behaviour change, not upgrade-safe carryover.</summary>
     [Fact]
-    public void VrChat_background_mode_seeds_minimized_and_monitor()
+    public void VrChat_background_mode_seeds_minimized_without_relocating()
     {
         var config = BaseConfig();
         config.SessionFlow.VrChatBackgroundMode = true;
@@ -65,7 +69,7 @@ public class ManagedAppDefaultsTests
         var vrchat = ManagedAppDefaults.SeedFrom(config).Single(a => a.Id == "vrchat");
 
         Assert.Equal(AppWindowState.Minimized, vrchat.WindowState);
-        Assert.Equal(2, vrchat.TargetMonitor);
+        Assert.Null(vrchat.TargetMonitor);
     }
 
     [Fact]

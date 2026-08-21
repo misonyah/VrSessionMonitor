@@ -26,6 +26,7 @@ public static class WindowController
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
     [DllImport("user32.dll")] private static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
@@ -128,6 +129,10 @@ public static class WindowController
         }
     }
 
+    /// <summary>Relocates the window to the target monitor's origin, preserving its current size —
+    /// this moves the window onto the monitor, it does not resize it. Filling the monitor is
+    /// Fullscreen's job (ApplyFullScreenBounds), not this one: an app deliberately opened small
+    /// (e.g. VRChat's background-mode window) must stay small after being moved.</summary>
     private static void MoveToMonitor(IntPtr handle, int monitorIndex)
     {
         var screens = System.Windows.Forms.Screen.AllScreens;
@@ -137,9 +142,30 @@ public static class WindowController
             return;
         }
 
-        var bounds = screens[monitorIndex - 1].WorkingArea;
+        var target = screens[monitorIndex - 1].WorkingArea;
         ShowWindow(handle, SW_RESTORE); // can't reposition a maximised/minimised window meaningfully
-        MoveWindow(handle, bounds.X, bounds.Y, bounds.Width, bounds.Height, true);
+
+        var width = target.Width;
+        var height = target.Height;
+        if (GetWindowRect(handle, out var rect))
+        {
+            var currentWidth = rect.Right - rect.Left;
+            var currentHeight = rect.Bottom - rect.Top;
+            // Clamp so a window larger than the target monitor doesn't end up placed off-screen.
+            width = Math.Min(currentWidth, target.Width);
+            height = Math.Min(currentHeight, target.Height);
+        }
+
+        MoveWindow(handle, target.X, target.Y, width, height, true);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 
     /// <summary>Resizes the window to fill the target monitor's full bounds, including the area
