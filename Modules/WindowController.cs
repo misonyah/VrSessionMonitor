@@ -88,9 +88,14 @@ public static class WindowController
                 proc.Refresh();
                 if (proc.MainWindowHandle != IntPtr.Zero) return proc.MainWindowHandle;
             }
-            catch (ArgumentException)
+            // GetProcessById throws ArgumentException when the pid is already gone;
+            // MainWindowHandle throws InvalidOperationException when the process exits between
+            // that lookup and the property read. Both mean the same thing to the caller — there is
+            // no window to act on — and neither is an error worth propagating, since this whole
+            // path is best-effort by design.
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
             {
-                return IntPtr.Zero; // process exited while we waited
+                return IntPtr.Zero;
             }
 
             await Task.Delay(pollMs).ConfigureAwait(false);
