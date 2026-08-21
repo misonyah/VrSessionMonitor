@@ -945,13 +945,7 @@ public sealed class SettingsForm : Form
         leftPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _appsList = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false };
-        _appsList.SelectedIndexChanged += (_, _) =>
-        {
-            _selectedApp = _appsList.SelectedIndex >= 0 && _appsList.SelectedIndex < SortedApps().Count
-                ? SortedApps()[_appsList.SelectedIndex]
-                : null;
-            RebuildAppDetailPanel();
-        };
+        _appsList.SelectedIndexChanged += OnAppsListSelectedIndexChanged;
         leftPanel.Controls.Add(_appsList, 0, 0);
 
         var listButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
@@ -970,6 +964,17 @@ public sealed class SettingsForm : Form
 
         RefreshAppsList();
         return tab;
+    }
+
+    /// <summary>Handles _appsList's SelectedIndexChanged. Extracted to a named method (rather than
+    /// an inline lambda) so RefreshAppsTab can detach/reattach it around its in-place label-only
+    /// update loop — see the comment there for why.</summary>
+    private void OnAppsListSelectedIndexChanged(object? sender, EventArgs e)
+    {
+        _selectedApp = _appsList.SelectedIndex >= 0 && _appsList.SelectedIndex < SortedApps().Count
+            ? SortedApps()[_appsList.SelectedIndex]
+            : null;
+        RebuildAppDetailPanel();
     }
 
     /// <summary>Apps in display order. Order is a user-editable int, so sort rather than trusting
@@ -1432,11 +1437,24 @@ public sealed class SettingsForm : Form
             return;
         }
 
-        for (var i = 0; i < apps.Count; i++)
+        // Reassigning the CURRENTLY-SELECTED row fires SelectedIndexChanged twice (deselect to -1,
+        // then reselect), which would rebuild the detail panel and destroy whatever control the
+        // user is mid-edit in. Verified empirically against a real ListBox handle. Detaching for
+        // the duration of a pure label update is safe: the selection genuinely doesn't change, so
+        // there is no state the handler needs to observe.
+        _appsList.SelectedIndexChanged -= OnAppsListSelectedIndexChanged;
+        try
         {
-            var text = FormatAppListItem(apps[i]);
-            if (!string.Equals(_appsList.Items[i] as string, text, StringComparison.Ordinal))
-                _appsList.Items[i] = text;
+            for (var i = 0; i < apps.Count; i++)
+            {
+                var text = FormatAppListItem(apps[i]);
+                if (!string.Equals(_appsList.Items[i] as string, text, StringComparison.Ordinal))
+                    _appsList.Items[i] = text;
+            }
+        }
+        finally
+        {
+            _appsList.SelectedIndexChanged += OnAppsListSelectedIndexChanged;
         }
     }
 }
