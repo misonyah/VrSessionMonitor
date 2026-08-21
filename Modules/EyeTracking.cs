@@ -357,7 +357,7 @@ public sealed class BaballoniaLaunchTrigger : IDisposable
 
     private async Task CheckOnceAsync()
     {
-        if (!_config.BaballoniaLifecycle.Enabled)
+        if (!(_config.GetApp("baballonia")?.Enabled ?? _config.BaballoniaLifecycle.Enabled))
             return;
 
         if (ProcessLauncher.IsRunning("Baballonia.Desktop"))
@@ -727,7 +727,7 @@ public sealed class EyeTrackingMonitor : IDisposable
     /// connection that our restart logic has already given up retrying.</summary>
     private void MaybeAutoCloseBaballonia(List<EyeCameraStatus> results)
     {
-        if (!_config.BaballoniaLifecycle.Enabled) return;
+        if (!(_config.GetApp("baballonia")?.Enabled ?? _config.BaballoniaLifecycle.Enabled)) return;
         if (results.Count == 0) return;
 
         if (!ProcessLauncher.IsRunning("Baballonia.Desktop"))
@@ -790,7 +790,7 @@ public sealed class EyeTrackingMonitor : IDisposable
             }
         }
 
-        if (_config.BaballoniaLifecycle.Enabled && _allCamerasOfflineSinceUtc is DateTime offlineSince && !_closedForCurrentOutage)
+        if ((_config.GetApp("baballonia")?.Enabled ?? _config.BaballoniaLifecycle.Enabled) && _allCamerasOfflineSinceUtc is DateTime offlineSince && !_closedForCurrentOutage)
         {
             var remaining = TimeSpan.FromMilliseconds(_config.EyeCameraAutoRestart.AutoCloseAfterAllOfflineMs) - (now - offlineSince);
             if (remaining > TimeSpan.Zero)
