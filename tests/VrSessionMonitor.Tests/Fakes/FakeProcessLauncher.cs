@@ -20,6 +20,8 @@ public sealed class FakeProcessLauncher : IProcessLauncher
     /// (i.e. "not running"), which is what the start-time comparison paths treat as a no-op.</summary>
     public readonly Dictionary<string, DateTime?> StartTimes = new();
 
+    public LaunchProvenance Provenance { get; } = new();
+
     public Task<ProcessLauncher.LaunchResult> EnsureRunningAsync(
         string processName, string exePath, string? args,
         int startupTimeoutMs, int pollIntervalMs,
@@ -28,6 +30,7 @@ public sealed class FakeProcessLauncher : IProcessLauncher
         EnsureRunningCalls.Add(processName);
         var already = Running.Contains(processName);
         Running.Add(processName);
+        if (GetProcessId(processName) is int pid) Provenance.RecordLaunched(processName, pid);
         return Task.FromResult(new ProcessLauncher.LaunchResult(
             AlreadyRunning: already, Started: !already, Success: true, Error: null));
     }

@@ -30,6 +30,13 @@ public sealed class ProcessLauncher : IProcessLauncher
     private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(30);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> LocksByProcessName = new();
 
+    /// <summary>One provenance record for the whole process. ProcessLauncher is instantiated in
+    /// several places (and also used via its statics), so a per-instance record would fragment and
+    /// make managed launches look manual.</summary>
+    private static readonly LaunchProvenance SharedProvenance = new();
+
+    public LaunchProvenance Provenance => SharedProvenance;
+
     /// <summary>This app's own Windows session (the interactive user session for a tray app).
     /// -1 means "couldn't determine" — in which case session-scoping is disabled and matching
     /// falls back to the old all-sessions behavior.</summary>
@@ -138,6 +145,8 @@ public sealed class ProcessLauncher : IProcessLauncher
 
                 if (IsRunning(processName))
                 {
+                    if (GetProcessId(processName) is int startedPid)
+                        Provenance.RecordLaunched(processName, startedPid);
                     Log.Info("ProcessLauncher", $"'{processName}' confirmed running after {elapsed}ms.");
                     return new LaunchResult(false, true, true, null);
                 }
