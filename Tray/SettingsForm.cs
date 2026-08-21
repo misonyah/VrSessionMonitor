@@ -72,6 +72,10 @@ public sealed class SettingsForm : Form
     private readonly Dictionary<string, Label> _optimizationStatusLabels = new();
     private readonly Dictionary<string, Button> _optimizationFixButtons = new();
 
+    private ListBox _appsList = null!;
+    private Panel _appDetailPanel = null!;
+    private ManagedApp? _selectedApp;
+
     public SettingsForm(
         TrayApplicationContext owner,
         MonitorConfig config,
@@ -126,6 +130,8 @@ public sealed class SettingsForm : Form
 #if INCLUDE_HOME_ASSISTANT
         _tabs.TabPages.Add(BuildAutomationTab());
 #endif
+        AppsTabIndex = _tabs.TabPages.Count;
+        _tabs.TabPages.Add(BuildAppsTab());
         _tabs.TabPages.Add(BuildAdvancedTab());
         _optimizationsTabPage = BuildOptimizationsTab();
         _tabs.TabPages.Add(_optimizationsTabPage);
@@ -164,6 +170,10 @@ public sealed class SettingsForm : Form
     /// <summary>Index of the Settings tab — same reasoning as HomeAssistantTabIndex, since tab
     /// order has already shifted once (Home Assistant moved in front of it).</summary>
     public int SettingsTabIndex { get; private set; }
+
+    /// <summary>Index of the Apps tab — same reasoning as HomeAssistantTabIndex/SettingsTabIndex,
+    /// since tab order shifts as tabs are added.</summary>
+    public int AppsTabIndex { get; private set; }
 
     /// <summary>Shows (or focuses, if already open) the window on the given tab index. Left-click
     /// opens Status (0), right-click opens SettingsTabIndex, middle-click opens
@@ -910,6 +920,121 @@ public sealed class SettingsForm : Form
         var button = new Button { Text = text, AutoSize = true, Margin = new Padding(3, 3, 3, 3) };
         button.Click += (_, _) => onClick();
         return button;
+    }
+
+    // ───────────────────────────── Apps tab ─────────────────────────────
+
+    /// <summary>Master–detail editor for ManagedApps: the list on the left, the selected app's
+    /// launch and window settings on the right. Replaces the per-app checkbox pile that used to
+    /// live in the Settings tab, which grew a row per app and didn't scale — see
+    /// docs/superpowers/specs/2026-08-21-managed-apps-window-control-design.md.</summary>
+    private TabPage BuildAppsTab()
+    {
+        var tab = new TabPage("Apps");
+
+        var split = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(8) };
+        split.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+        split.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
+
+        // ── left: the list plus its reorder/add/remove controls
+        var leftPanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 };
+        leftPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        leftPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _appsList = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false };
+        _appsList.SelectedIndexChanged += (_, _) =>
+        {
+            _selectedApp = _appsList.SelectedIndex >= 0 && _appsList.SelectedIndex < SortedApps().Count
+                ? SortedApps()[_appsList.SelectedIndex]
+                : null;
+            RebuildAppDetailPanel();
+        };
+        leftPanel.Controls.Add(_appsList, 0, 0);
+
+        var listButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+        listButtons.Controls.Add(BuildActionButton("Add", AddManagedApp));
+        listButtons.Controls.Add(BuildActionButton("Remove", RemoveSelectedManagedApp));
+        listButtons.Controls.Add(BuildActionButton("Up", () => MoveSelectedManagedApp(-1)));
+        listButtons.Controls.Add(BuildActionButton("Down", () => MoveSelectedManagedApp(1)));
+        leftPanel.Controls.Add(listButtons, 0, 1);
+
+        // ── right: the detail panel, rebuilt on each selection change
+        _appDetailPanel = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(10, 0, 0, 0) };
+
+        split.Controls.Add(leftPanel, 0, 0);
+        split.Controls.Add(_appDetailPanel, 1, 0);
+        tab.Controls.Add(split);
+
+        RefreshAppsList();
+        return tab;
+    }
+
+    /// <summary>Apps in display order. Order is a user-editable int, so sort rather than trusting
+    /// the raw list order — a hand-edited config can easily have gaps or duplicates.</summary>
+    private List<ManagedApp> SortedApps() =>
+        _config.ManagedApps.OrderBy(a => a.Order).ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>Repopulates the list, preserving the selected app by Id where possible — index
+    /// alone is wrong after a reorder or removal.</summary>
+    private void RefreshAppsList()
+    {
+        var previouslySelectedId = _selectedApp?.Id;
+
+        _appsList.BeginUpdate();
+        _appsList.Items.Clear();
+        var apps = SortedApps();
+        foreach (var app in apps)
+        {
+            var enabled = app.Enabled ? "" : "  (disabled)";
+            var rules = DescribeWindowRules(app);
+            _appsList.Items.Add($"{app.DisplayName}{enabled}{rules}");
+        }
+        _appsList.EndUpdate();
+
+        var index = previouslySelectedId is null ? -1 : apps.FindIndex(a => a.Id == previouslySelectedId);
+        if (index < 0 && apps.Count > 0) index = 0;
+        if (index >= 0)
+        {
+            _appsList.SelectedIndex = index;
+            _selectedApp = apps[index];
+        }
+        else
+        {
+            _selectedApp = null;
+        }
+        RebuildAppDetailPanel();
+    }
+
+    /// <summary>Short suffix so the list conveys each app's window rules without needing to click
+    /// through every entry.</summary>
+    private static string DescribeWindowRules(ManagedApp app)
+    {
+        var parts = new List<string>();
+        if (app.WindowState != AppWindowState.Unchanged) parts.Add(app.WindowState.ToString().ToLowerInvariant());
+        if (app.BringToFront) parts.Add("front");
+        if (app.KeepInBackground) parts.Add("background");
+        if (app.TargetMonitor is int m) parts.Add($"mon{m}");
+        return parts.Count == 0 ? "" : $"  [{string.Join(", ", parts)}]";
+    }
+
+    private void RebuildAppDetailPanel()
+    {
+        // Filled in by Task 2.
+    }
+
+    private void AddManagedApp()
+    {
+        // Filled in by Task 3.
+    }
+
+    private void RemoveSelectedManagedApp()
+    {
+        // Filled in by Task 3.
+    }
+
+    private void MoveSelectedManagedApp(int delta)
+    {
+        // Filled in by Task 3.
     }
 
     // ───────────────────────────── Advanced tab ─────────────────────────────
