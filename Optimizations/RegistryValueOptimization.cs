@@ -16,15 +16,24 @@ public sealed class RegistryValueOptimization : IOptimization
     private readonly Func<IEnumerable<RegistryValueTarget>> _targetsProvider;
     private readonly IRegistryAccessor _registry;
 
+    private readonly string? _inheritedGrantPath;
+
+    /// <param name="inheritedGrantPath">Optional HKLM parent key to grant ONCE with subkey
+    /// inheritance, instead of granting each target's own key separately. For a check whose targets
+    /// are created by Windows and churn (Tcpip\Parameters\Interfaces, one GUID-named subkey per
+    /// network adapter), per-target granting means a new UAC prompt every time an adapter appears.
+    /// Granting the parent once covers every present and future child.</param>
     public RegistryValueOptimization(
         string id, string displayName, OptimizationCategory category,
-        Func<IEnumerable<RegistryValueTarget>> targetsProvider, IRegistryAccessor registry)
+        Func<IEnumerable<RegistryValueTarget>> targetsProvider, IRegistryAccessor registry,
+        string? inheritedGrantPath = null)
     {
         Id = id;
         DisplayName = displayName;
         Category = category;
         _targetsProvider = targetsProvider;
         _registry = registry;
+        _inheritedGrantPath = inheritedGrantPath;
     }
 
     public string Id { get; }
@@ -50,17 +59,22 @@ public sealed class RegistryValueOptimization : IOptimization
     /// instead of silently staying ungranted forever.</summary>
     public async Task EnsureAccessGrantedAsync(OptimizationEntry entry)
     {
-        var hklmPaths = _targetsProvider()
-            .Where(t => t.Hive == OptRegistryHive.LocalMachine)
-            .Select(t => t.SubKeyPath)
-            .Distinct()
-            .ToList();
-
-        if (hklmPaths.Count == 0)
+        var hasHklmTargets = _targetsProvider().Any(t => t.Hive == OptRegistryHive.LocalMachine);
+        if (!hasHklmTargets)
         {
             entry.AccessGranted = true; // HKCU-only — already writable, no elevation needed
             return;
         }
+
+        // A check with an inherited grant path grants ONE parent key covering every present and
+        // future child, rather than each churning child individually — see the constructor's doc.
+        var hklmPaths = _inheritedGrantPath is string parent
+            ? new List<string> { parent }
+            : _targetsProvider()
+                .Where(t => t.Hive == OptRegistryHive.LocalMachine)
+                .Select(t => t.SubKeyPath)
+                .Distinct()
+                .ToList();
 
         var newPaths = hklmPaths.Where(p => !entry.GrantedTargets.Contains(p)).ToList();
         if (newPaths.Count == 0)
@@ -74,7 +88,7 @@ public sealed class RegistryValueOptimization : IOptimization
         // target granted" on every call — including flipping back to false if a newly appeared
         // path (e.g. a just-connected network adapter) fails to grant even though earlier paths
         // already succeeded.
-        if (await RegistryAccessGrant.GrantWriteAccessAsync(newPaths).ConfigureAwait(false))
+        if (await RegistryAccessGrant.GrantWriteAccessAsync(newPaths, inheritToSubkeys: _inheritedGrantPath is not null).ConfigureAwait(false))
         {
             foreach (var p in newPaths)
                 entry.GrantedTargets.Add(p);

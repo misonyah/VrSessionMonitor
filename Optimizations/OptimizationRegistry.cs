@@ -60,7 +60,11 @@ public static class OptimizationRegistry
                     new RegistryValueTarget(OptRegistryHive.LocalMachine, $@"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{guid}", "TCPNoDelay", 1, RegistryValueKind.DWord),
                     new RegistryValueTarget(OptRegistryHive.LocalMachine, $@"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{guid}", "TcpAckFrequency", 1, RegistryValueKind.DWord),
                 }),
-                registry),
+                registry,
+                // Grant the parent ONCE with inheritance instead of each adapter's own subkey:
+                // Windows creates a subkey per adapter, so per-target granting produced a fresh UAC
+                // prompt every time one appeared. See RegistryValueOptimization's constructor doc.
+                inheritedGrantPath: @"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"),
 
             new RegistryValueOptimization("pause-windows-update", "Pause Windows Update during session", OptimizationCategory.Registry,
                 () => new[]
@@ -79,12 +83,27 @@ public static class OptimizationRegistry
         };
     }
 
+    /// <summary>
+    /// Physical adapters only — deliberately NOT every non-loopback interface that happens to be up.
+    ///
+    /// Confirmed live 2026-08-21: the broader filter matched every transient virtual adapter (VPN,
+    /// the PC's own hotspot, Hyper-V/WSL switches, Virtual Desktop), each of which owns a
+    /// GUID-named registry subkey. The granted-target list had grown to 44 entries while only 4
+    /// interfaces were actually up, and every newly-appearing adapter triggered another elevation
+    /// prompt. Filtering to real hardware is also simply more correct: VR traffic reaches the
+    /// headset over Ethernet or Wi-Fi, so tuning a WSL switch's TCP stack achieves nothing.
+    /// </summary>
     private static IEnumerable<string> GetActiveAdapterInterfaceGuids()
     {
         try
         {
             return NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                .Where(n => n.OperationalStatus == OperationalStatus.Up)
+                .Where(n => n.NetworkInterfaceType is NetworkInterfaceType.Ethernet
+                                                  or NetworkInterfaceType.GigabitEthernet
+                                                  or NetworkInterfaceType.FastEthernetT
+                                                  or NetworkInterfaceType.FastEthernetFx
+                                                  or NetworkInterfaceType.Wireless80211)
                 .Select(n => n.Id)
                 .ToList();
         }

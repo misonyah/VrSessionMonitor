@@ -151,6 +151,15 @@ public sealed class FaceTrackingMonitor : IDisposable
 
         LogTransition("vhui64.exe (VirtualHere client)", _last.VirtualHereRunning, status.VirtualHereRunning);
         LogTransition("sr_runtime.exe (SRanipal)", _last.SRanipalRunning, status.SRanipalRunning);
+
+        // Names whoever actually started sr_runtime.exe. VrSessionMonitor's own two launch paths
+        // (VirtualHereSRanipalLifecycleManager and the auto-fix relaunch) both pass
+        // suppressUacPrompt, so a UAC prompt for SRanipal means something ELSE launched it — and
+        // we can only suppress launches we perform. Confirmed live 2026-08-20: sr_runtime started
+        // while our own "not running — launching it" line never appeared, so the launcher was
+        // external. This turns that guess into evidence the next time it happens.
+        if (!_last.SRanipalRunning && status.SRanipalRunning)
+            Log.Info("FaceTracking", $"sr_runtime.exe was started by: {DescribeProcessParent("sr_runtime")}");
         LogTransition("VRCFaceTracking.exe", _last.VrcFaceTrackingRunning, status.VrcFaceTrackingRunning);
 
         if (_last.SRanipalServiceRunning != status.SRanipalServiceRunning)
@@ -635,6 +644,39 @@ public sealed class FaceTrackingMonitor : IDisposable
         }
 
         return results;
+    }
+
+    /// <summary>Best-effort "who launched this process" via WMI's ParentProcessId. Returns a
+    /// description rather than throwing — this is diagnostic only, and the parent frequently has
+    /// already exited (a launcher that spawns and quits), which is itself useful to know.</summary>
+    private static string DescribeProcessParent(string processName)
+    {
+        try
+        {
+            using var proc = Process.GetProcessesByName(processName).FirstOrDefault();
+            if (proc is null) return "unknown (process already gone)";
+
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                $"SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = {proc.Id}");
+            foreach (System.Management.ManagementObject row in searcher.Get())
+            {
+                var parentPid = Convert.ToInt32(row["ParentProcessId"]);
+                try
+                {
+                    using var parent = Process.GetProcessById(parentPid);
+                    return $"{parent.ProcessName} (PID {parentPid})";
+                }
+                catch (ArgumentException)
+                {
+                    return $"PID {parentPid} (parent already exited)";
+                }
+            }
+            return "unknown (no parent reported)";
+        }
+        catch (Exception ex)
+        {
+            return $"unknown ({ex.GetType().Name}: {ex.Message})";
+        }
     }
 
     private static void LogTransition(string label, bool wasRunning, bool isRunning)
