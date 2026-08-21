@@ -608,16 +608,37 @@ public sealed class SettingsForm : Form
         };
         overlayRow.Controls.Add(overlayCombo);
         layout.Controls.Add(overlayRow);
-        layout.Controls.Add(BuildCheckbox("Auto-start/stop Baballonia", _config.BaballoniaLifecycle.Enabled,
-            v => { _config.BaballoniaLifecycle.Enabled = v; _config.Save(_configPath); }));
-        layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCFaceTracking", _config.VrcFaceTrackingLifecycle.Enabled,
-            v => { _config.VrcFaceTrackingLifecycle.Enabled = v; _config.Save(_configPath); }));
+        layout.Controls.Add(BuildCheckbox("Auto-start/stop Baballonia",
+            _config.GetApp("baballonia")?.Enabled ?? _config.BaballoniaLifecycle.Enabled,
+            v =>
+            {
+                // Write both: ManagedApp is what EyeTracking's lifecycle logic reads, the legacy
+                // property is kept in sync so a hand-edited or pre-migration config still behaves
+                // predictably.
+                if (_config.GetApp("baballonia") is { } app) app.Enabled = v;
+                _config.BaballoniaLifecycle.Enabled = v;
+                _config.Save(_configPath);
+            }));
+        layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCFaceTracking",
+            _config.GetApp("vrcfacetracking")?.Enabled ?? _config.VrcFaceTrackingLifecycle.Enabled,
+            v =>
+            {
+                if (_config.GetApp("vrcfacetracking") is { } app) app.Enabled = v;
+                _config.VrcFaceTrackingLifecycle.Enabled = v;
+                _config.Save(_configPath);
+            }));
         layout.Controls.Add(BuildCheckbox("Auto-heal face tracking (restart SRanipal + VRCFaceTracking when it stalls/freezes)", _config.FaceTrackingAutoFix.Enabled,
             v => { _config.FaceTrackingAutoFix.Enabled = v; _config.Save(_configPath); }));
         layout.Controls.Add(BuildCheckbox("Restart face tracking when the Vive camera attaches late", _config.FaceTrackingAutoFix.RestartOnCameraReappear,
             v => { _config.FaceTrackingAutoFix.RestartOnCameraReappear = v; _config.Save(_configPath); }));
-        layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCOSC", _config.VrcOscLifecycle.Enabled,
-            v => { _config.VrcOscLifecycle.Enabled = v; _config.Save(_configPath); }));
+        layout.Controls.Add(BuildCheckbox("Auto-start/stop VRCOSC",
+            _config.GetApp("vrcosc")?.Enabled ?? _config.VrcOscLifecycle.Enabled,
+            v =>
+            {
+                if (_config.GetApp("vrcosc") is { } app) app.Enabled = v;
+                _config.VrcOscLifecycle.Enabled = v;
+                _config.Save(_configPath);
+            }));
         layout.Controls.Add(BuildCheckbox("Start with Windows", WindowsStartup.IsEnabled(),
             v => WindowsStartup.SetEnabled(v)));
 
