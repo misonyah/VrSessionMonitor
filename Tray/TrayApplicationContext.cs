@@ -108,7 +108,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // see SettingsForm's own doc comment for why. Created once and shown/hidden from here on,
         // never recreated.
         _settingsForm = new SettingsForm(this, _config, _configPath, _headset, _trackers, _steamVr,
-            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _slimeLifecycle, _firmwareNotify, _orchestrator, _optimizations);
+            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _slimeLifecycle, _firmwareNotify, _orchestrator, _optimizations, _managedApps);
 
         _notifyIcon = new NotifyIcon
         {
@@ -181,7 +181,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
-        statusTimer.Tick += (_, _) => { _settingsForm.RefreshStatus(); _ = _settingsForm.RefreshOptimizationsTabAsync(); };
+        statusTimer.Tick += (_, _) => { _settingsForm.RefreshStatus(); _ = _settingsForm.RefreshOptimizationsTabAsync(); _settingsForm.RefreshAppsTab(); UpdateTrayTooltip(); };
         statusTimer.Start();
 
         Log.Info("Tray", "VR Session Monitor started and all background monitors running.");
@@ -190,11 +190,28 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void OnHeadsetStateChanged(object? sender, HeadsetStateChangedEventArgs e)
     {
-        _notifyIcon.Text = $"VR Session Monitor — headset {(e.IsOnline ? "online" : "offline")}";
+        UpdateTrayTooltip();
         if (e.IsOnline)
             _notifyIcon.ShowBalloonTip(3000, "VR Session Monitor", "Headset detected — starting session flow.", ToolTipIcon.Info);
 
         _settingsForm.UpdateHeadsetStatus(e.IsOnline);
+    }
+
+    /// <summary>Single owner of the tray tooltip text. Both the headset-state handler and the
+    /// periodic refresh route through here — two independent writers would overwrite each other,
+    /// making the tooltip flip between whichever fired last.</summary>
+    private void UpdateTrayTooltip()
+    {
+        var text = $"VR Session Monitor — headset {(_headset.IsOnline ? "online" : "offline")}";
+
+        var manual = _managedApps.CurrentOrigins
+            .Where(kv => kv.Value == AppStartOrigin.Manual)
+            .Select(kv => _config.GetApp(kv.Key)?.DisplayName ?? kv.Key)
+            .ToList();
+        if (manual.Count > 0) text += $" — manual: {string.Join(", ", manual)}";
+
+        // NotifyIcon.Text silently fails (or throws, depending on Windows version) above 63 chars.
+        _notifyIcon.Text = text.Length <= 63 ? text : text[..60] + "...";
     }
 
     /// <summary>Notify-only, matching UpdateChecker's own contract — never installs anything, just

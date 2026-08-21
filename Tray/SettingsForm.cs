@@ -43,6 +43,7 @@ public sealed class SettingsForm : Form
     private readonly FirmwareNotificationListener _firmwareNotify;
     private readonly SessionOrchestrator _orchestrator;
     private readonly OptimizationsManager _optimizations;
+    private readonly ManagedAppWindowService _managedAppService;
 
     private TabControl _tabs = null!;
     private TabPage _optimizationsTabPage = null!;
@@ -92,7 +93,8 @@ public sealed class SettingsForm : Form
         SlimeVrLifecycleManager slimeLifecycle,
         FirmwareNotificationListener firmwareNotify,
         SessionOrchestrator orchestrator,
-        OptimizationsManager optimizations)
+        OptimizationsManager optimizations,
+        ManagedAppWindowService managedAppService)
     {
         _owner = owner;
         _config = config;
@@ -110,6 +112,7 @@ public sealed class SettingsForm : Form
         _firmwareNotify = firmwareNotify;
         _orchestrator = orchestrator;
         _optimizations = optimizations;
+        _managedAppService = managedAppService;
 
         Text = "VR Session Monitor";
         Width = 680;
@@ -987,7 +990,16 @@ public sealed class SettingsForm : Form
         {
             var enabled = app.Enabled ? "" : "  (disabled)";
             var rules = DescribeWindowRules(app);
-            _appsList.Items.Add($"{app.DisplayName}{enabled}{rules}");
+            var origin = _managedAppService.CurrentOrigins.TryGetValue(app.Id, out var o) ? o : AppStartOrigin.NotRunning;
+            // "manual" is worth surfacing: it explains why an app's window rules were applied (or,
+            // if ApplyWindowRulesWhenStartedManually is off, why they weren't).
+            var originText = origin switch
+            {
+                AppStartOrigin.Managed => "  • running (managed)",
+                AppStartOrigin.Manual => "  • running (manual)",
+                _ => "",
+            };
+            _appsList.Items.Add($"{app.DisplayName}{enabled}{rules}{originText}");
         }
         _appsList.EndUpdate();
 
@@ -1395,5 +1407,14 @@ public sealed class SettingsForm : Form
         {
             _refreshingOptimizationsTab = false;
         }
+    }
+
+    /// <summary>Refreshes the Apps list so running/manual state stays current. Gated on the tab
+    /// actually being visible for the same reason RefreshOptimizationsTabAsync is — no point
+    /// rebuilding a list nobody is looking at.</summary>
+    public void RefreshAppsTab()
+    {
+        if (!Visible || _tabs.SelectedIndex != AppsTabIndex) return;
+        RefreshAppsList();
     }
 }
