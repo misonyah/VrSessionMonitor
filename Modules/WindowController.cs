@@ -58,7 +58,7 @@ public static class WindowController
                 case AppWindowState.Minimized: ShowWindow(handle, SW_MINIMIZE); break;
                 case AppWindowState.Maximized: ShowWindow(handle, SW_MAXIMIZE); break;
                 case AppWindowState.Normal: ShowWindow(handle, SW_SHOWNORMAL); break;
-                case AppWindowState.Fullscreen: ApplyBorderlessFullscreen(handle, targetMonitor); break;
+                case AppWindowState.Fullscreen: ApplyFullScreenBounds(handle, targetMonitor); break;
                 case AppWindowState.Unchanged: default: break;
             }
 
@@ -142,9 +142,16 @@ public static class WindowController
         MoveWindow(handle, bounds.X, bounds.Y, bounds.Width, bounds.Height, true);
     }
 
-    /// <summary>Borderless-maximised onto the target monitor. Deliberately does NOT touch the app's
-    /// own fullscreen mode — see AppWindowState.Fullscreen's doc.</summary>
-    private static void ApplyBorderlessFullscreen(IntPtr handle, int? targetMonitor)
+    /// <summary>Resizes the window to fill the target monitor's full bounds, including the area
+    /// behind the taskbar — which is what distinguishes this from Maximized (SW_MAXIMIZE respects
+    /// the working area and leaves the taskbar visible).
+    ///
+    /// Deliberately does NOT strip window chrome: true borderless would mean rewriting GWL_STYLE,
+    /// which requires saving and restoring each window's original style to avoid stranding an app
+    /// permanently borderless. That state isn't tracked anywhere, so the title bar stays. It also
+    /// does not touch an app's own internal fullscreen mode — VRChat and most others expose that
+    /// through their own launch args or settings.</summary>
+    private static void ApplyFullScreenBounds(IntPtr handle, int? targetMonitor)
     {
         var screens = System.Windows.Forms.Screen.AllScreens;
         var screen = targetMonitor is int m && m >= 1 && m <= screens.Length

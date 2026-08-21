@@ -3,8 +3,10 @@ namespace VrSessionMonitor.Config;
 public enum AppLaunchMethod { Executable, SteamAppId }
 
 /// <summary>Window state to put an app into once its main window exists.
-/// Fullscreen is borderless-maximised onto the target monitor — it deliberately does NOT drive an
-/// app's own internal fullscreen mode (VRChat takes a launch arg for that; most apps have their
+/// Fullscreen resizes the window to fill the target monitor's full bounds, including the area
+/// behind the taskbar (unlike Maximized, which respects the working area) — the window keeps its
+/// title bar and border, it is not true borderless chrome removal. It deliberately does NOT drive
+/// an app's own internal fullscreen mode (VRChat takes a launch arg for that; most apps have their
 /// own toggle). Unchanged leaves the window exactly as the app opened it.</summary>
 public enum AppWindowState { Unchanged, Normal, Minimized, Maximized, Fullscreen }
 
