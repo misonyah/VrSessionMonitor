@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
+using VrSessionMonitor.Modules;
 
 namespace VrSessionMonitor.Modules.HomeAssistant;
 
@@ -173,52 +174,59 @@ public sealed class HmdActivityMonitor : IDisposable
         level = EDeviceActivityLevel.Unknown;
         if (!EnsureDllLoaded()) return false;
 
-        var initError = EVRInitError_None;
-        uint token;
-        try
+        // Must hold OpenVrNativeGate.Lock for the whole Init->Shutdown cycle — see that class's
+        // doc for the 2026-08-14 crash this fixes (this poll raced a concurrent
+        // SteamVrNotifier.TryNotify call and one thread's VR_ShutdownInternal tore down the
+        // process-global OpenVR context while the other was still using it).
+        lock (OpenVrNativeGate.Lock)
         {
-            token = InitInternal2(ref initError, EVRApplicationType_Background, null);
-        }
-        catch (Exception ex)
-        {
-            Log.Debug("HmdActivity", $"VR_InitInternal2 threw: {ex.Message}");
-            return false;
-        }
-
-        if (initError == EVRInitError_NoServerForBackgroundApp)
-        {
-            Log.Trace("HmdActivity", "SteamVR isn't running — will retry next poll.");
-            return false;
-        }
-
-        if (initError != EVRInitError_None || token == 0)
-        {
-            Log.Debug("HmdActivity", $"OpenVR init failed with error code {initError}.");
-            return false;
-        }
-
-        try
-        {
-            var ifaceError = EVRInitError_None;
-            var pInterface = GetGenericInterface(FnTablePrefix + IVRSystem_Version, ref ifaceError);
-            if (pInterface == IntPtr.Zero || ifaceError != EVRInitError_None)
+            var initError = EVRInitError_None;
+            uint token;
+            try
             {
-                Log.Warn("HmdActivity", $"Could not get IVRSystem interface (error {ifaceError}) — if this persists after a SteamVR update, {IVRSystem_Version} may need bumping to match the installed openvr_api.dll.");
+                token = InitInternal2(ref initError, EVRApplicationType_Background, null);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("HmdActivity", $"VR_InitInternal2 threw: {ex.Message}");
                 return false;
             }
 
-            var fnTable = (IVRSystemFnTable)Marshal.PtrToStructure(pInterface, typeof(IVRSystemFnTable))!;
-            level = fnTable.GetTrackedDeviceActivityLevel(HmdDeviceIndex);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Log.Debug("HmdActivity", $"GetTrackedDeviceActivityLevel threw: {ex.Message} — will retry next poll.");
-            return false;
-        }
-        finally
-        {
-            try { ShutdownInternal(); } catch { /* best effort */ }
+            if (initError == EVRInitError_NoServerForBackgroundApp)
+            {
+                Log.Trace("HmdActivity", "SteamVR isn't running — will retry next poll.");
+                return false;
+            }
+
+            if (initError != EVRInitError_None || token == 0)
+            {
+                Log.Debug("HmdActivity", $"OpenVR init failed with error code {initError}.");
+                return false;
+            }
+
+            try
+            {
+                var ifaceError = EVRInitError_None;
+                var pInterface = GetGenericInterface(FnTablePrefix + IVRSystem_Version, ref ifaceError);
+                if (pInterface == IntPtr.Zero || ifaceError != EVRInitError_None)
+                {
+                    Log.Warn("HmdActivity", $"Could not get IVRSystem interface (error {ifaceError}) — if this persists after a SteamVR update, {IVRSystem_Version} may need bumping to match the installed openvr_api.dll.");
+                    return false;
+                }
+
+                var fnTable = (IVRSystemFnTable)Marshal.PtrToStructure(pInterface, typeof(IVRSystemFnTable))!;
+                level = fnTable.GetTrackedDeviceActivityLevel(HmdDeviceIndex);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("HmdActivity", $"GetTrackedDeviceActivityLevel threw: {ex.Message} — will retry next poll.");
+                return false;
+            }
+            finally
+            {
+                try { ShutdownInternal(); } catch { /* best effort */ }
+            }
         }
     }
 

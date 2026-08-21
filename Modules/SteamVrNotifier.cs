@@ -81,75 +81,81 @@ public static class SteamVrNotifier
     {
         if (!EnsureDllLoaded(config)) return false;
 
-        var initError = EVRInitError_None;
-        uint token;
-        try
+        // Must hold OpenVrNativeGate.Lock for the whole Init->Shutdown cycle — see that class's
+        // doc for the 2026-08-14 crash this fixes (a concurrent VR_ShutdownInternal from another
+        // thread tore down the process-global OpenVR context while this call was still using it).
+        lock (OpenVrNativeGate.Lock)
         {
-            token = InitInternal2(ref initError, EVRApplicationType_Background, null);
-        }
-        catch (Exception ex)
-        {
-            Log.Debug("SteamVrNotifier", $"VR_InitInternal2 threw: {ex.Message}");
-            return false;
-        }
-
-        if (initError == EVRInitError_NoServerForBackgroundApp)
-        {
-            Log.Trace("SteamVrNotifier", "SteamVR isn't running — skipping notification.");
-            return false;
-        }
-
-        if (initError != EVRInitError_None || token == 0)
-        {
-            Log.Debug("SteamVrNotifier", $"OpenVR init failed with error code {initError} — skipping notification.");
-            return false;
-        }
-
-        try
-        {
-            var ifaceError = EVRInitError_None;
-            var pInterface = GetGenericInterface(FnTablePrefix + IVRNotifications_Version, ref ifaceError);
-            if (pInterface == IntPtr.Zero || ifaceError != EVRInitError_None)
+            var initError = EVRInitError_None;
+            uint token;
+            try
             {
-                Log.Debug("SteamVrNotifier", $"Could not get IVRNotifications interface (error {ifaceError}).");
+                token = InitInternal2(ref initError, EVRApplicationType_Background, null);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("SteamVrNotifier", $"VR_InitInternal2 threw: {ex.Message}");
                 return false;
             }
 
-            var fnTable = (IVRNotifications)Marshal.PtrToStructure(pInterface, typeof(IVRNotifications))!;
+            if (initError == EVRInitError_NoServerForBackgroundApp)
+            {
+                Log.Trace("SteamVrNotifier", "SteamVR isn't running — skipping notification.");
+                return false;
+            }
 
-            var textPtr = IntPtr.Zero;
+            if (initError != EVRInitError_None || token == 0)
+            {
+                Log.Debug("SteamVrNotifier", $"OpenVR init failed with error code {initError} — skipping notification.");
+                return false;
+            }
+
             try
             {
-                var bytes = System.Text.Encoding.UTF8.GetBytes(message + "\0");
-                textPtr = Marshal.AllocHGlobal(bytes.Length);
-                Marshal.Copy(bytes, 0, textPtr, bytes.Length);
-
-                var blankIcon = new NotificationBitmap_t();
-                uint notificationId = 0;
-                var result = fnTable.CreateNotification(0, 0, EVRNotificationType_Transient, textPtr, EVRNotificationStyle_Application, ref blankIcon, ref notificationId);
-
-                if (result != 0)
+                var ifaceError = EVRInitError_None;
+                var pInterface = GetGenericInterface(FnTablePrefix + IVRNotifications_Version, ref ifaceError);
+                if (pInterface == IntPtr.Zero || ifaceError != EVRInitError_None)
                 {
-                    Log.Debug("SteamVrNotifier", $"CreateNotification returned error code {result}.");
+                    Log.Debug("SteamVrNotifier", $"Could not get IVRNotifications interface (error {ifaceError}).");
                     return false;
                 }
 
-                Log.Trace("SteamVrNotifier", $"Notification sent: \"{message}\"");
-                return true;
+                var fnTable = (IVRNotifications)Marshal.PtrToStructure(pInterface, typeof(IVRNotifications))!;
+
+                var textPtr = IntPtr.Zero;
+                try
+                {
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(message + "\0");
+                    textPtr = Marshal.AllocHGlobal(bytes.Length);
+                    Marshal.Copy(bytes, 0, textPtr, bytes.Length);
+
+                    var blankIcon = new NotificationBitmap_t();
+                    uint notificationId = 0;
+                    var result = fnTable.CreateNotification(0, 0, EVRNotificationType_Transient, textPtr, EVRNotificationStyle_Application, ref blankIcon, ref notificationId);
+
+                    if (result != 0)
+                    {
+                        Log.Debug("SteamVrNotifier", $"CreateNotification returned error code {result}.");
+                        return false;
+                    }
+
+                    Log.Trace("SteamVrNotifier", $"Notification sent: \"{message}\"");
+                    return true;
+                }
+                finally
+                {
+                    if (textPtr != IntPtr.Zero) Marshal.FreeHGlobal(textPtr);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("SteamVrNotifier", "Sending SteamVR notification threw", ex);
+                return false;
             }
             finally
             {
-                if (textPtr != IntPtr.Zero) Marshal.FreeHGlobal(textPtr);
+                try { ShutdownInternal(); } catch { /* best effort */ }
             }
-        }
-        catch (Exception ex)
-        {
-            Log.Error("SteamVrNotifier", "Sending SteamVR notification threw", ex);
-            return false;
-        }
-        finally
-        {
-            try { ShutdownInternal(); } catch { /* best effort */ }
         }
     }
 
