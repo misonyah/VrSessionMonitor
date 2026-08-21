@@ -1174,19 +1174,60 @@ public sealed class SettingsForm : Form
         }
     }
 
+    /// <summary>Adds a blank entry and selects it — the detail panel is where it gets filled in,
+    /// which avoids a separate new-app dialog.</summary>
     private void AddManagedApp()
     {
-        // Filled in by Task 3.
+        var id = $"custom-{Guid.NewGuid():N}"[..16];
+        var app = new ManagedApp
+        {
+            Id = id,
+            DisplayName = "New app",
+            Enabled = false, // don't auto-start something that isn't configured yet
+            Order = _config.ManagedApps.Count == 0 ? 0 : _config.ManagedApps.Max(a => a.Order) + 1,
+        };
+        _config.ManagedApps.Add(app);
+        _config.Save(_configPath);
+        _selectedApp = app;
+        RefreshAppsList();
+        Log.Info("SettingsForm", $"Added managed app '{app.Id}'.");
     }
 
+    /// <summary>Removes the selected app. Seeded apps are removable — migration only re-seeds when
+    /// the whole list is empty, so removing one entry sticks.</summary>
     private void RemoveSelectedManagedApp()
     {
-        // Filled in by Task 3.
+        if (_selectedApp is not ManagedApp app) return;
+
+        var confirm = MessageBox.Show(this,
+            $"Remove '{app.DisplayName}' from the managed apps list?\n\nThis only stops VrSessionMonitor managing it — the app itself isn't touched.",
+            "VR Session Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        _config.ManagedApps.Remove(app);
+        _config.Save(_configPath);
+        _selectedApp = null;
+        RefreshAppsList();
+        Log.Info("SettingsForm", $"Removed managed app '{app.Id}'.");
     }
 
+    /// <summary>Moves the selected app up (-1) or down (+1) in launch order. Rewrites every app's
+    /// Order to its new index afterwards, so a hand-edited config with duplicate or gappy Order
+    /// values gets normalised rather than reordering unpredictably.</summary>
     private void MoveSelectedManagedApp(int delta)
     {
-        // Filled in by Task 3.
+        if (_selectedApp is not ManagedApp app) return;
+
+        var apps = SortedApps();
+        var index = apps.FindIndex(a => a.Id == app.Id);
+        var target = index + delta;
+        if (index < 0 || target < 0 || target >= apps.Count) return;
+
+        (apps[index], apps[target]) = (apps[target], apps[index]);
+        for (var i = 0; i < apps.Count; i++) apps[i].Order = i;
+
+        _config.Save(_configPath);
+        RefreshAppsList();
     }
 
     // ───────────────────────────── Advanced tab ─────────────────────────────
