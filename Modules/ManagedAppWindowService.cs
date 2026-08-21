@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
@@ -17,7 +18,7 @@ public sealed class ManagedAppWindowService : IDisposable
     private readonly MonitorConfig _config;
     private readonly IProcessLauncher _launcher;
     private readonly Dictionary<string, int> _rulesAppliedForPid = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, AppStartOrigin> _origins = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, AppStartOrigin> _origins = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
 
@@ -27,7 +28,9 @@ public sealed class ManagedAppWindowService : IDisposable
         _launcher = launcher;
     }
 
-    /// <summary>How each managed app's process was started, for the Status tab and tray tooltip.</summary>
+    /// <summary>How each managed app's process was started, for the Status tab and tray tooltip.
+    /// Written from the background polling loop and read from the UI thread, so a plain Dictionary
+    /// would risk a concurrent-enumeration failure — same reasoning as LaunchProvenance.</summary>
     public IReadOnlyDictionary<string, AppStartOrigin> CurrentOrigins => _origins;
 
     public void Start()
