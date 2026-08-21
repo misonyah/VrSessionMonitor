@@ -396,7 +396,7 @@ public sealed class SessionOrchestrator
 
     private async Task LaunchVrChatAsync()
     {
-        if (!_config.SessionFlow.AutoLaunchVrChat)
+        if (!(_config.GetApp("vrchat")?.Enabled ?? _config.SessionFlow.AutoLaunchVrChat))
         {
             Log.Info("Orchestrator", "Auto-start VRChat is disabled via the tray toggle — skipping.");
             return;
@@ -515,9 +515,22 @@ public sealed class SessionOrchestrator
     /// ManagedAppWindowService.CurrentOrigins even when this monitor launched them — acceptable
     /// today since nothing reads that origin for them, but worth revisiting if that changes.
     /// </summary>
+    /// <summary>
+    /// Resolves which overlay is actually selected per the Apps-tab model (GetApp), falling back
+    /// to the legacy SessionFlow.VrOverlay enum only when neither "ovrtoolkit" nor "xsoverlay" has
+    /// an entry yet. Mirrors the GetApp(id)?.Enabled ?? legacy pattern the lifecycle managers use,
+    /// adapted for a mutually-exclusive pair instead of a single bool.
+    /// </summary>
+    private VrOverlayChoice ResolveVrOverlayChoice()
+    {
+        if (_config.GetApp("ovrtoolkit")?.Enabled == true) return VrOverlayChoice.OvrToolkit;
+        if (_config.GetApp("xsoverlay")?.Enabled == true) return VrOverlayChoice.XSOverlay;
+        return _config.SessionFlow.VrOverlay;
+    }
+
     private Task LaunchVrOverlayAsync()
     {
-        var (appId, processName, label) = _config.SessionFlow.VrOverlay switch
+        var (appId, processName, label) = ResolveVrOverlayChoice() switch
         {
             VrOverlayChoice.OvrToolkit => (_config.Paths.OvrToolkitSteamAppId, "OVR Toolkit", "OVR Toolkit"),
             VrOverlayChoice.XSOverlay  => (_config.Paths.XSOverlaySteamAppId, "XSOverlay", "XSOverlay"),

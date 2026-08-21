@@ -344,7 +344,9 @@ public sealed class SettingsForm : Form
     private void RebuildLightActionRows(FlowLayoutPanel panel, Dictionary<string, string> actions)
     {
         panel.SuspendLayout();
-        foreach (Control c in panel.Controls) c.Dispose();
+        // Controls is index-based and re-indexes on every removal, so a foreach silently skips
+        // every other control (Dispose() removes the item from the collection as a side effect).
+        while (panel.Controls.Count > 0) panel.Controls[0].Dispose();
         panel.Controls.Clear();
 
         foreach (var light in _homeAssistantLightsInSelectedArea)
@@ -909,8 +911,9 @@ public sealed class SettingsForm : Form
     /// update loop — see the comment there for why.</summary>
     private void OnAppsListSelectedIndexChanged(object? sender, EventArgs e)
     {
-        _selectedApp = _appsList.SelectedIndex >= 0 && _appsList.SelectedIndex < SortedApps().Count
-            ? SortedApps()[_appsList.SelectedIndex]
+        var apps = SortedApps();
+        _selectedApp = _appsList.SelectedIndex >= 0 && _appsList.SelectedIndex < apps.Count
+            ? apps[_appsList.SelectedIndex]
             : null;
         RebuildAppDetailPanel();
     }
@@ -955,16 +958,14 @@ public sealed class SettingsForm : Form
         var index = previouslySelectedId is null ? -1 : apps.FindIndex(a => a.Id == previouslySelectedId);
         if (index < 0 && apps.Count > 0) index = 0;
 
-        // SelectedIndexChanged fires synchronously the moment the assignment below actually
-        // changes the value, and its handler already calls RebuildAppDetailPanel(). Most refreshes
-        // (any edit that doesn't reorder the list) leave the index unchanged, so the assignment is
-        // a no-op and nothing rebuilds the panel unless we do it here; a real change (remove,
-        // reorder) does fire the handler, so doing it again here would build the panel twice for
-        // every such refresh. Rebuild here only when the handler won't.
-        var selectionChanges = _appsList.SelectedIndex != index;
-        if (selectionChanges) _appsList.SelectedIndex = index;
+        // Items.Clear() above already reset SelectedIndex to -1, so assigning any index >= 0
+        // here is always a real change: SelectedIndexChanged fires and OnAppsListSelectedIndexChanged
+        // rebuilds the detail panel itself. Only the empty-list case (index stays -1, so the
+        // assignment is a no-op and nothing fires) needs an explicit rebuild here, to show
+        // "No app selected."
+        if (index >= 0) _appsList.SelectedIndex = index;
         _selectedApp = index >= 0 ? apps[index] : null;
-        if (!selectionChanges) RebuildAppDetailPanel();
+        if (index < 0) RebuildAppDetailPanel();
     }
 
     /// <summary>Short suffix so the list conveys each app's window rules without needing to click
@@ -985,7 +986,9 @@ public sealed class SettingsForm : Form
     private void RebuildAppDetailPanel()
     {
         _appDetailPanel.SuspendLayout();
-        foreach (Control c in _appDetailPanel.Controls) c.Dispose();
+        // Controls is index-based and re-indexes on every removal, so a foreach silently skips
+        // every other control (Dispose() removes the item from the collection as a side effect).
+        while (_appDetailPanel.Controls.Count > 0) _appDetailPanel.Controls[0].Dispose();
         _appDetailPanel.Controls.Clear();
 
         if (_selectedApp is not ManagedApp app)
@@ -998,10 +1001,16 @@ public sealed class SettingsForm : Form
         var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, AutoScroll = true, WrapContents = false };
 
         // Persist + refresh the list so its label/suffix reflects the change immediately.
+        // Uses UpdateAppListLabels(), not RefreshAppsList(): this runs from inside a control
+        // event still on the stack (e.g. a TextBox's Leave handler firing mid focus-transition
+        // to another control in this same panel), and RefreshAppsList() ends in
+        // RebuildAppDetailPanel(), which would dispose that control out from under its own event.
+        // Every Save() caller here only changes label text (name/enabled/rules), never
+        // membership or order, so the in-place label update is always valid.
         void Save()
         {
             _config.Save(_configPath);
-            RefreshAppsList();
+            UpdateAppListLabels();
         }
 
         layout.Controls.Add(new Label
@@ -1029,6 +1038,19 @@ public sealed class SettingsForm : Form
         // ── launch
         var launchGroup = new GroupBox { Text = "Launch", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(360, 0) };
         var launchLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+
+        // Method/Target are saved and validated but nothing reads them yet — actual launching
+        // still goes through _config.Paths.* (steam:// vs exe differ enough per-app to deserve
+        // their own wiring plan). Say so up front so editing them doesn't look like it silently
+        // does nothing.
+        launchLayout.Controls.Add(new Label
+        {
+            Text = "Method/Target below are not yet used for launching — launching still uses Paths in appsettings.json.",
+            AutoSize = true,
+            MaximumSize = new Size(340, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(3, 3, 3, 6),
+        });
 
         var methodRow = new FlowLayoutPanel { AutoSize = true };
         methodRow.Controls.Add(new Label { Text = "Method", AutoSize = true, Width = 140, Margin = new Padding(3, 6, 3, 3) });
@@ -1119,7 +1141,13 @@ public sealed class SettingsForm : Form
             case "vrcfacetracking": _config.VrcFaceTrackingLifecycle.Enabled = enabled; break;
             case "baballonia": _config.BaballoniaLifecycle.Enabled = enabled; break;
             case "sranipal":
-            case "virtualhere": _config.VirtualHereSRanipalLifecycle.Enabled = enabled; break;
+            case "virtualhere":
+                _config.VirtualHereSRanipalLifecycle.Enabled = enabled;
+                // One lifecycle manager owns both processes and gates them on "sranipal", so these
+                // two entries can't diverge without the list lying about one of them.
+                if (_config.GetApp("sranipal") is { } sr) sr.Enabled = enabled;
+                if (_config.GetApp("virtualhere") is { } vh) vh.Enabled = enabled;
+                break;
             // The overlay picker is an enum, not a bool: enabling one overlay must disable the
             // other, and disabling either means None.
             case "ovrtoolkit":
@@ -1139,7 +1167,12 @@ public sealed class SettingsForm : Form
     /// which avoids a separate new-app dialog.</summary>
     private void AddManagedApp()
     {
-        var id = $"custom-{Guid.NewGuid():N}"[..16];
+        string id;
+        do
+        {
+            id = $"custom-{Guid.NewGuid():N}"[..16];
+        } while (_config.GetApp(id) is not null);
+
         var app = new ManagedApp
         {
             Id = id,
@@ -1159,6 +1192,17 @@ public sealed class SettingsForm : Form
     private void RemoveSelectedManagedApp()
     {
         if (_selectedApp is not ManagedApp app) return;
+
+        if (_config.ManagedApps.Count == 1)
+        {
+            MessageBox.Show(this,
+                "This is the last managed app. Removing it would empty the list, and " +
+                "VrSessionMonitor treats an empty list as unconfigured — all 9 default apps would " +
+                "be restored automatically the next time it starts.\n\nDisable the app instead if " +
+                "you don't want it managed.",
+                "VR Session Monitor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
 
         var confirm = MessageBox.Show(this,
             $"Remove '{app.DisplayName}' from the managed apps list?\n\nThis only stops VrSessionMonitor managing it — the app itself isn't touched.",
@@ -1368,9 +1412,21 @@ public sealed class SettingsForm : Form
     {
         if (!Visible || _tabs.SelectedIndex != AppsTabIndex) return;
 
+        UpdateAppListLabels();
+    }
+
+    /// <summary>Updates the Apps list's item text in place — no membership/order change, so
+    /// nothing gets disposed and the currently-focused control (if any) survives. Used both by
+    /// the periodic tab refresh and by the detail panel's Save(), which runs from inside a
+    /// control event still on the stack (see RebuildAppDetailPanel's Save() local) and must not
+    /// trigger a rebuild of the very panel that control lives in.</summary>
+    private void UpdateAppListLabels()
+    {
         var apps = SortedApps();
         if (apps.Count != _appsList.Items.Count)
         {
+            // Membership/order actually changed — the in-place path below assumes a 1:1 index
+            // correspondence with the current list, which no longer holds.
             RefreshAppsList();
             return;
         }
