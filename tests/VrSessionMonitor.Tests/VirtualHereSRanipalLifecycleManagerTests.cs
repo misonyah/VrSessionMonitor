@@ -77,6 +77,25 @@ public class VirtualHereSRanipalLifecycleManagerTests
         Assert.Empty(c.Launcher.EnsureRunningCalls);
     }
 
+    /// <summary>Regression for the whole-branch-review finding that survived seven per-task reviews:
+    /// every existing "disabled" test left ManagedApps empty, so GetApp() returned null and only the
+    /// `?? VirtualHereSRanipalLifecycle.Enabled` fallback branch was ever exercised — never the
+    /// ManagedApp.Enabled branch that actually runs in production once migration has seeded
+    /// ManagedApps. This test populates ManagedApps with a disabled "sranipal" entry (the id this
+    /// manager actually reads — see VirtualHereSRanipalLifecycleManager.TickForTestAsync) while
+    /// leaving the legacy property true, to prove the ManagedApp model wins.</summary>
+    [Fact]
+    public async Task Disabled_managed_app_is_a_no_op_even_when_legacy_property_is_enabled()
+    {
+        var c = new Ctx();
+        c.Config.VirtualHereSRanipalLifecycle.Enabled = true; // legacy property still "on" — must be overridden
+        c.Config.ManagedApps.Add(new ManagedApp { Id = "sranipal", Enabled = false });
+        c.Build();
+        c.Headset.SetOnline(true);
+        await c.Mgr.TickForTestAsync();
+        Assert.Empty(c.Launcher.EnsureRunningCalls);
+    }
+
     // Regression for the OR-signal crash-recovery gap (2026-08-09): isRunning is
     // IsRunning("vhui64") || IsRunning("sr_runtime"), so if only sr_runtime dies the OR stays true
     // and the machine's own "not running -> ensure" branch never fires. Before runningTick was

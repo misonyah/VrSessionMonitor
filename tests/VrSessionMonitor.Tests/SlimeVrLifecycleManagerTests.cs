@@ -88,4 +88,24 @@ public class SlimeVrLifecycleManagerTests
         await c.Mgr.TickForTestAsync();
         Assert.DoesNotContain("SlimeVR", c.Launcher.KillCalls);
     }
+
+    /// <summary>Regression for the whole-branch-review finding that survived seven per-task reviews:
+    /// every existing "disabled" test left ManagedApps empty, so GetApp() returned null and only the
+    /// `?? SlimeVrLifecycle.Enabled` fallback branch was ever exercised — never the ManagedApp.Enabled
+    /// branch that actually runs in production once migration has seeded ManagedApps. This test
+    /// populates ManagedApps with a disabled "slimevr" entry while leaving the legacy property true,
+    /// to prove the ManagedApp model wins.</summary>
+    [Fact]
+    public async Task Disabled_managed_app_is_a_no_op_even_when_legacy_property_is_enabled()
+    {
+        var c = new Ctx();
+        c.Config.SlimeVrLifecycle.Enabled = true; // legacy property still "on" — must be overridden
+        c.Config.ManagedApps.Add(new ManagedApp { Id = "slimevr", Enabled = false });
+        c.Build();
+        c.Launcher.Running.Add("SlimeVR"); // leftover, all signals inactive
+        await c.Mgr.TickForTestAsync();
+        c.Now = c.Now.AddMilliseconds(300001);
+        await c.Mgr.TickForTestAsync();
+        Assert.DoesNotContain("SlimeVR", c.Launcher.KillCalls);
+    }
 }

@@ -90,6 +90,24 @@ public class VrcFaceTrackingLifecycleManagerTests
         Assert.Empty(c.Launcher.EnsureRunningCalls);
     }
 
+    /// <summary>Regression for the whole-branch-review finding that survived seven per-task reviews:
+    /// every existing "disabled" test left ManagedApps empty, so GetApp() returned null and only the
+    /// `?? VrcFaceTrackingLifecycle.Enabled` fallback branch was ever exercised — never the
+    /// ManagedApp.Enabled branch that actually runs in production once migration has seeded
+    /// ManagedApps. This test populates ManagedApps with a disabled "vrcfacetracking" entry while
+    /// leaving the legacy property true, to prove the ManagedApp model wins.</summary>
+    [Fact]
+    public async Task Disabled_managed_app_is_a_no_op_even_when_legacy_property_is_enabled()
+    {
+        var c = new Ctx();
+        c.Config.VrcFaceTrackingLifecycle.Enabled = true; // legacy property still "on" — must be overridden
+        c.Config.ManagedApps.Add(new ManagedApp { Id = "vrcfacetracking", Enabled = false });
+        c.Build();
+        c.EyeCam = true;
+        await c.Mgr.TickForTestAsync();
+        Assert.Empty(c.Launcher.EnsureRunningCalls);
+    }
+
     // These two exercise the previously-untestable start-time-comparison paths, now that they read
     // through the launcher seam (_launcher.GetStartTime) instead of real OS Process objects.
 
