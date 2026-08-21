@@ -67,7 +67,7 @@ public sealed class VrcOscLifecycleManager : IDisposable
 
     private async Task CheckOnceAsync()
     {
-        if (!_config.VrcOscLifecycle.Enabled) return;
+        if (!(_config.GetApp("vrcosc")?.Enabled ?? _config.VrcOscLifecycle.Enabled)) return;
 
         // VRCOSC's own "Update Available" dialog blocks on a manual Yes/No — auto-accept it (when
         // enabled) so an update prompt doesn't sit there stalling the session. Only scans when
@@ -227,7 +227,7 @@ public sealed class VrcOscLifecycleManager : IDisposable
     /// close was imminent was to already be watching the log.</summary>
     public string? DescribePendingAction()
     {
-        if (!_config.VrcOscLifecycle.Enabled) return null;
+        if (!(_config.GetApp("vrcosc")?.Enabled ?? _config.VrcOscLifecycle.Enabled)) return null;
 
         if (_vrChatGoneSinceUtc is DateTime since)
         {

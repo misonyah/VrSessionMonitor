@@ -87,7 +87,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
     /// then the presence machine advances. Named for test access.</summary>
     internal async Task TickForTestAsync()
     {
-        if (!_config.VrcFaceTrackingLifecycle.Enabled) return;
+        if (!(_config.GetApp("vrcfacetracking")?.Enabled ?? _config.VrcFaceTrackingLifecycle.Enabled)) return;
         CheckVrChatRestart();
         await _machine.TickAsync().ConfigureAwait(false);
     }
@@ -198,7 +198,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
     /// unprompted until the log was checked after the fact.</summary>
     public string? DescribePendingAction()
     {
-        if (!_config.VrcFaceTrackingLifecycle.Enabled) return null;
+        if (!(_config.GetApp("vrcfacetracking")?.Enabled ?? _config.VrcFaceTrackingLifecycle.Enabled)) return null;
 
         var shutdown = _machine.ShutdownCountdownRemaining();
         if (shutdown is TimeSpan s && s > TimeSpan.Zero)

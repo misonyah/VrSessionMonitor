@@ -30,6 +30,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly UpdateChecker _updateChecker;
     private readonly AdbController _adb;
     private readonly SessionOrchestrator _orchestrator;
+    private readonly ManagedAppWindowService _managedApps;
     private readonly OptimizationsManager _optimizations;
     private readonly SettingsForm _settingsForm;
 #if INCLUDE_HOME_ASSISTANT
@@ -89,6 +90,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _updateChecker = new UpdateChecker(_config);
         _adb = new AdbController(_config);
         _orchestrator = new SessionOrchestrator(_config, _trackers, _updateChecker, _adb);
+        _managedApps = new ManagedAppWindowService(_config, new ProcessLauncher());
         var optimizationChecks = OptimizationRegistry.BuildAll(
             new RegistryAccessor(), new WindowsServiceController(),
             CpuInfo.GetName, PowercfgRunner.RunAsync, PowercfgRunner.RunElevatedAsync);
@@ -160,6 +162,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _slimeMotion.Start();
         _slimeLifecycle.Start();
         _firmwareNotify.Start();
+        _managedApps.Start();
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient.Start();
         _homeAssistantManager!.Start();
@@ -480,6 +483,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _slimeLifecycle.Dispose();
         _slimeMotion.Dispose();
         _firmwareNotify.Dispose();
+        _managedApps?.Dispose();
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantManager?.Dispose();
         _hmdActivity?.Dispose();

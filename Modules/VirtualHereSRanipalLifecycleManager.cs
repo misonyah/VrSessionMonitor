@@ -97,7 +97,7 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
     /// <summary>One poll cycle. Named for test access; the loop and tests both call it.</summary>
     internal async Task TickForTestAsync()
     {
-        if (!_config.VirtualHereSRanipalLifecycle.Enabled) return;
+        if (!(_config.GetApp("sranipal")?.Enabled ?? _config.VirtualHereSRanipalLifecycle.Enabled)) return;
         await _machine.TickAsync().ConfigureAwait(false);
     }
 
@@ -130,7 +130,7 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
 
     public string? DescribePendingAction()
     {
-        if (!_config.VirtualHereSRanipalLifecycle.Enabled) return null;
+        if (!(_config.GetApp("sranipal")?.Enabled ?? _config.VirtualHereSRanipalLifecycle.Enabled)) return null;
         var remaining = _machine.ShutdownCountdownRemaining();
         return remaining is TimeSpan t && t > TimeSpan.Zero
             ? $"vhui64/sr_runtime shutdown in {t.TotalSeconds:F0}s"

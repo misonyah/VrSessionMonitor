@@ -75,13 +75,13 @@ public sealed class SlimeVrLifecycleManager : IDisposable
 
     internal async Task TickForTestAsync()
     {
-        if (!_config.SlimeVrLifecycle.Enabled) return;
+        if (!(_config.GetApp("slimevr")?.Enabled ?? _config.SlimeVrLifecycle.Enabled)) return;
         await _machine.TickAsync().ConfigureAwait(false);
     }
 
     public string? DescribePendingAction()
     {
-        if (!_config.SlimeVrLifecycle.Enabled) return null;
+        if (!(_config.GetApp("slimevr")?.Enabled ?? _config.SlimeVrLifecycle.Enabled)) return null;
         var remaining = _machine.ShutdownCountdownRemaining();
         return remaining is TimeSpan t && t > TimeSpan.Zero
             ? $"SlimeVR stop in {t.TotalSeconds:F0}s"
