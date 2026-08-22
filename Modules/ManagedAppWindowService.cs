@@ -17,7 +17,14 @@ public sealed class ManagedAppWindowService : IDisposable
 {
     private readonly MonitorConfig _config;
     private readonly IProcessLauncher _launcher;
+    /// <summary>How many polls to keep re-applying a window rule that hasn't taken effect before
+    /// giving up. At the service's poll interval this spans roughly half a minute — enough for a
+    /// game to finish swapping its startup window for its real one, without fighting an app that
+    /// simply refuses external window changes.</summary>
+    private const int MaxRuleAttempts = 12;
+
     private readonly Dictionary<string, int> _rulesAppliedForPid = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _ruleAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, AppStartOrigin> _origins = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
@@ -80,6 +87,7 @@ public sealed class ManagedAppWindowService : IDisposable
             if (origin == AppStartOrigin.Manual && !app.ApplyWindowRulesWhenStartedManually)
             {
                 _rulesAppliedForPid[app.Id] = currentPid; // decided: leave this instance alone
+                _ruleAttempts.Remove(app.Id);
                 continue;
             }
 
@@ -88,15 +96,43 @@ public sealed class ManagedAppWindowService : IDisposable
             if (!hasRules)
             {
                 _rulesAppliedForPid[app.Id] = currentPid;
+                _ruleAttempts.Remove(app.Id);
                 continue;
             }
 
-            // Mark before awaiting so a slow window-wait can't cause a second concurrent attempt.
-            _rulesAppliedForPid[app.Id] = currentPid;
+            // Window rules act on whichever process owns a window, NOT necessarily the first one
+            // matching the name — SlimeVR runs five same-named processes and only one has the GUI.
+            // Falls back to the presence pid so a single-process app is unaffected.
+            var windowPid = WindowController.ResolveWindowedProcessId(app.ProcessName) ?? currentPid;
 
-            Log.Info("ManagedApps", $"{app.DisplayName} started ({origin}) — applying window rules (state={app.WindowState}, front={app.BringToFront}, background={app.KeepInBackground}, monitor={app.TargetMonitor?.ToString() ?? "any"}).");
-            await WindowController.ApplyAsync(currentPid, app.WindowState, app.BringToFront,
+            var attempt = _ruleAttempts.GetValueOrDefault(app.Id) + 1;
+            _ruleAttempts[app.Id] = attempt;
+
+            if (attempt == 1)
+                Log.Info("ManagedApps", $"{app.DisplayName} started ({origin}) — applying window rules (state={app.WindowState}, front={app.BringToFront}, background={app.KeepInBackground}, monitor={app.TargetMonitor?.ToString() ?? "any"}).");
+
+            await WindowController.ApplyAsync(windowPid, app.WindowState, app.BringToFront,
                 app.KeepInBackground, app.TargetMonitor).ConfigureAwait(false);
+
+            // Verify rather than assume. Confirmed live 2026-08-22: VRChat exposed a main window ~2s
+            // after launch, accepted the minimise, then opened its REAL window unminimised — the
+            // rule silently didn't stick and the transient minimise looked like the window blinking.
+            // Retrying across a few polls lets the app settle instead of trusting one shot.
+            if (WindowController.IsStateSatisfied(windowPid, app.WindowState))
+            {
+                _rulesAppliedForPid[app.Id] = currentPid;
+                _ruleAttempts.Remove(app.Id);
+                if (attempt > 1)
+                    Log.Info("ManagedApps", $"{app.DisplayName}: window rules took effect after {attempt} attempts.");
+            }
+            else if (attempt >= MaxRuleAttempts)
+            {
+                // Give up rather than fight the app (or the user) forever.
+                _rulesAppliedForPid[app.Id] = currentPid;
+                _ruleAttempts.Remove(app.Id);
+                Log.Warn("ManagedApps", $"{app.DisplayName}: window state is still not {app.WindowState} after {attempt} attempts — giving up for this instance. The app may be overriding it, or it may not honour external window changes.");
+            }
+            // else: deliberately leave the marker unset so the next poll retries.
         }
     }
 

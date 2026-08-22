@@ -22,6 +22,8 @@ public static class WindowController
     private const uint SWP_NOACTIVATE = 0x0010;
     private static readonly IntPtr HWND_BOTTOM = new(1);
 
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool IsZoomed(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
@@ -31,6 +33,76 @@ public static class WindowController
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+
+    /// <summary>
+    /// Picks the process that actually owns a window when several share a name, rather than
+    /// whichever the OS lists first.
+    ///
+    /// Confirmed live 2026-08-22: SlimeVR runs five SlimeVR.exe processes and only one owns the
+    /// "SlimeVR GUI" window; the first-by-name lookup returned a windowless one, so bring-to-front
+    /// silently did nothing. Deliberately separate from ProcessLauncher.GetProcessId, which stays
+    /// first-match — that id feeds presence detection and launch provenance, where "which instance
+    /// owns a window" is irrelevant and changing it would alter unrelated behaviour.
+    /// </summary>
+    public static int? ResolveWindowedProcessId(string processName)
+    {
+        Process[] procs;
+        try { procs = Process.GetProcessesByName(processName); }
+        catch (Exception ex)
+        {
+            Log.Debug("WindowController", $"GetProcessesByName({processName}) threw: {ex.Message}");
+            return null;
+        }
+
+        try
+        {
+            var windowed = procs.FirstOrDefault(p =>
+            {
+                try { return p.MainWindowHandle != IntPtr.Zero; }
+                catch { return false; } // exited between enumeration and the read
+            });
+            return (windowed ?? procs.FirstOrDefault())?.Id;
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Whether a window state actually took effect, so a caller can retry instead of trusting that
+    /// one ShowWindow call won. Confirmed live 2026-08-22: VRChat reported a main window ~2s after
+    /// launch, was minimised, and then opened its real window unminimised — the rule silently did
+    /// not stick, and the transient minimise looked like the window blinking.
+    ///
+    /// Deliberately does NOT verify BringToFront: once the user clicks elsewhere the foreground
+    /// legitimately changes, and retrying would fight them for focus. Fullscreen isn't verifiable
+    /// either (it's a size/position, not a window style), so both report satisfied.
+    /// </summary>
+    public static bool IsStateSatisfied(int processId, AppWindowState state)
+    {
+        if (state is AppWindowState.Unchanged or AppWindowState.Fullscreen) return true;
+
+        try
+        {
+            using var proc = Process.GetProcessById(processId);
+            proc.Refresh();
+            var handle = proc.MainWindowHandle;
+            if (handle == IntPtr.Zero) return false;
+
+            return state switch
+            {
+                AppWindowState.Minimized => IsIconic(handle),
+                AppWindowState.Maximized => IsZoomed(handle),
+                AppWindowState.Normal => !IsIconic(handle) && !IsZoomed(handle),
+                _ => true,
+            };
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            return true; // process gone — nothing left to satisfy, don't retry forever
+        }
+    }
 
     /// <summary>Applies the rules once the process has a main window. Returns false if no window
     /// appeared within the timeout (logged, not thrown) — a headless or tray-only app is a normal
