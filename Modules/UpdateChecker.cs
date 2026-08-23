@@ -50,20 +50,23 @@ public sealed class UpdateChecker
 
         Log.Info("UpdateChecker", "Running update checks (notify-only, non-blocking)...");
 
+        // Deliberately NOT routed through LaunchTargetFor: VRChat's managed Target is a Steam app
+        // id ("438100"), not a path, and this check stats a file to read its version. The launch
+        // exe is a separate value serving a separate purpose — see PathsConfig.VrChatLaunchExe.
         if (_config.Updates.CheckVrChat)
             findings.Add(CheckLocalFileOnly("VRChat", _config.Paths.VrChatLaunchExe, "Steam auto-updates on launch; no separate check needed."));
 
         if (_config.Updates.CheckVirtualDesktopStreamer)
-            findings.Add(CheckLocalFileOnly("Virtual Desktop Streamer", _config.Paths.VirtualDesktopStreamerExe, "No public update-check API; verify manually via the app's built-in updater."));
+            findings.Add(CheckLocalFileOnly("Virtual Desktop Streamer", _config.LaunchTargetFor("virtualdesktop", _config.Paths.VirtualDesktopStreamerExe), "No public update-check API; verify manually via the app's built-in updater."));
 
         if (_config.Updates.CheckSlimeVr)
-            findings.Add(await CheckGithubAsync("SlimeVR Server", _config.Paths.SlimeVrExe, _config.Updates.SlimeVrGithubRepo).ConfigureAwait(false));
+            findings.Add(await CheckGithubAsync("SlimeVR Server", _config.LaunchTargetFor("slimevr", _config.Paths.SlimeVrExe), _config.Updates.SlimeVrGithubRepo).ConfigureAwait(false));
 
         if (_config.Updates.CheckVrcFaceTracking)
-            findings.Add(await CheckGithubAsync("VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, _config.Updates.VrcFaceTrackingGithubRepo).ConfigureAwait(false));
+            findings.Add(await CheckGithubAsync("VRCFaceTracking", _config.LaunchTargetFor("vrcfacetracking", _config.Paths.VrcFaceTrackingExe), _config.Updates.VrcFaceTrackingGithubRepo).ConfigureAwait(false));
 
         if (_config.Updates.CheckVrcOsc)
-            findings.Add(await CheckGithubAsync("VRCOSC", _config.Paths.VrcOscExe, _config.Updates.VrcOscGithubRepo).ConfigureAwait(false));
+            findings.Add(await CheckGithubAsync("VRCOSC", _config.LaunchTargetFor("vrcosc", _config.Paths.VrcOscExe), _config.Updates.VrcOscGithubRepo).ConfigureAwait(false));
 
         foreach (var f in findings)
             Log.Info("UpdateChecker", $"{f.Component}: local={f.LocalVersion} latest={f.LatestKnownVersion ?? "n/a"} :: {f.Note}");

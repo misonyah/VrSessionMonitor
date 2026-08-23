@@ -107,7 +107,7 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
         {
             Log.Info("VhSranipalLifecycle", "vhui64.exe not running — launching it.");
             var r = await _launcher.EnsureRunningAsync(
-                "vhui64", _config.Paths.VirtualHereClientExe, null,
+                "vhui64", _config.LaunchTargetFor("virtualhere", _config.Paths.VirtualHereClientExe), null,
                 _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
             if (!r.Success && !r.AlreadyRunning)
                 Log.Warn("VhSranipalLifecycle", $"vhui64.exe launch did not confirm success: {r.Error}");
@@ -120,7 +120,7 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
             // which pops a UAC prompt on every launch on an admin account — fatal for unattended
             // auto-launch (confirmed live 2026-07-16). See ProcessLauncher's __COMPAT_LAYER note.
             var r = await _launcher.EnsureRunningAsync(
-                "sr_runtime", _config.Paths.SRanipalExe, null,
+                "sr_runtime", _config.LaunchTargetFor("sranipal", _config.Paths.SRanipalExe), null,
                 _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
                 suppressUacPrompt: true).ConfigureAwait(false);
             if (!r.Success && !r.AlreadyRunning)

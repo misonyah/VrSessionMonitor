@@ -38,7 +38,7 @@ public sealed class SlimeVrLifecycleManager : IDisposable
             {
                 Log.Warn("SlimeVrLifecycle", "VR off (SteamVR + headset) and trackers idle — stopping SlimeVR.");
                 _launcher.Kill("SlimeVR");
-                _launcher.KillOrphanedChildIfLauncherGone("SlimeVR", _config.Paths.SlimeVrExe, "java");
+                _launcher.KillOrphanedChildIfLauncherGone("SlimeVR", _config.LaunchTargetFor("slimevr", _config.Paths.SlimeVrExe), "java");
             },
             shutdownDelayMs: _config.SlimeVrLifecycle.ShutdownDelayMs,
             clock: clock,

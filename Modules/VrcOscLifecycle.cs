@@ -83,7 +83,7 @@ public sealed class VrcOscLifecycleManager : IDisposable
             {
                 Log.Info("VrcOscLifecycle", "VRChat detected and VRCOSC isn't running — launching it.");
                 var result = await _launcher.EnsureRunningAsync(
-                    "VRCOSC", _config.Paths.VrcOscExe, null,
+                    "VRCOSC", _config.LaunchTargetFor("vrcosc", _config.Paths.VrcOscExe), null,
                     _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
 
                 if (!result.Success && !result.AlreadyRunning)

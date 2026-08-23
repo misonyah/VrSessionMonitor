@@ -348,6 +348,20 @@ public sealed class OptimizationsConfig
     public Dictionary<string, OptimizationEntry> Entries { get; set; } = new();
 }
 
+/// <summary>
+/// Filesystem locations. Two groups live here with different lifetimes.
+///
+/// The per-app launch targets (*Exe and *SteamAppId below) are RETIRED as of the ManagedApps
+/// model: ManagedApp.Target is what actually launches, and these are read by exactly two things —
+/// ManagedAppDefaults seeding, and MonitorConfig.LaunchTargetFor's fallback. They survive because
+/// deleting the properties would make the JSON deserializer silently ignore those keys in an
+/// existing appsettings.json, discarding customized paths on upgrade rather than migrating them.
+/// Once configs have been rewritten by Save() (which happens on any settings change), they can go.
+/// Do not add new reads of them; call LaunchTargetFor instead.
+///
+/// The rest (OpenVrApiDllPath, SteamVrLogDirectory, AdbExe, LogDirectory) are not app launches and
+/// are staying — they have nothing to do with the managed-app model.
+/// </summary>
 public sealed class PathsConfig
 {
     public string SteamExe { get; set; } = @"C:\Program Files (x86)\Steam\steam.exe";
@@ -706,6 +720,25 @@ public sealed class MonitorConfig
     /// that drops an entry degrades instead of crashing.</summary>
     public ManagedApp? GetApp(string id) =>
         ManagedApps.FirstOrDefault(a => string.Equals(a.Id, id, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Where to launch a managed app from — an exe path, or a Steam app id for SteamAppId apps.
+    /// Mirrors the GetApp(id)?.Enabled ?? legacy pattern: the managed entry is authoritative, and
+    /// the pre-ManagedApps Paths value is the fallback for configs written before this model, for
+    /// entries hand-edited out, and for apps that were never seeded as managed (Steam itself and
+    /// the Virtual Desktop Streamer).
+    ///
+    /// Blank counts as unset, not as an intentional empty target: the Apps tab writes "" rather
+    /// than null when a field is cleared, so treating "" as authoritative would turn clearing the
+    /// box into an unlaunchable app instead of a return to the previous path.
+    ///
+    /// The Paths.*Exe / *SteamAppId entries exist only to feed this fallback and ManagedAppDefaults
+    /// seeding — nothing else reads them. They stay until configs written before ManagedApps have
+    /// been rewritten by Save(); removing the properties outright would make the JSON deserializer
+    /// silently ignore those keys and discard customized paths on upgrade.
+    /// </summary>
+    public string LaunchTargetFor(string id, string legacyPath) =>
+        GetApp(id)?.Target is { Length: > 0 } target ? target : legacyPath;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

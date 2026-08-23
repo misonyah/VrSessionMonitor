@@ -1039,13 +1039,13 @@ public sealed class SettingsForm : Form
         var launchGroup = new GroupBox { Text = "Launch", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(360, 0) };
         var launchLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
 
-        // Method/Target are saved and validated but nothing reads them yet — actual launching
-        // still goes through _config.Paths.* (steam:// vs exe differ enough per-app to deserve
-        // their own wiring plan). Say so up front so editing them doesn't look like it silently
-        // does nothing.
+        // Target now drives launching (MonitorConfig.LaunchTargetFor). Clearing it falls back to
+        // the matching Paths entry rather than leaving the app unlaunchable, so say that plainly —
+        // an empty box that silently reverts to another value is worth explaining.
         launchLayout.Controls.Add(new Label
         {
-            Text = "Method/Target below are not yet used for launching — launching still uses Paths in appsettings.json.",
+            Text = "Target is what gets launched — an .exe path, or a Steam app ID for Steam apps. "
+                   + "Leave it empty to fall back to the matching entry in appsettings.json.",
             AutoSize = true,
             MaximumSize = new Size(340, 0),
             ForeColor = SystemColors.GrayText,

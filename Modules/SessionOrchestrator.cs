@@ -336,14 +336,14 @@ public sealed class SessionOrchestrator
     private async Task LaunchVdStreamerAsync()
     {
         await _launcher.EnsureRunningAsync(
-            "VirtualDesktop.Streamer", _config.Paths.VirtualDesktopStreamerExe, null,
+            "VirtualDesktop.Streamer", _config.LaunchTargetFor("virtualdesktop", _config.Paths.VirtualDesktopStreamerExe), null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
     }
 
     private async Task LaunchSteamAsync()
     {
         await _launcher.EnsureRunningAsync(
-            "steam", _config.Paths.SteamExe, "-no-browser",
+            "steam", _config.LaunchTargetFor("steam", _config.Paths.SteamExe), "-no-browser",
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
     }
 
@@ -447,7 +447,7 @@ public sealed class SessionOrchestrator
     private async Task DoLaunchVrChatAsync()
     {
         await _launcher.EnsureRunningAsync(
-            "VirtualDesktop.Streamer", _config.Paths.VirtualDesktopStreamerExe, null,
+            "VirtualDesktop.Streamer", _config.LaunchTargetFor("virtualdesktop", _config.Paths.VirtualDesktopStreamerExe), null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
 
         if (_launcher.IsRunning("VRChat"))
@@ -456,10 +456,13 @@ public sealed class SessionOrchestrator
             return;
         }
 
-        Log.Info("Orchestrator", $"Launching VRChat via steam://rungameid/{_config.Paths.VrChatSteamAppId}.");
+        // Resolved once: the logged id and the launched id must be the same value, and reading the
+        // config twice leaves room for them to disagree if it changes between the two reads.
+        var vrChatAppId = _config.LaunchTargetFor("vrchat", _config.Paths.VrChatSteamAppId);
+        Log.Info("Orchestrator", $"Launching VRChat via steam://rungameid/{vrChatAppId}.");
         try
         {
-            _launchUri($"steam://rungameid/{_config.Paths.VrChatSteamAppId}");
+            _launchUri($"steam://rungameid/{vrChatAppId}");
         }
         catch (Exception ex)
         {
@@ -494,10 +497,10 @@ public sealed class SessionOrchestrator
             await Task.Delay(delayMs).ConfigureAwait(false);
         }
 
-        _launcher.KillOrphanedChildIfLauncherGone("SlimeVR", _config.Paths.SlimeVrExe, "java");
+        _launcher.KillOrphanedChildIfLauncherGone("SlimeVR", _config.LaunchTargetFor("slimevr", _config.Paths.SlimeVrExe), "java");
 
         await _launcher.EnsureRunningAsync(
-            "SlimeVR", _config.Paths.SlimeVrExe, null,
+            "SlimeVR", _config.LaunchTargetFor("slimevr", _config.Paths.SlimeVrExe), null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
     }
 
@@ -532,8 +535,8 @@ public sealed class SessionOrchestrator
     {
         var (appId, processName, label) = ResolveVrOverlayChoice() switch
         {
-            VrOverlayChoice.OvrToolkit => (_config.Paths.OvrToolkitSteamAppId, "OVR Toolkit", "OVR Toolkit"),
-            VrOverlayChoice.XSOverlay  => (_config.Paths.XSOverlaySteamAppId, "XSOverlay", "XSOverlay"),
+            VrOverlayChoice.OvrToolkit => (_config.LaunchTargetFor("ovrtoolkit", _config.Paths.OvrToolkitSteamAppId), "OVR Toolkit", "OVR Toolkit"),
+            VrOverlayChoice.XSOverlay  => (_config.LaunchTargetFor("xsoverlay", _config.Paths.XSOverlaySteamAppId), "XSOverlay", "XSOverlay"),
             _                          => (null, null, null),
         };
 

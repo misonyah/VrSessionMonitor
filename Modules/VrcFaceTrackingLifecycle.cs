@@ -102,7 +102,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         {
             Log.Info("VrcFtLifecycle", "Tracker detected and VRCFaceTracking isn't running — launching it.");
             var r = await _launcher.EnsureRunningAsync(
-                "VRCFaceTracking", _config.Paths.VrcFaceTrackingExe, null,
+                "VRCFaceTracking", _config.LaunchTargetFor("vrcfacetracking", _config.Paths.VrcFaceTrackingExe), null,
                 _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
             if (!r.Success && !r.AlreadyRunning)
                 Log.Warn("VrcFtLifecycle", $"VRCFaceTracking launch did not confirm success: {r.Error}");

@@ -540,7 +540,7 @@ public sealed class FaceTrackingMonitor : IDisposable
         await Task.Delay(500).ConfigureAwait(false); // let the ports fully release before relaunch
 
         var result = await _launcher.EnsureRunningAsync(
-            "sr_runtime", _config.Paths.SRanipalExe, null,
+            "sr_runtime", _config.LaunchTargetFor("sranipal", _config.Paths.SRanipalExe), null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
             suppressUacPrompt: true).ConfigureAwait(false);
 
