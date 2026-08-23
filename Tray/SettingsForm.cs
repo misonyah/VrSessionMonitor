@@ -1052,6 +1052,61 @@ public sealed class SettingsForm : Form
             Margin = new Padding(3, 3, 3, 6),
         });
 
+        // Pickers rather than free text: ProcessName must match exactly (no .exe) and is what the
+        // window rules key on, so a typo fails silently. Suggested by tomaae (AppSupervisor), whose
+        // editor picks from running processes/executables instead of asking you to type them.
+        var pickerRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(3, 0, 3, 6) };
+
+        var pickRunning = new Button { Text = "Pick running app...", AutoSize = true };
+        pickRunning.Click += (_, _) =>
+        {
+            using var dialog = new ProcessPickerDialog();
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+            app.ProcessName = dialog.SelectedProcessName;
+            if (!string.IsNullOrWhiteSpace(dialog.SelectedExePath))
+            {
+                app.Target = dialog.SelectedExePath;
+                app.LaunchMethod = AppLaunchMethod.Executable;
+            }
+            // Name a still-unnamed entry after what was picked, so "New app" doesn't linger.
+            if (string.IsNullOrWhiteSpace(app.DisplayName) || app.DisplayName == "New app")
+                app.DisplayName = dialog.SelectedProcessName;
+
+            Save();
+            RebuildAppDetailPanel(); // reflect every field the pick just changed
+            Log.Info("SettingsForm", $"Managed app '{app.Id}' set from running process '{dialog.SelectedProcessName}'.");
+        };
+
+        var browseExe = new Button { Text = "Browse for .exe...", AutoSize = true };
+        browseExe.Click += (_, _) =>
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = "Select the application executable",
+                Filter = "Executables (*.exe)|*.exe|All files (*.*)|*.*",
+                CheckFileExists = true,
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+            app.Target = dialog.FileName;
+            app.LaunchMethod = AppLaunchMethod.Executable;
+            // Process name is the filename without extension — the same convention
+            // Process.GetProcessesByName expects, which is what the window rules use.
+            var derived = Path.GetFileNameWithoutExtension(dialog.FileName);
+            if (!string.IsNullOrWhiteSpace(derived)) app.ProcessName = derived;
+            if (string.IsNullOrWhiteSpace(app.DisplayName) || app.DisplayName == "New app")
+                app.DisplayName = derived;
+
+            Save();
+            RebuildAppDetailPanel();
+            Log.Info("SettingsForm", $"Managed app '{app.Id}' set from executable '{dialog.FileName}'.");
+        };
+
+        pickerRow.Controls.Add(pickRunning);
+        pickerRow.Controls.Add(browseExe);
+        launchLayout.Controls.Add(pickerRow);
+
         var methodRow = new FlowLayoutPanel { AutoSize = true };
         methodRow.Controls.Add(new Label { Text = "Method", AutoSize = true, Width = 140, Margin = new Padding(3, 6, 3, 3) });
         var methodCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
