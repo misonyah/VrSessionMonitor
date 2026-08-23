@@ -18,6 +18,8 @@ namespace VrSessionMonitor.Tray;
 public sealed class ProcessPickerDialog : Form
 {
     private readonly ListView _list;
+    private readonly TextBox _filter;
+    private List<ProcessEntry> _allEntries = new();
 
     /// <summary>Process name with no .exe — what ManagedApp.ProcessName wants.</summary>
     public string SelectedProcessName { get; private set; } = "";
@@ -60,7 +62,7 @@ public sealed class ProcessPickerDialog : Form
         ok.Click += (_, _) => AcceptSelection();
         var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
         var refresh = new Button { Text = "Refresh", AutoSize = true };
-        refresh.Click += (_, _) => Populate();
+        refresh.Click += (_, _) => ReloadProcesses();
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
         buttons.Controls.Add(refresh);
@@ -74,20 +76,37 @@ public sealed class ProcessPickerDialog : Form
             Text = "Applications owning a window are listed first — those are the ones window rules can act on.",
         };
 
+        _filter = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Filter by name, window title or path..." };
+        _filter.TextChanged += (_, _) => ApplyFilter();
+        var filterPanel = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(8, 0, 8, 6) };
+        filterPanel.Controls.Add(_filter);
+
+        // Docked controls lay out in reverse add-order, so the hint added last sits above the filter.
         Controls.Add(_list);
         Controls.Add(buttons);
+        Controls.Add(filterPanel);
         Controls.Add(hint);
         CancelButton = cancel;
 
-        Populate();
+        ReloadProcesses();
     }
 
-    private void Populate()
+    /// <summary>Re-enumerates running processes. Separate from ApplyFilter so typing in the filter
+    /// box doesn't re-walk every process on the machine for each keystroke.</summary>
+    private void ReloadProcesses()
     {
+        _allEntries = EnumerateProcesses();
+        ApplyFilter();
+    }
+
+    private void ApplyFilter()
+    {
+        var needle = _filter.Text.Trim();
+
         _list.BeginUpdate();
         _list.Items.Clear();
 
-        foreach (var entry in EnumerateProcesses())
+        foreach (var entry in _allEntries.Where(e => Matches(e, needle)))
         {
             var item = new ListViewItem(entry.Name);
             item.SubItems.Add(entry.WindowTitle);
@@ -101,6 +120,57 @@ public sealed class ProcessPickerDialog : Form
         }
 
         _list.EndUpdate();
+
+        // Pre-select the top hit so a filter that narrows to one app can be taken with Enter,
+        // without moving the mouse back to the list.
+        if (_list.Items.Count > 0) _list.Items[0].Selected = true;
+    }
+
+    private static bool Matches(ProcessEntry entry, string needle)
+    {
+        if (needle.Length == 0) return true;
+        return entry.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+               || entry.WindowTitle.Contains(needle, StringComparison.OrdinalIgnoreCase)
+               || entry.ExePath.Contains(needle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Closes with the owner. The dialog is modal to the settings window, but the tray icon can
+    /// still hide that window out from under it — which would strand this dialog on screen with no
+    /// visible parent. Tracks Hide() as well as close, since hiding is what the tray toggle does.
+    /// </summary>
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        _filter.Focus();
+
+        if (Owner is null) return;
+        Owner.VisibleChanged += OwnerWentAway;
+        Owner.FormClosing += OwnerClosing;
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        if (Owner is not null)
+        {
+            Owner.VisibleChanged -= OwnerWentAway;
+            Owner.FormClosing -= OwnerClosing;
+        }
+        base.OnFormClosed(e);
+    }
+
+    private void OwnerWentAway(object? sender, EventArgs e)
+    {
+        if (Owner is { Visible: false }) CancelIfOpen();
+    }
+
+    private void OwnerClosing(object? sender, FormClosingEventArgs e) => CancelIfOpen();
+
+    private void CancelIfOpen()
+    {
+        if (IsDisposed || !Visible) return;
+        DialogResult = DialogResult.Cancel; // discard the pick — the parent it would apply to is gone
+        Close();
     }
 
     private sealed record ProcessEntry(string Name, string WindowTitle, int Pid, string ExePath, bool HasWindow);
