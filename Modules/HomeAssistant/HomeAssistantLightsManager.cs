@@ -12,12 +12,24 @@ namespace VrSessionMonitor.Modules.HomeAssistant;
 /// /avatar/parameters/AFK OSC parameter (via OnOscAfkChanged). SetAfkSource ORs them together —
 /// either source alone counts as AFK, and the lights only return to the Headset-On map once both
 /// have cleared. AFK is ignored entirely while the headset is offline (see SetAfkSource).
+///
+/// The OSC source passes through an AfkHoldGate first, because VRChat raises its AFK parameter
+/// whenever it loses focus — opening the SteamVR dashboard included. Without the hold, every trip
+/// to the Steam menu changed the lights. The HMD source is NOT held: it has its own
+/// consecutive-reads debounce and already reports the headset as worn while the dashboard is open.
 /// </summary>
 public sealed class HomeAssistantLightsManager : IDisposable
 {
+    /// <summary>How often to check whether a held AFK signal has finally elapsed. Only runs while
+    /// a hold is actually pending, so this costs nothing during a normal session.</summary>
+    private const int HoldTickMs = 1000;
+
     private readonly MonitorConfig _config;
     private readonly HomeAssistantClient _client;
     private readonly HeadsetMonitor _headset;
+    private readonly AfkHoldGate _oscAfkGate;
+    private readonly object _gateLock = new();
+    private System.Threading.Timer? _holdTimer;
     private bool _hmdAfk;
     private bool _oscAfk;
     private bool _effectiveAfk;
@@ -27,19 +39,33 @@ public sealed class HomeAssistantLightsManager : IDisposable
         _config = config;
         _client = client;
         _headset = headset;
+        _oscAfkGate = new AfkHoldGate(TimeSpan.FromSeconds(Math.Max(0, config.HomeAssistant.AfkOscHoldSeconds)));
     }
 
     public void Start()
     {
         _headset.StateChanged += OnHeadsetStateChanged;
-        Log.Info("HomeAssistant", "Lights manager started.");
+        var hold = _config.HomeAssistant.AfkOscHoldSeconds;
+        Log.Info("HomeAssistant", hold > 0
+            ? $"Lights manager started. VRChat's AFK signal must hold for {hold}s before counting — brief SteamVR dashboard visits won't change the lights."
+            : "Lights manager started. VRChat's AFK hold is disabled — AFK applies immediately.");
     }
 
     private void OnHeadsetStateChanged(object? sender, HeadsetStateChangedEventArgs e)
     {
         // A session boundary clears any AFK state, so the next session starts from "not AFK"
-        // rather than inheriting whatever the lights were doing when the headset dropped.
-        if (!e.IsOnline) _effectiveAfk = false;
+        // rather than inheriting whatever the lights were doing when the headset dropped. The gate
+        // is reset too, so a hold left pending at shutdown can't fire into the next session.
+        if (!e.IsOnline)
+        {
+            _effectiveAfk = false;
+            lock (_gateLock)
+            {
+                _oscAfkGate.Reset();
+                _oscAfk = false;
+                StopHoldTimer();
+            }
+        }
 
         _ = e.IsOnline ? ApplyHeadsetOnActionsAsync() : ApplyActionsAsync(_config.HomeAssistant.HeadsetOffActions);
     }
@@ -47,8 +73,54 @@ public sealed class HomeAssistantLightsManager : IDisposable
     /// <summary>present=false means the HMD proximity sensor reports the headset off-face.</summary>
     public void OnHmdPresenceChanged(bool present) => SetAfkSource(isHmdSource: true, value: !present);
 
-    /// <summary>afk=true means VRChat's own /avatar/parameters/AFK OSC parameter is set.</summary>
-    public void OnOscAfkChanged(bool afk) => SetAfkSource(isHmdSource: false, value: afk);
+    /// <summary>afk=true means VRChat's own /avatar/parameters/AFK OSC parameter is set. Passed
+    /// through the hold gate rather than applied directly — see the class doc.</summary>
+    public void OnOscAfkChanged(bool afk)
+    {
+        bool changed;
+        lock (_gateLock)
+        {
+            changed = _oscAfkGate.Signal(afk);
+            if (_oscAfkGate.IsPending) StartHoldTimer();
+            else StopHoldTimer();
+
+            if (!changed)
+            {
+                if (afk) Log.Debug("HomeAssistant", $"VRChat reports AFK — holding {_config.HomeAssistant.AfkOscHoldSeconds}s before believing it (this is what a SteamVR dashboard visit looks like).");
+                return;
+            }
+
+            _oscAfk = _oscAfkGate.IsAfk;
+        }
+
+        SetAfkSource(isHmdSource: false, value: _oscAfk);
+    }
+
+    private void OnHoldElapsed()
+    {
+        bool changed;
+        lock (_gateLock)
+        {
+            changed = _oscAfkGate.Tick();
+            if (!changed) return;
+
+            _oscAfk = _oscAfkGate.IsAfk;
+            StopHoldTimer(); // the hold resolved; nothing left to poll for
+        }
+
+        Log.Info("HomeAssistant", $"VRChat's AFK signal held for {_config.HomeAssistant.AfkOscHoldSeconds}s — treating it as real AFK.");
+        SetAfkSource(isHmdSource: false, value: _oscAfk);
+    }
+
+    /// <summary>Both timer helpers are only ever called while holding _gateLock.</summary>
+    private void StartHoldTimer() =>
+        _holdTimer ??= new System.Threading.Timer(_ => OnHoldElapsed(), null, HoldTickMs, HoldTickMs);
+
+    private void StopHoldTimer()
+    {
+        _holdTimer?.Dispose();
+        _holdTimer = null;
+    }
 
     private void SetAfkSource(bool isHmdSource, bool value)
     {
@@ -114,6 +186,7 @@ public sealed class HomeAssistantLightsManager : IDisposable
     public void Dispose()
     {
         _headset.StateChanged -= OnHeadsetStateChanged;
+        lock (_gateLock) StopHoldTimer();
     }
 }
 #endif

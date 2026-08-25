@@ -262,6 +262,50 @@ public sealed class SettingsForm : Form
         areaRow.Controls.Add(refreshButton);
         haLayout.Controls.Add(areaRow);
 
+        // VRChat raises its AFK parameter whenever it loses focus, opening the SteamVR dashboard
+        // included, so without a hold the lights change on every trip to the Steam menu.
+        var afkHoldRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+        afkHoldRow.Controls.Add(new Label
+        {
+            Text = "Wait before AFK counts:",
+            AutoSize = true,
+            Margin = new Padding(3, 6, 3, 3),
+        });
+        var afkHoldSpinner = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 600,
+            Width = 70,
+            Value = Math.Clamp(_config.HomeAssistant.AfkOscHoldSeconds, 0, 600),
+        };
+        afkHoldSpinner.ValueChanged += (_, _) =>
+        {
+            var seconds = (int)afkHoldSpinner.Value;
+            if (seconds == _config.HomeAssistant.AfkOscHoldSeconds) return;
+
+            _config.HomeAssistant.AfkOscHoldSeconds = seconds;
+            _config.Save(_configPath);
+            Log.Info("SettingsForm", $"AFK hold set to {seconds}s — takes effect next time the lights manager starts.");
+        };
+        afkHoldRow.Controls.Add(afkHoldSpinner);
+        afkHoldRow.Controls.Add(new Label
+        {
+            Text = "seconds (0 = immediately)",
+            AutoSize = true,
+            Margin = new Padding(3, 6, 3, 3),
+            ForeColor = SystemColors.GrayText,
+        });
+        haLayout.Controls.Add(afkHoldRow);
+        haLayout.Controls.Add(new Label
+        {
+            Text = "VRChat reports AFK whenever it loses focus, including when you open the SteamVR "
+                   + "dashboard. Waiting a while before believing it stops the Steam menu from changing your lights.",
+            AutoSize = true,
+            MaximumSize = new Size(520, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(3, 0, 3, 6),
+        });
+
         var lightsTabs = new TabControl { Dock = DockStyle.Fill };
         _homeAssistantOnLightsPanel = BuildLightsSubTab(lightsTabs, "Headset On lights", _config.HomeAssistant.HeadsetOnActions);
         _homeAssistantAfkLightsPanel = BuildLightsSubTab(lightsTabs, "AFK lights", _config.HomeAssistant.AfkActions);

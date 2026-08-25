@@ -682,6 +682,21 @@ public sealed class HomeAssistantConfig
     public Dictionary<string, string> AfkActions { get; set; } = new();
     public int AfkConsecutiveReadsBeforeFlip { get; set; } = 3;
     public int AfkPollIntervalMs { get; set; } = 2000;
+    /// <summary>
+    /// How long VRChat's own /avatar/parameters/AFK must stay set before it counts as AFK.
+    /// VRChat raises that parameter whenever it loses focus — which includes opening the SteamVR
+    /// dashboard — so without a hold-down the lights change every time you check the Steam menu.
+    ///
+    /// 30s comes from this machine's own logs: of 54 recorded AFK periods the median was 12
+    /// seconds and 63% were under 30, while genuine ones ran to 25 minutes. The cost is that real
+    /// AFK takes this long to register, which for lighting is not worth optimising away.
+    ///
+    /// Set to 0 to disable the hold entirely and flip immediately, as it behaved before.
+    /// Only the OSC source is held: HmdActivityMonitor's proximity signal has its own
+    /// consecutive-reads debounce and already reports the headset as worn while the dashboard is
+    /// open, so it needs no delay.
+    /// </summary>
+    public int AfkOscHoldSeconds { get; set; } = 30;
 }
 #endif
 
