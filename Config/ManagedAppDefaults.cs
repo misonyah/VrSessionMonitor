@@ -83,6 +83,11 @@ public static class ManagedAppDefaults
                 Order = order++,
                 Target = config.Paths.SRanipalExe,
                 ProcessName = "sr_runtime",
+                // Carries across the hardcoded suppressUacPrompt:true that its three launch sites
+                // used before this became a setting. sr_runtime's manifest asks for
+                // "highestAvailable", so it prompts on an admin-capable account but runs fine
+                // unelevated — fatal for an unattended relaunch, since nothing is there to click.
+                SuppressUacPrompt = true,
             },
             new()
             {

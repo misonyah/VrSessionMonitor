@@ -1220,6 +1220,26 @@ public sealed class SettingsForm : Form
             Save();
         }));
 
+        // Defaults to whatever the launch sites did before this was a setting, so a config written
+        // before the property existed keeps working (see MonitorConfig.SuppressUacFor).
+        windowLayout.Controls.Add(BuildCheckbox("Launch without a UAC prompt (RunAsInvoker)",
+            _config.SuppressUacFor(app.Id, builtInDefault: false), v =>
+        {
+            app.SuppressUacPrompt = v;
+            Save();
+        }));
+        windowLayout.Controls.Add(new Label
+        {
+            Text = "Only affects apps whose manifest asks for elevation. Works when the app merely "
+                   + "prefers admin and still runs without it (sr_runtime does). If an app truly "
+                   + "requires admin, this makes it start without the rights it needs and fail — "
+                   + "leave it off unless you know the app tolerates running unelevated.",
+            AutoSize = true,
+            MaximumSize = new Size(340, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 6),
+        });
+
         windowGroup.Controls.Add(windowLayout);
         layout.Controls.Add(windowGroup);
 

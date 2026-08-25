@@ -18,10 +18,19 @@ public sealed class ManagedAppWindowService : IDisposable
     private readonly MonitorConfig _config;
     private readonly IProcessLauncher _launcher;
     /// <summary>How many polls to keep re-applying a window rule that hasn't taken effect before
-    /// giving up. At the service's poll interval this spans roughly half a minute — enough for a
-    /// game to finish swapping its startup window for its real one, without fighting an app that
-    /// simply refuses external window changes.</summary>
-    private const int MaxRuleAttempts = 12;
+    /// giving up, when the config doesn't say. At a 1s process poll (so a 2s loop) the default
+    /// spans three minutes.
+    ///
+    /// Raised from 12 (24 seconds) after OVR Toolkit was seen giving up on a Minimized rule at the
+    /// old ceiling: some apps take a long time to swap their startup window for the real one, and
+    /// Steam-launched ones add Steam's own startup on top. A longer ceiling costs nothing for a
+    /// fast app — retrying stops the moment the state is satisfied, so only apps that would have
+    /// failed anyway keep trying.</summary>
+    private const int DefaultMaxRuleAttempts = 90;
+
+    private int MaxRuleAttempts => _config.Polling.WindowRuleMaxAttempts > 0
+        ? _config.Polling.WindowRuleMaxAttempts
+        : DefaultMaxRuleAttempts;
 
     private readonly Dictionary<string, int> _rulesAppliedForPid = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _ruleAttempts = new(StringComparer.OrdinalIgnoreCase);
@@ -130,7 +139,8 @@ public sealed class ManagedAppWindowService : IDisposable
                 // Give up rather than fight the app (or the user) forever.
                 _rulesAppliedForPid[app.Id] = currentPid;
                 _ruleAttempts.Remove(app.Id);
-                Log.Warn("ManagedApps", $"{app.DisplayName}: window state is still not {app.WindowState} after {attempt} attempts — giving up for this instance. The app may be overriding it, or it may not honour external window changes.");
+                var waitedSeconds = attempt * _config.Polling.ProcessPollIntervalMs * 2 / 1000;
+                Log.Warn("ManagedApps", $"{app.DisplayName}: window state is still not {app.WindowState} after {attempt} attempts over {waitedSeconds}s — giving up for this instance. The app may be overriding it, or it may not honour external window changes. Raise Polling.WindowRuleMaxAttempts if it just needs longer.");
             }
             // else: deliberately leave the marker unset so the next poll retries.
         }

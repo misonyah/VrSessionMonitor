@@ -542,7 +542,7 @@ public sealed class FaceTrackingMonitor : IDisposable
         var result = await _launcher.EnsureRunningAsync(
             "sr_runtime", _config.LaunchTargetFor("sranipal", _config.Paths.SRanipalExe), null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
-            suppressUacPrompt: true).ConfigureAwait(false);
+            suppressUacPrompt: _config.SuppressUacFor("sranipal", builtInDefault: true)).ConfigureAwait(false);
 
         Log.Info("FaceTracking", result.Success
             ? "sr_runtime.exe relaunched."

@@ -59,4 +59,24 @@ public sealed class ManagedApp
     /// <summary>Apply the window rules even when the app was started outside VrSessionMonitor.
     /// This is what makes "minimize VRChat even when I start it myself" work.</summary>
     public bool ApplyWindowRulesWhenStartedManually { get; set; } = true;
+
+    /// <summary>
+    /// Launch this app with __COMPAT_LAYER=RunAsInvoker, so Windows skips the UAC consent prompt
+    /// its manifest would otherwise trigger.
+    ///
+    /// Only meaningful for an app whose manifest asks for elevation. It works for
+    /// requestedExecutionLevel="highestAvailable" — which means "prefer elevation, but run fine
+    /// without it" — and sr_runtime is the confirmed case: 515 launches since 2026-07-16 with no
+    /// prompt and no loss of function.
+    ///
+    /// It is NOT a way to make an app that genuinely requires admin work unattended. For
+    /// requestedExecutionLevel="requireAdministrator", forcing invoker level makes the app start
+    /// without the rights it needs and fail at whatever it needed them for, which is worse than the
+    /// prompt. Leave this off unless the app is known to tolerate running unelevated.
+    ///
+    /// Nullable on purpose: null means "never set", so a config written before this property
+    /// existed keeps the built-in default for its app rather than deserializing to false and
+    /// silently switching the UAC prompts back on. Only an explicit true/false overrides.
+    /// </summary>
+    public bool? SuppressUacPrompt { get; set; }
 }

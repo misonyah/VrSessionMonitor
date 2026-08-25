@@ -442,6 +442,21 @@ public sealed class NetworkConfig
 
 public sealed class PollingConfig
 {
+    /// <summary>
+    /// How many polls ManagedAppWindowService keeps re-applying a window rule that hasn't taken
+    /// effect before giving up on that app instance. The window-rule loop runs every
+    /// ProcessPollIntervalMs * 2, so at the 1000ms default this is 90 * 2s = 3 minutes.
+    ///
+    /// Exists because some apps take a long time to replace their startup window with the real
+    /// one — VRChat was seen accepting a minimise ~2s after launch and then opening its actual
+    /// window unminimised, and OVR Toolkit gave up at the previous 24-second ceiling. Raising it
+    /// is nearly free: a rule stops retrying the moment the state is satisfied, so only apps that
+    /// were going to fail anyway spend the extra polls.
+    ///
+    /// 0 or less falls back to the built-in default.
+    /// </summary>
+    public int WindowRuleMaxAttempts { get; set; } = 90;
+
     public int HeadsetPingIntervalMs { get; set; } = 5000;
     public int HeadsetPingTimeoutMs { get; set; } = 800;
     /// <summary>Consecutive failed pings required before HeadsetMonitor actually declares the
@@ -754,6 +769,17 @@ public sealed class MonitorConfig
     /// </summary>
     public string LaunchTargetFor(string id, string legacyPath) =>
         GetApp(id)?.Target is { Length: > 0 } target ? target : legacyPath;
+
+    /// <summary>
+    /// Whether to launch an app with __COMPAT_LAYER=RunAsInvoker to skip its UAC prompt.
+    ///
+    /// builtInDefault is what the call site did before this became a setting, and it applies both
+    /// when the app has no managed entry and when its entry predates the property (null). Without
+    /// that, upgrading would read a missing value as false and switch the prompts back on for
+    /// sr_runtime — which is the whole thing this suppresses.
+    /// </summary>
+    public bool SuppressUacFor(string id, bool builtInDefault) =>
+        GetApp(id)?.SuppressUacPrompt ?? builtInDefault;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

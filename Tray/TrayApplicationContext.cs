@@ -459,13 +459,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         var srResult = await launcher.EnsureRunningAsync(
             "sr_runtime", _config.LaunchTargetFor("sranipal", _config.Paths.SRanipalExe), null,
             _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
-            suppressUacPrompt: true).ConfigureAwait(false);
+            suppressUacPrompt: _config.SuppressUacFor("sranipal", builtInDefault: true)).ConfigureAwait(false);
         if (!srResult.Success)
             Log.Warn("Tray", $"sr_runtime.exe restart did not confirm success: {srResult.Error}");
 
         var vrcftResult = await launcher.EnsureRunningAsync(
             "VRCFaceTracking", _config.LaunchTargetFor("vrcfacetracking", _config.Paths.VrcFaceTrackingExe), null,
-            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
+            suppressUacPrompt: _config.SuppressUacFor("vrcfacetracking", builtInDefault: false)).ConfigureAwait(false);
         if (!vrcftResult.Success)
             Log.Warn("Tray", $"VRCFaceTracking.exe restart did not confirm success: {vrcftResult.Error}");
 

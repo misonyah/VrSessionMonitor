@@ -108,7 +108,8 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
             Log.Info("VhSranipalLifecycle", "vhui64.exe not running — launching it.");
             var r = await _launcher.EnsureRunningAsync(
                 "vhui64", _config.LaunchTargetFor("virtualhere", _config.Paths.VirtualHereClientExe), null,
-                _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+                _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
+                suppressUacPrompt: _config.SuppressUacFor("virtualhere", builtInDefault: false)).ConfigureAwait(false);
             if (!r.Success && !r.AlreadyRunning)
                 Log.Warn("VhSranipalLifecycle", $"vhui64.exe launch did not confirm success: {r.Error}");
         }
@@ -122,7 +123,7 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
             var r = await _launcher.EnsureRunningAsync(
                 "sr_runtime", _config.LaunchTargetFor("sranipal", _config.Paths.SRanipalExe), null,
                 _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
-                suppressUacPrompt: true).ConfigureAwait(false);
+                suppressUacPrompt: _config.SuppressUacFor("sranipal", builtInDefault: true)).ConfigureAwait(false);
             if (!r.Success && !r.AlreadyRunning)
                 Log.Warn("VhSranipalLifecycle", $"sr_runtime.exe launch did not confirm success: {r.Error}");
         }

@@ -386,7 +386,8 @@ public sealed class BaballoniaLaunchTrigger : IDisposable
             Log.Info("BaballoniaLaunch", $"Eye camera '{cam.Name}' ({cam.Ip}) detected online and Baballonia isn't running — launching it.");
             var result = await _launcher.EnsureRunningAsync(
                 "Baballonia.Desktop", _config.LaunchTargetFor("baballonia", _config.Paths.BaballoniaExe), null,
-                _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+                _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
+                suppressUacPrompt: _config.SuppressUacFor("baballonia", builtInDefault: false)).ConfigureAwait(false);
 
             if (!result.Success)
                 Log.Warn("BaballoniaLaunch", $"Baballonia launch did not confirm success: {result.Error}");

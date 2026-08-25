@@ -501,7 +501,8 @@ public sealed class SessionOrchestrator
 
         await _launcher.EnsureRunningAsync(
             "SlimeVR", _config.LaunchTargetFor("slimevr", _config.Paths.SlimeVrExe), null,
-            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs).ConfigureAwait(false);
+            _config.Polling.ProcessLaunchTimeoutMs, _config.Polling.ProcessPollIntervalMs,
+            suppressUacPrompt: _config.SuppressUacFor("slimevr", builtInDefault: false)).ConfigureAwait(false);
     }
 
     /// <summary>
