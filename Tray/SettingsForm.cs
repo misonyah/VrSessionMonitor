@@ -1468,14 +1468,14 @@ public sealed class SettingsForm : Form
         _bluetoothDeviceList.Columns.Add("Starts", 150);
         layout.Controls.Add(_bluetoothDeviceList);
 
+        // No Refresh button: the scan runs continuously, so the Present column keeps itself up to
+        // date from the same 5s tick that drives the rest of this window. A button to re-read
+        // something the app is already watching is just a manual workaround for a stale view.
         var buttons = new FlowLayoutPanel { AutoSize = true };
-        var refresh = new Button { Text = "Refresh", AutoSize = true };
-        refresh.Click += (_, _) => RefreshBluetoothDevices();
         var addSeen = new Button { Text = "Track a discovered device...", AutoSize = true };
         addSeen.Click += (_, _) => TrackDiscoveredDevice();
         var remove = new Button { Text = "Stop tracking", AutoSize = true };
         remove.Click += (_, _) => RemoveTrackedDevice();
-        buttons.Controls.Add(refresh);
         buttons.Controls.Add(addSeen);
         buttons.Controls.Add(remove);
         layout.Controls.Add(buttons);
@@ -1496,6 +1496,33 @@ public sealed class SettingsForm : Form
         return tab;
     }
 
+    /// <summary>
+    /// Updates just the Present column, in place, from the 5s status tick.
+    ///
+    /// Deliberately does NOT rebuild the list. Clearing and re-adding items would drop the user's
+    /// selection every five seconds, which is the same class of bug that twice had this window's
+    /// timer wiping out in-progress edits. Only the cell text and colour change, so a row stays
+    /// selected while its presence updates underneath.
+    /// </summary>
+    public void RefreshBluetoothPresence()
+    {
+        if (_bluetoothDeviceList is null || _bluetoothDeviceList.Items.Count == 0) return;
+
+        foreach (ListViewItem item in _bluetoothDeviceList.Items)
+        {
+            if (item.Tag is not BluetoothDeviceConfig device) continue;
+
+            var present = _owner.IsBluetoothDevicePresent(device.Address);
+            var text = present ? "yes" : "no";
+            if (item.SubItems[2].Text != text) item.SubItems[2].Text = text;
+
+            var colour = present ? SystemColors.WindowText : SystemColors.GrayText;
+            if (item.ForeColor != colour) item.ForeColor = colour;
+        }
+    }
+
+    /// <summary>Rebuilds the whole list. Only for structural changes — adding or removing a
+    /// tracked device — since it resets selection.</summary>
     private void RefreshBluetoothDevices()
     {
         if (_bluetoothDeviceList is null) return;

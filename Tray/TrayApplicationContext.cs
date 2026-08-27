@@ -229,7 +229,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
-        statusTimer.Tick += (_, _) => { _settingsForm.RefreshStatus(); _ = _settingsForm.RefreshOptimizationsTabAsync(); _settingsForm.RefreshAppsTab(); UpdateTrayTooltip(); };
+        statusTimer.Tick += (_, _) => { _settingsForm.RefreshStatus(); _ = _settingsForm.RefreshOptimizationsTabAsync(); _settingsForm.RefreshAppsTab(); _settingsForm.RefreshBluetoothPresence(); UpdateTrayTooltip(); };
         statusTimer.Start();
 
         Log.Info("Tray", "VR Session Monitor started and all background monitors running.");
