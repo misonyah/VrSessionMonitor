@@ -1447,7 +1447,9 @@ public sealed class SettingsForm : Form
         layout.Controls.Add(new Label
         {
             Text = "Devices advertise every second or two and dropped packets are normal, so a short "
-                   + "value here makes presence flicker on and off.",
+                   + "value here makes presence flicker on and off — and since apps start when a "
+                   + "device appears, flickering means starting them again. 60 seconds matches "
+                   + "Windows' own out-of-range timeout; going higher only slows detection.",
             AutoSize = true,
             MaximumSize = new Size(560, 0),
             ForeColor = SystemColors.GrayText,

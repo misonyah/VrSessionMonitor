@@ -257,6 +257,19 @@ public class BleDeviceRegistryTests
     }
 
     [Fact]
+    public void The_default_presence_timeout_does_not_exceed_the_windows_out_of_range_timeout()
+    {
+        // Windows raises its own out-of-range notification ~60s after the last advertisement
+        // (measured live 2026-08-27). Staying at or under that keeps our timeout the thing that
+        // decides a device has gone. Above it, Windows would be telling us first and we would be
+        // ignoring that signal — see BleDeviceRegistry.NoSignalRssi for why those events are not
+        // trustworthy enough to depend on.
+        const int windowsOutOfRangeTimeoutSeconds = 60;
+
+        Assert.True(new VrSessionMonitor.Config.BluetoothConfig().PresenceTimeoutSeconds <= windowsOutOfRangeTimeoutSeconds);
+    }
+
+    [Fact]
     public void Genuinely_weak_but_real_signals_still_count()
     {
         // Only the sentinel is rejected; a distant device is still a device.

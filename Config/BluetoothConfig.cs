@@ -66,9 +66,22 @@ public sealed class BluetoothConfig
     /// <summary>
     /// How long a device may go unseen before it counts as gone. BLE devices advertise every few
     /// hundred milliseconds to a couple of seconds, and individual packets are missed routinely, so
-    /// this must be comfortably longer than one interval or presence will flap constantly.
+    /// this must be comfortably longer than one interval or presence will flap constantly. A device
+    /// idling in a power-saving state can advertise far more slowly than its active rate, which is
+    /// the case that needs the most headroom — and because app launches fire on the appear edge, a
+    /// false "gone" costs a spurious relaunch when the device is seen again.
+    ///
+    /// 60 seconds matches BluetoothLEAdvertisementWatcher's own OutOfRangeTimeout. Measured live
+    /// on 2026-08-27: after a device was switched off, Windows raised its RSSI -127 out-of-range
+    /// notification consistently ~60s after the last real advertisement, across three cycles.
+    ///
+    /// Treat 60 as a ceiling rather than a midpoint. Beyond it the ordering inverts: Windows'
+    /// notification would arrive while the device was still considered present, so we would be
+    /// discarding a genuine early signal (BleDeviceRegistry ignores those events, deliberately,
+    /// since they cannot be relied on to arrive at all). Nothing breaks, but detection gets slower
+    /// for no benefit. Lower values are fine and simply detect departure sooner.
     /// </summary>
-    public int PresenceTimeoutSeconds { get; set; } = 30;
+    public int PresenceTimeoutSeconds { get; set; } = 60;
 
     /// <summary>Devices to watch. Anything not listed is still discovered, so it can be picked in
     /// the settings UI, but is not tracked or acted on.</summary>
