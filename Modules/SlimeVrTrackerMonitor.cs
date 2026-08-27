@@ -99,6 +99,12 @@ public sealed class SlimeVrTrackerMonitor : IDisposable
         }
     }
 
+    /// <summary>How many trackers are up, for the status view's state dot.</summary>
+    public int OnlineCount => _status.Values.Count(s => s.IsOnline);
+
+    /// <summary>How many trackers are configured at all.</summary>
+    public int TotalCount => _status.Count;
+
     /// <summary>Human-readable summary for logs/tray tooltip, e.g. "8/8 trackers online".</summary>
     public string Summarize()
     {

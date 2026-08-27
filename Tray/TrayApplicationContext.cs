@@ -69,6 +69,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         return parts.Count == 0 ? "no data" : string.Join(", ", parts);
     }
 
+    /// <summary>State dot for the heart rate row: green only when a fresh reading is arriving,
+    /// amber when something is present but not delivering (strap on but nothing connected, or a
+    /// reading gone stale), grey when the feature is simply off.</summary>
+    public StatusLevel HeartrateStatusLevel()
+    {
+        if (!_config.Heartrate.Enabled) return StatusLevel.Unknown;
+
+        var state = _heartrate.Current;
+        if (state.LastUpdateUtc is null) return StatusLevel.Unknown; // nothing has ever arrived
+        if (!_heartrate.IsFresh) return StatusLevel.Warning;
+        if (!state.Connected) return StatusLevel.Warning;
+        return state.Bpm > 0 ? StatusLevel.Good : StatusLevel.Warning;
+    }
+
     /// <summary>Everything the scan has seen this run, for the settings picker.</summary>
     public IReadOnlyList<Modules.Bluetooth.BleDeviceSighting> DiscoveredBluetoothDevices() =>
         _bluetooth.Registry.EverSeen.ToList();

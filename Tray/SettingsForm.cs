@@ -74,6 +74,9 @@ public sealed class SettingsForm : Form
     // Outside the Home Assistant guard: Bluetooth presence has nothing to do with HA, and the
     // HA-off build has to compile too.
     private ListView? _bluetoothDeviceList;
+    private FlowLayoutPanel? _bluetoothStatusPanel;
+    private readonly Dictionary<string, BluetoothStatusRow> _bluetoothRows = new(StringComparer.OrdinalIgnoreCase);
+    private string _bluetoothRowSignature = "";
 
     private readonly Dictionary<string, Label> _optimizationStatusLabels = new();
     private readonly Dictionary<string, Button> _optimizationFixButtons = new();
@@ -240,6 +243,18 @@ public sealed class SettingsForm : Form
         _firmwareLabel = AddStatusRow(layout, "Firmware self-heal: none yet");
         _heartrateLabel = AddStatusRow(layout, "Heart rate: --");
 
+        // One row per tracked Bluetooth device, each showing the icons of the apps it starts, so
+        // "this device brings up these programs" is visible rather than something to remember.
+        _bluetoothStatusPanel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(3, 2, 3, 3),
+        };
+        layout.Controls.Add(_bluetoothStatusPanel);
+        layout.SetColumnSpan(_bluetoothStatusPanel, 2);
+
         tab.Controls.Add(layout);
         return tab;
     }
@@ -329,13 +344,127 @@ public sealed class SettingsForm : Form
     }
 #endif
 
+    /// <summary>A status row with room for a state dot to its left. The dot is set later by
+    /// SetRowStatus, since the state is not known when the row is built.</summary>
     private static Label AddStatusRow(TableLayoutPanel layout, string text)
     {
-        var label = new Label { Text = text, AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
+        var label = new Label
+        {
+            Text = text,
+            AutoSize = true,
+            Margin = new Padding(3, 6, 3, 3),
+            ImageAlign = ContentAlignment.MiddleLeft,
+            TextAlign = ContentAlignment.MiddleLeft,
+            // Indents the text past the dot. Without it the image draws underneath the text.
+            Padding = new Padding(16, 0, 0, 0),
+        };
         layout.Controls.Add(label);
         layout.SetColumnSpan(label, 2);
         return label;
     }
+
+    /// <summary>Sets a row's state dot, skipping the assignment when it has not changed — these
+    /// run on a 5s tick and reassigning an identical Image forces a needless repaint.</summary>
+    private static void SetRowStatus(Label label, StatusLevel level)
+    {
+        var image = StatusIcons.Dot(level);
+        if (!ReferenceEquals(label.Image, image)) label.Image = image;
+    }
+
+    /// <summary>
+    /// Keeps the Bluetooth rows on the Status tab in step with the tracked devices.
+    ///
+    /// Rebuilds only when the tracked SET changes, never on a plain presence change: this runs
+    /// every 5 seconds, and tearing down and recreating controls that often flickers visibly and
+    /// throws away anything the user was interacting with. Presence itself is a label and a dot
+    /// updated in place.
+    /// </summary>
+    private void RefreshBluetoothStatusRows()
+    {
+        if (_bluetoothStatusPanel is null) return;
+
+        var devices = _config.Bluetooth.Devices;
+        var signature = string.Join("|", devices.Select(d => $"{d.Address}:{string.Join(",", d.StartAppIds)}"));
+        if (signature != _bluetoothRowSignature)
+        {
+            _bluetoothRowSignature = signature;
+            RebuildBluetoothStatusRows(devices);
+        }
+
+        foreach (var (address, row) in _bluetoothRows)
+        {
+            var present = _owner.IsBluetoothDevicePresent(address);
+            var text = present ? "on" : "not detected";
+            if (row.State.Text != text) row.State.Text = text;
+            SetRowStatus(row.State, present ? StatusLevel.Good : StatusLevel.Unknown);
+        }
+    }
+
+    private void RebuildBluetoothStatusRows(List<BluetoothDeviceConfig> devices)
+    {
+        _bluetoothStatusPanel!.SuspendLayout();
+        _bluetoothStatusPanel.Controls.Clear();
+        _bluetoothRows.Clear();
+
+        foreach (var device in devices)
+        {
+            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 2, 0, 0) };
+
+            row.Controls.Add(new PictureBox
+            {
+                Image = StatusIcons.Bluetooth(),
+                SizeMode = PictureBoxSizeMode.AutoSize,
+                Margin = new Padding(3, 6, 2, 3),
+            });
+
+            var name = device.DisplayName is { Length: > 0 } ? device.DisplayName : device.Address;
+            row.Controls.Add(new Label { Text = $"{name}:", AutoSize = true, Margin = new Padding(0, 6, 3, 3) });
+
+            var state = new Label
+            {
+                Text = "--",
+                AutoSize = true,
+                Margin = new Padding(0, 6, 6, 3),
+                ImageAlign = ContentAlignment.MiddleLeft,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(16, 0, 0, 0),
+            };
+            row.Controls.Add(state);
+
+            // The apps this device starts, shown as their own icons — the same ones you'd
+            // recognise in the taskbar. Falls back to a text label when an exe has no extractable
+            // icon, or when the target is a Steam app id rather than a path.
+            foreach (var appId in device.StartAppIds)
+            {
+                var app = _config.GetApp(appId);
+                var icon = StatusIcons.ForExecutable(app is null ? null : _config.LaunchTargetFor(appId, ""));
+
+                if (icon is not null)
+                    row.Controls.Add(new PictureBox
+                    {
+                        Image = icon,
+                        SizeMode = PictureBoxSizeMode.AutoSize,
+                        Margin = new Padding(0, 4, 3, 3),
+                        Tag = app?.DisplayName ?? appId,
+                    });
+                else
+                    row.Controls.Add(new Label
+                    {
+                        Text = app?.DisplayName ?? appId,
+                        AutoSize = true,
+                        ForeColor = SystemColors.GrayText,
+                        Margin = new Padding(0, 6, 3, 3),
+                    });
+            }
+
+            _bluetoothStatusPanel.Controls.Add(row);
+            _bluetoothRows[device.Address] = new BluetoothStatusRow(state);
+        }
+
+        _bluetoothStatusPanel.ResumeLayout();
+    }
+
+    private sealed record BluetoothStatusRow(Label State);
 
 #if INCLUDE_HOME_ASSISTANT
     private FlowLayoutPanel BuildLightsSubTab(TabControl parent, string title, Dictionary<string, string> actions)
@@ -534,13 +663,24 @@ public sealed class SettingsForm : Form
     public void RefreshStatus()
     {
         _headsetLabel.Text = $"Headset: {(_headset.IsOnline ? "online" : "offline")}";
+        SetRowStatus(_headsetLabel, _headset.IsOnline ? StatusLevel.Good : StatusLevel.Unknown);
+
         _trackerLabel.Text = $"Trackers: {_trackers.Summarize()}";
+        SetRowStatus(_trackerLabel, _trackers.OnlineCount switch
+        {
+            0 => StatusLevel.Unknown,                                    // none up: usually just "not in a session"
+            var n when n == _trackers.TotalCount => StatusLevel.Good,
+            _ => StatusLevel.Warning,                                     // some up, some not
+        });
 
         // Two independent facts, so both are shown: whether the strap is switched on (our own BLE
         // scan) and whether a reading is arriving (VRCOSC over OSC). They can disagree — most
         // usefully when the strap is on but nothing has connected to it, which is the state where
         // VRCOSC has been started but has not picked it up.
         _heartrateLabel.Text = $"Heart rate: {_owner.SummarizeHeartrate()}";
+        SetRowStatus(_heartrateLabel, _owner.HeartrateStatusLevel());
+
+        RefreshBluetoothStatusRows();
 
         var p = _faceTracking.Current;
         var cams = _eyeTracking.Current;
