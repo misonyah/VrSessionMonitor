@@ -206,4 +206,63 @@ public class BleDeviceRegistryTests
         Assert.False(registry.Observe("", "x", -60));
         Assert.Empty(registry.Present);
     }
+
+    [Fact]
+    public void An_out_of_range_notification_does_not_make_a_device_present()
+    {
+        // Windows raises a Received event with RSSI -127 to say a device has gone out of range.
+        // It is a sentinel, not a weak signal — counting it as a sighting says the device is here
+        // at the exact moment Windows is reporting that it is not.
+        var (registry, _) = Build();
+
+        var isNew = registry.Observe(Addr, "LVS-Gush", BleDeviceRegistry.NoSignalRssi);
+
+        Assert.False(isNew);
+        Assert.False(registry.IsPresent(Addr));
+    }
+
+    [Fact]
+    public void An_out_of_range_notification_does_not_resurrect_a_departed_device()
+    {
+        // The exact flapping seen live on 2026-08-27 after a toy was switched off: gone, then an
+        // RSSI -127 event brought it back, then it timed out again, on a ~30s cycle.
+        var (registry, clock) = Build(timeoutSeconds: 30);
+        var appeared = 0;
+        registry.DeviceAppeared += _ => appeared++;
+
+        registry.Observe(Addr, "LVS-Gush", -70);
+        clock.Advance(31);
+        registry.ExpireStale();
+        Assert.False(registry.IsPresent(Addr));
+
+        registry.Observe(Addr, "LVS-Gush", BleDeviceRegistry.NoSignalRssi);
+
+        Assert.False(registry.IsPresent(Addr));
+        Assert.Equal(1, appeared); // not re-raised, so nothing re-launches apps
+    }
+
+    [Fact]
+    public void An_out_of_range_notification_does_not_keep_a_present_device_alive()
+    {
+        // If -127 refreshed last-seen, a powered-off device would never time out at all.
+        var (registry, clock) = Build(timeoutSeconds: 30);
+        registry.Observe(Addr, "LVS-Gush", -70);
+
+        clock.Advance(20);
+        registry.Observe(Addr, "LVS-Gush", BleDeviceRegistry.NoSignalRssi);
+        clock.Advance(15); // 35s since the last REAL sighting
+
+        Assert.Single(registry.ExpireStale());
+        Assert.False(registry.IsPresent(Addr));
+    }
+
+    [Fact]
+    public void Genuinely_weak_but_real_signals_still_count()
+    {
+        // Only the sentinel is rejected; a distant device is still a device.
+        var (registry, _) = Build();
+
+        Assert.True(registry.Observe(Addr, "far away", -120));
+        Assert.True(registry.IsPresent(Addr));
+    }
 }

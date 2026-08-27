@@ -74,10 +74,27 @@ public sealed class BleDeviceRegistry
         lock (_lock) return _everSeen.GetValueOrDefault(address);
     }
 
+    /// <summary>
+    /// The value Windows reports when it has no signal strength for a device — including the
+    /// event it raises to say a device has gone OUT OF RANGE. It is a sentinel, not a very weak
+    /// reading: real sightings here run about -66 to -100 dBm.
+    ///
+    /// Confirmed live 2026-08-27. Switching a toy off produced exactly this cycle: the device
+    /// timed out and was reported gone, then ~29 seconds later an RSSI -127 event arrived, which
+    /// this method counted as a fresh sighting and brought it back to life, which then timed out
+    /// again — presence flapping on a roughly 30-second period long after the device was powered
+    /// down. Treating the "it's gone" notification as proof it is here is precisely backwards.
+    /// </summary>
+    public const short NoSignalRssi = -127;
+
     /// <summary>Feeds in one advertisement. Returns true when this made the device newly present.</summary>
     public bool Observe(string address, string? name, short rssi, IReadOnlyList<string>? serviceUuids = null)
     {
         if (string.IsNullOrWhiteSpace(address)) return false;
+
+        // Never let an out-of-range notification refresh presence. Ignoring it entirely lets the
+        // normal timeout retire the device, rather than this event holding it alive forever.
+        if (rssi <= NoSignalRssi) return false;
 
         BleDeviceSighting sighting;
         bool isNew;
