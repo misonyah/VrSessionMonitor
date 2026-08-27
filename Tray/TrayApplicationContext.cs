@@ -80,7 +80,6 @@ public sealed class TrayApplicationContext : ApplicationContext
     private List<LightInfo> _homeAssistantLightsInSelectedArea = new();
     private HomeAssistantLightsManager? _homeAssistantManager;
     private HmdActivityMonitor? _hmdActivity;
-    private VrChatOscAfkListener? _vrChatOscAfk;
     private readonly VrChatGroupAutomationMonitor _groupAutomation;
 
     internal bool HomeAssistantIsConnected => _homeAssistantClient.IsConnected;
@@ -167,10 +166,19 @@ public sealed class TrayApplicationContext : ApplicationContext
         // and a BLE peripheral takes only one connection, which VRCOSC already holds.
         _heartrate = new HeartrateMonitor(_config);
 #if INCLUDE_OSC
-        if (_config.Heartrate.Enabled)
+        // ONE OSCQuery service for every consumer. VRChat fans parameters out to each service it
+        // discovers, so a second one would work — but it means a second mDNS advertisement, a
+        // second HTTP server and a second socket for no benefit, and anyone reading the OSC debug
+        // panel in VRChat would see this app listed twice.
+        var oscParameters = _heartrate.ParameterNames.ToList();
+#if INCLUDE_HOME_ASSISTANT
+        // VRChat's own AFK flag, which drives the Home Assistant AFK light map.
+        if (_config.HomeAssistant.Enabled) oscParameters.Add(VrChatOscParameters.Afk);
+#endif
+        if (oscParameters.Count > 0)
         {
-            _oscListener = new VrChatOscListener(_config, _heartrate.ParameterNames);
-            _oscListener.ParameterReceived += _heartrate.OnParameter;
+            _oscListener = new VrChatOscListener(_config, oscParameters);
+            if (_config.Heartrate.Enabled) _oscListener.ParameterReceived += _heartrate.OnParameter;
         }
 #endif
 
@@ -187,7 +195,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         _homeAssistantDiscovery = new HomeAssistantAreaDiscovery(_homeAssistantClient);
         _homeAssistantManager = new HomeAssistantLightsManager(_config, _homeAssistantClient, _headset);
         _hmdActivity = new HmdActivityMonitor(_config);
-        _vrChatOscAfk = new VrChatOscAfkListener(_config);
         _groupAutomation = new VrChatGroupAutomationMonitor(_config);
 #endif
 
@@ -263,11 +270,18 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Event Log, .NET Runtime event 1026) that its raw OpenVR IVRSystem function-table
         // marshaling crashed the entire process with an unhandled access violation (0xc0000005) in
         // coreclr.dll -- a native AV can't be caught by try/catch and takes down every other
-        // monitor with it. AFK detection still works via VrChatOscAfkListener below (VRChat's own
+        // monitor with it. AFK detection still works via the shared VrChatOscListener (VRChat's own
         // /avatar/parameters/AFK over OSC, no native interop) -- only the "took the headset off
         // without toggling AFK" half of detection is lost until this interop is fixed or replaced.
-        _vrChatOscAfk!.AfkChanged += (_, afk) => _homeAssistantManager!.OnOscAfkChanged(afk);
-        _vrChatOscAfk.Start();
+        //
+        // No de-duplication needed here: AfkHoldGate.Signal returns false unless the state actually
+        // changed, which is what the old listener's own _lastAfk check was doing.
+        if (_oscListener is not null)
+            _oscListener.ParameterReceived += (address, value) =>
+            {
+                if (address.EndsWith("/" + VrChatOscParameters.Afk, StringComparison.OrdinalIgnoreCase))
+                    _homeAssistantManager!.OnOscAfkChanged(value is true);
+            };
         _groupAutomation.Start();
         if (_config.HomeAssistant.Enabled)
             _ = WaitForHomeAssistantConnectionThenRefreshAsync(notifyOnFailure: false);
@@ -608,7 +622,6 @@ public sealed class TrayApplicationContext : ApplicationContext
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantManager?.Dispose();
         _hmdActivity?.Dispose();
-        _vrChatOscAfk?.Dispose();
         _groupAutomation.Dispose();
         _homeAssistantClient.Dispose();
 #endif
