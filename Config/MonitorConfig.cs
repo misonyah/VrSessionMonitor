@@ -738,7 +738,13 @@ public sealed class LoggingConfig
 
 public sealed class MonitorConfig
 {
+    /// <summary>Every managed-app id this install has ever been offered, so an app the user
+    /// deleted is not re-added by the next build (see ManagedAppDefaults.AddNewlyIntroducedApps).
+    /// Not user-facing; delete an entry by hand to be offered that app again.</summary>
+    public List<string> SeededAppIds { get; set; } = new();
+
     public LoggingConfig Logging { get; set; } = new();
+    public BluetoothConfig Bluetooth { get; set; } = new();
     public NetworkConfig Network { get; set; } = new();
     public PollingConfig Polling { get; set; } = new();
     public PathsConfig Paths { get; set; } = new();
@@ -844,6 +850,8 @@ public sealed class MonitorConfig
                     // the first Save() persists it, so a read-only run doesn't rewrite the file.
                     if (loaded.ManagedApps.Count == 0)
                         loaded.ManagedApps = ManagedAppDefaults.SeedFrom(loaded);
+                    else
+                        ManagedAppDefaults.AddNewlyIntroducedApps(loaded);
                     return loaded;
                 }
 

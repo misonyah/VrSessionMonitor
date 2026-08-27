@@ -70,6 +70,10 @@ public sealed class SettingsForm : Form
 
 #endif
 
+    // Outside the Home Assistant guard: Bluetooth presence has nothing to do with HA, and the
+    // HA-off build has to compile too.
+    private ListView? _bluetoothDeviceList;
+
     private readonly Dictionary<string, Label> _optimizationStatusLabels = new();
     private readonly Dictionary<string, Button> _optimizationFixButtons = new();
 
@@ -135,6 +139,7 @@ public sealed class SettingsForm : Form
 #endif
         AppsTabIndex = _tabs.TabPages.Count;
         _tabs.TabPages.Add(BuildAppsTab());
+        _tabs.TabPages.Add(BuildBluetoothTab());
         _tabs.TabPages.Add(BuildAdvancedTab());
         _optimizationsTabPage = BuildOptimizationsTab();
         _tabs.TabPages.Add(_optimizationsTabPage);
@@ -1355,6 +1360,208 @@ public sealed class SettingsForm : Form
     }
 
     // ───────────────────────────── Advanced tab ─────────────────────────────
+
+    /// <summary>
+    /// Bluetooth presence. The scan is passive — it never connects — so it cannot take the heart
+    /// rate strap away from VRCOSC or a toy away from Intiface, and the copy here says so, because
+    /// "will this fight my other software" is the first thing anyone will wonder.
+    /// </summary>
+    private TabPage BuildBluetoothTab()
+    {
+        var tab = new TabPage("Bluetooth");
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10), WrapContents = false, AutoScroll = true };
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Detects which Bluetooth devices are switched on, by listening for the "
+                   + "advertisements they broadcast. It never connects to anything, so it cannot "
+                   + "interfere with VRCOSC's heart rate connection or with Intiface.",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(3, 0, 3, 8),
+        });
+
+        var enabled = new CheckBox
+        {
+            Text = "Scan for Bluetooth devices",
+            Checked = _config.Bluetooth.Enabled,
+            AutoSize = true,
+        };
+        enabled.CheckedChanged += (_, _) =>
+        {
+            _config.Bluetooth.Enabled = enabled.Checked;
+            _config.Save(_configPath);
+            Log.Info("SettingsForm", $"Bluetooth scanning set to {enabled.Checked} — takes effect on restart.");
+        };
+        layout.Controls.Add(enabled);
+        layout.Controls.Add(new Label
+        {
+            Text = "Takes effect when VrSessionMonitor restarts.",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 8),
+        });
+
+        var activeScan = new CheckBox
+        {
+            Text = "Ask devices for their name (active scanning)",
+            Checked = _config.Bluetooth.ActiveScanning,
+            AutoSize = true,
+        };
+        activeScan.CheckedChanged += (_, _) =>
+        {
+            _config.Bluetooth.ActiveScanning = activeScan.Checked;
+            _config.Save(_configPath);
+        };
+        layout.Controls.Add(activeScan);
+        layout.Controls.Add(new Label
+        {
+            Text = "Without this most devices show up as a bare address and nothing else — a real "
+                   + "scan here found 23 devices and not one name. It still never connects to "
+                   + "anything, so it cannot interfere with VRCOSC or Intiface; it just transmits a "
+                   + "short request instead of only listening.",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 8),
+        });
+
+        var timeoutRow = new FlowLayoutPanel { AutoSize = true };
+        timeoutRow.Controls.Add(new Label { Text = "Treat a device as gone after:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
+        var timeout = new NumericUpDown
+        {
+            Minimum = 5,
+            Maximum = 300,
+            Width = 70,
+            Value = Math.Clamp(_config.Bluetooth.PresenceTimeoutSeconds, 5, 300),
+        };
+        timeout.ValueChanged += (_, _) =>
+        {
+            _config.Bluetooth.PresenceTimeoutSeconds = (int)timeout.Value;
+            _config.Save(_configPath);
+        };
+        timeoutRow.Controls.Add(timeout);
+        timeoutRow.Controls.Add(new Label { Text = "seconds without being seen", AutoSize = true, Margin = new Padding(3, 6, 3, 3), ForeColor = SystemColors.GrayText });
+        layout.Controls.Add(timeoutRow);
+        layout.Controls.Add(new Label
+        {
+            Text = "Devices advertise every second or two and dropped packets are normal, so a short "
+                   + "value here makes presence flicker on and off.",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 8),
+        });
+
+        _bluetoothDeviceList = new ListView
+        {
+            View = View.Details,
+            FullRowSelect = true,
+            Width = 560,
+            Height = 200,
+            Margin = new Padding(3, 6, 3, 6),
+        };
+        _bluetoothDeviceList.Columns.Add("Device", 190);
+        _bluetoothDeviceList.Columns.Add("Address", 140);
+        _bluetoothDeviceList.Columns.Add("Present", 70);
+        _bluetoothDeviceList.Columns.Add("Starts", 150);
+        layout.Controls.Add(_bluetoothDeviceList);
+
+        var buttons = new FlowLayoutPanel { AutoSize = true };
+        var refresh = new Button { Text = "Refresh", AutoSize = true };
+        refresh.Click += (_, _) => RefreshBluetoothDevices();
+        var addSeen = new Button { Text = "Track a discovered device...", AutoSize = true };
+        addSeen.Click += (_, _) => TrackDiscoveredDevice();
+        var remove = new Button { Text = "Stop tracking", AutoSize = true };
+        remove.Click += (_, _) => RemoveTrackedDevice();
+        buttons.Controls.Add(refresh);
+        buttons.Controls.Add(addSeen);
+        buttons.Controls.Add(remove);
+        layout.Controls.Add(buttons);
+
+        layout.Controls.Add(new Label
+        {
+            Text = "A tracked device can start apps when it appears — switch a toy on and Intiface "
+                   + "and OSCGoesBrrr start by themselves. Apps are only ever started, never "
+                   + "stopped, so a device dropping out for a moment won't close something you're using.",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(3, 8, 3, 4),
+        });
+
+        tab.Controls.Add(layout);
+        RefreshBluetoothDevices();
+        return tab;
+    }
+
+    private void RefreshBluetoothDevices()
+    {
+        if (_bluetoothDeviceList is null) return;
+
+        _bluetoothDeviceList.BeginUpdate();
+        _bluetoothDeviceList.Items.Clear();
+
+        foreach (var device in _config.Bluetooth.Devices)
+        {
+            var present = _owner.IsBluetoothDevicePresent(device.Address);
+            var starts = device.StartAppIds.Count == 0
+                ? ""
+                : string.Join(", ", device.StartAppIds.Select(id => _config.GetApp(id)?.DisplayName ?? id));
+
+            var item = new ListViewItem(device.DisplayName is { Length: > 0 } ? device.DisplayName : "(unnamed)");
+            item.SubItems.Add(device.Address);
+            item.SubItems.Add(present ? "yes" : "no");
+            item.SubItems.Add(starts);
+            item.Tag = device;
+            if (!present) item.ForeColor = SystemColors.GrayText;
+            _bluetoothDeviceList.Items.Add(item);
+        }
+
+        _bluetoothDeviceList.EndUpdate();
+    }
+
+    private void TrackDiscoveredDevice()
+    {
+        if (!_config.Bluetooth.Enabled)
+        {
+            MessageBox.Show(this,
+                "Turn on \"Scan for Bluetooth devices\" and restart VrSessionMonitor first — there's nothing to pick from until it has scanned.",
+                "VR Session Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var seen = _owner.DiscoveredBluetoothDevices()
+            .Where(s => _config.Bluetooth.GetDevice(s.Address) is null)
+            .ToList();
+
+        if (seen.Count == 0)
+        {
+            MessageBox.Show(this,
+                "No new devices have been seen yet. Make sure the device is switched on and give the scan a few seconds.",
+                "VR Session Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new BluetoothDevicePickerDialog(seen, _config);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SelectedDevice is null) return;
+
+        _config.Bluetooth.Devices.Add(dialog.SelectedDevice);
+        _config.Save(_configPath);
+        Log.Info("SettingsForm", $"Now tracking Bluetooth device {dialog.SelectedDevice.Address} ({dialog.SelectedDevice.DisplayName}).");
+        RefreshBluetoothDevices();
+    }
+
+    private void RemoveTrackedDevice()
+    {
+        if (_bluetoothDeviceList?.SelectedItems.Count is not > 0) return;
+        if (_bluetoothDeviceList.SelectedItems[0].Tag is not BluetoothDeviceConfig device) return;
+
+        _config.Bluetooth.Devices.Remove(device);
+        _config.Save(_configPath);
+        RefreshBluetoothDevices();
+    }
 
     private TabPage BuildAdvancedTab()
     {

@@ -31,6 +31,16 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly AdbController _adb;
     private readonly SessionOrchestrator _orchestrator;
     private readonly ManagedAppWindowService _managedApps;
+    private readonly Modules.Bluetooth.BluetoothPresenceMonitor _bluetooth;
+    private readonly Modules.Bluetooth.BluetoothTriggeredLauncher _bluetoothLauncher;
+
+    /// <summary>Whether a tracked device is visible right now. Safe to call when scanning never
+    /// started (no adapter, radio off) — it simply reports absent.</summary>
+    public bool IsBluetoothDevicePresent(string address) => _bluetooth.Registry.IsPresent(address);
+
+    /// <summary>Everything the scan has seen this run, for the settings picker.</summary>
+    public IReadOnlyList<Modules.Bluetooth.BleDeviceSighting> DiscoveredBluetoothDevices() =>
+        _bluetooth.Registry.EverSeen.ToList();
     private readonly OptimizationsManager _optimizations;
     private readonly SettingsForm _settingsForm;
 #if INCLUDE_HOME_ASSISTANT
@@ -119,6 +129,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         _adb = new AdbController(_config);
         _orchestrator = new SessionOrchestrator(_config, _trackers, _updateChecker, _adb);
         _managedApps = new ManagedAppWindowService(_config, new ProcessLauncher());
+
+        // Passive BLE presence: never connects, so it cannot take the heart rate strap away from
+        // VRCOSC or a toy away from Intiface. See BluetoothPresenceMonitor.
+        _bluetooth = new Modules.Bluetooth.BluetoothPresenceMonitor(_config);
+        _bluetoothLauncher = new Modules.Bluetooth.BluetoothTriggeredLauncher(_config, new ProcessLauncher());
+        _bluetooth.TrackedDeviceAppeared += (device, sighting) =>
+            _ = _bluetoothLauncher.OnTrackedDeviceAppearedAsync(device, sighting);
         var optimizationChecks = OptimizationRegistry.BuildAll(
             new RegistryAccessor(), new WindowsServiceController(),
             CpuInfo.GetName, PowercfgRunner.RunAsync, PowercfgRunner.RunElevatedAsync);
@@ -191,6 +208,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _slimeLifecycle.Start();
         _firmwareNotify.Start();
         _managedApps.Start();
+        _bluetooth.Start();
+        // Settings reads presence through the accessors below rather than holding the monitor,
+        // so the UI never has to know whether scanning actually started.
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantClient.Start();
         _homeAssistantManager!.Start();
@@ -535,6 +555,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _slimeMotion.Dispose();
         _firmwareNotify.Dispose();
         _managedApps?.Dispose();
+        _bluetooth?.Dispose();
+        // (accessors for the Bluetooth settings tab are defined near the other UI helpers)
 #if INCLUDE_HOME_ASSISTANT
         _homeAssistantManager?.Dispose();
         _hmdActivity?.Dispose();

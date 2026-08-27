@@ -13,6 +13,38 @@ namespace VrSessionMonitor.Config;
 /// </summary>
 public static class ManagedAppDefaults
 {
+    /// <summary>
+    /// Adds apps introduced by a newer build to a config that already has a managed-app list,
+    /// which plain seeding skips because it only runs when the list is empty.
+    ///
+    /// Records every id it has ever offered in SeededAppIds, so an app the user deliberately
+    /// deleted stays deleted instead of reappearing on the next launch. Without that ledger this
+    /// would be indistinguishable from "restore anything missing", and a removed entry would come
+    /// back every single start.
+    /// </summary>
+    public static void AddNewlyIntroducedApps(MonitorConfig config)
+    {
+        var known = new HashSet<string>(config.SeededAppIds, StringComparer.OrdinalIgnoreCase);
+        var present = new HashSet<string>(config.ManagedApps.Select(a => a.Id), StringComparer.OrdinalIgnoreCase);
+
+        // A config written before the ledger existed has every app it currently holds treated as
+        // already-offered, so this pass only ever introduces genuinely new ones.
+        foreach (var id in present) known.Add(id);
+
+        var nextOrder = config.ManagedApps.Count == 0 ? 0 : config.ManagedApps.Max(a => a.Order) + 1;
+
+        foreach (var candidate in SeedFrom(config))
+        {
+            if (known.Contains(candidate.Id)) continue;
+
+            candidate.Order = nextOrder++;
+            config.ManagedApps.Add(candidate);
+            known.Add(candidate.Id);
+        }
+
+        config.SeededAppIds = known.ToList();
+    }
+
     public static List<ManagedApp> SeedFrom(MonitorConfig config)
     {
         var order = 0;
@@ -107,6 +139,32 @@ public static class ManagedAppDefaults
                 LaunchMethod = AppLaunchMethod.SteamAppId,
                 Target = config.Paths.OvrToolkitSteamAppId,
                 ProcessName = "OVR Toolkit",
+            },
+            // Haptics pair. Disabled by default and given no window rules: they are only wanted
+            // during sessions where the hardware is actually in use, which is exactly what the
+            // Bluetooth trigger is for (BluetoothDeviceConfig.StartAppIds). Paths are the
+            // per-user install locations both installers use.
+            new()
+            {
+                Id = "intiface",
+                DisplayName = "Intiface Central",
+                Enabled = false,
+                Order = order++,
+                Target = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "IntifaceCentral", "intiface_central.exe"),
+                ProcessName = "intiface_central",
+            },
+            new()
+            {
+                Id = "oscgoesbrrr",
+                DisplayName = "OSCGoesBrrr",
+                Enabled = false,
+                Order = order++,
+                Target = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Programs", "OscGoesBrrr", "OscGoesBrrr.exe"),
+                ProcessName = "OscGoesBrrr",
             },
             new()
             {
