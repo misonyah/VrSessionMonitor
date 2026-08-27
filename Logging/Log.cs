@@ -15,13 +15,15 @@ public static class Log
     private static Thread? _worker;
     private static string _logDir = "";
     private static string _currentPath = "";
+    private static int _retentionDays = 30;
     private static readonly object FileLock = new();
 
     public static LogLevel MinLevel { get; set; } = LogLevel.Trace;
 
-    public static void Init(string logDirectory)
+    public static void Init(string logDirectory, int retentionDays = 30)
     {
         _logDir = logDirectory;
+        _retentionDays = retentionDays;
         Directory.CreateDirectory(_logDir);
         OpenWriterForToday();
 
@@ -29,6 +31,19 @@ public static class Log
         _worker.Start();
 
         Info("Log", $"Logging started. Directory={_logDir}");
+        PruneOldLogs();
+    }
+
+    /// <summary>Applies the retention window to this app's log directory. Runs at startup and at
+    /// each midnight rollover, so a machine left running for weeks still prunes. The rules live in
+    /// LogRetention, which is testable without starting this singleton.</summary>
+    private static void PruneOldLogs()
+    {
+        var deleted = LogRetention.Prune(_logDir, _retentionDays, _currentPath,
+            onProblem: problem => Debug("Log", problem));
+
+        if (deleted > 0)
+            Info("Log", $"Removed {deleted} log file(s) older than {_retentionDays} days.");
     }
 
     private static void OpenWriterForToday()
@@ -37,7 +52,7 @@ public static class Log
         {
             _writer?.Flush();
             _writer?.Dispose();
-            _currentPath = Path.Combine(_logDir, $"monitor_{DateTime.Now:yyyy-MM-dd}.log");
+            _currentPath = Path.Combine(_logDir, LogRetention.FileNameFor(DateTime.Now));
             _writer = new StreamWriter(new FileStream(_currentPath, FileMode.Append, FileAccess.Write, FileShare.Read))
             {
                 AutoFlush = true,
@@ -54,6 +69,7 @@ public static class Log
             {
                 OpenWriterForToday();
                 lastDay = DateTime.Now.Day;
+                PruneOldLogs(); // a long-running session must still prune as days roll over
             }
 
             lock (FileLock)

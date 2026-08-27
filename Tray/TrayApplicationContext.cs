@@ -47,10 +47,38 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     public TrayApplicationContext()
     {
-        _configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        // Config and logs live in %LOCALAPPDATA%\VrSessionMonitor, not next to the executable —
+        // see AppPaths for the config-loss hazard that motivated the move.
+        AppPaths.EnsureCreated();
+        var migrated = AppPaths.MigrateLegacyConfigIfNeeded();
+        _configPath = AppPaths.ConfigFilePath;
         _config = MonitorConfig.LoadOrCreateDefault(_configPath);
 
-        Log.Init(_config.Paths.LogDirectory);
+        // Logging.Directory is authoritative; Paths.LogDirectory is retired. The old setting
+        // defaulted to the relative "logs" and so followed the working directory — on this machine
+        // it had been persisted as an absolute path inside the source repo, where it reached 625 MB.
+        var logDir = _config.Logging.Directory is { Length: > 0 } configured
+            ? configured
+            : AppPaths.LogDirectory;
+        Log.Init(logDir, _config.Logging.RetentionDays);
+
+        // Apply the same retention to wherever logs used to be written, once, so the existing
+        // backlog is cleaned up rather than orphaned at whatever size it had reached. Only prunes
+        // by our own filename pattern and never touches the file currently open.
+        var legacyLogDir = _config.Paths.LogDirectory;
+        if (legacyLogDir is { Length: > 0 }
+            && !string.Equals(Path.GetFullPath(legacyLogDir), Path.GetFullPath(logDir), StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(legacyLogDir))
+        {
+            var pruned = LogRetention.Prune(legacyLogDir, _config.Logging.RetentionDays,
+                onProblem: problem => Log.Debug("Log", problem));
+            Log.Info("Log", pruned > 0
+                ? $"Logs now live in {logDir}. Applied the {_config.Logging.RetentionDays}-day retention to the previous directory ({legacyLogDir}) and removed {pruned} old file(s); anything newer was left for you to delete."
+                : $"Logs now live in {logDir}. The previous directory ({legacyLogDir}) had nothing past the retention window.");
+        }
+
+        if (migrated)
+            Log.Info("AppPaths", $"Moved the existing config from {AppPaths.LegacyConfigFilePath} to {_configPath}. The old copy was left in place.");
 
         // Logged after a live incident where the running tray process was 4 days older than the
         // latest committed fix — it had never been rebuilt/restarted, so none of several days'

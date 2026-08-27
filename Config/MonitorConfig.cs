@@ -409,9 +409,11 @@ public sealed class PathsConfig
     /// default; ADB integration is entirely best-effort and degrades gracefully if unset (see
     /// AdbController).</summary>
     public string AdbExe { get; set; } = "";
-    /// <summary>Relative to the app's own working directory by default, so this works out of
-    /// the box on any machine. Point it elsewhere if you'd rather logs live somewhere else.</summary>
-    public string LogDirectory { get; set; } = "logs";
+    /// <summary>RETIRED — use Logging.Directory. Read only to find where logs used to be written,
+    /// so the retention window can be applied there once. Being relative by default, this resolved
+    /// against the working directory rather than a fixed location, which is how it ended up
+    /// persisted as a path inside the source repo.</summary>
+    public string LogDirectory { get; set; } = "";
 }
 
 public sealed class NetworkConfig
@@ -715,8 +717,28 @@ public sealed class HomeAssistantConfig
 }
 #endif
 
+/// <summary>Log file retention. The log directory reached 625 MB across 44 files before this
+/// existed, because nothing ever deleted anything.</summary>
+public sealed class LoggingConfig
+{
+    /// <summary>Delete log files older than this many days, checked at startup and at each
+    /// midnight rollover. 0 or less disables pruning entirely.</summary>
+    public int RetentionDays { get; set; } = 30;
+
+    /// <summary>
+    /// Where to write logs. Blank — the default — means %LOCALAPPDATA%\VrSessionMonitor\logs.
+    ///
+    /// Replaces Paths.LogDirectory, whose default was the relative "logs" and therefore resolved
+    /// against the working directory. On this machine that had been persisted as an absolute path
+    /// inside the source repo, where it grew to 625 MB. Set this only to deliberately put logs
+    /// somewhere specific; leaving it blank is correct for almost everyone.
+    /// </summary>
+    public string Directory { get; set; } = "";
+}
+
 public sealed class MonitorConfig
 {
+    public LoggingConfig Logging { get; set; } = new();
     public NetworkConfig Network { get; set; } = new();
     public PollingConfig Polling { get; set; } = new();
     public PathsConfig Paths { get; set; } = new();
