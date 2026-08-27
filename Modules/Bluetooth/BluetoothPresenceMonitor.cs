@@ -23,10 +23,27 @@ public sealed class BluetoothPresenceMonitor : IDisposable
     private System.Threading.Timer? _expiryTimer;
     private bool _startFailureLogged;
 
+    private readonly BluetoothNameCache? _nameCache;
+    private readonly string _nameCachePath;
+    private System.Threading.Timer? _cacheSaveTimer;
+
     public BluetoothPresenceMonitor(MonitorConfig config)
     {
         _config = config;
-        _registry = new BleDeviceRegistry(TimeSpan.FromSeconds(Math.Max(5, config.Bluetooth.PresenceTimeoutSeconds)));
+        _nameCachePath = Path.Combine(AppPaths.DataDirectory, "bluetooth-names.json");
+
+        // RememberDiscoveredDevices now actually does something: it controls whether names are
+        // kept across restarts. Without the cache, a device is anonymous after every restart until
+        // a packet carrying its name happens to arrive.
+        if (config.Bluetooth.RememberDiscoveredDevices)
+        {
+            _nameCache = new BluetoothNameCache();
+            _nameCache.Load(_nameCachePath);
+        }
+
+        _registry = new BleDeviceRegistry(
+            TimeSpan.FromSeconds(Math.Max(5, config.Bluetooth.PresenceTimeoutSeconds)),
+            nameCache: _nameCache);
     }
 
     public BleDeviceRegistry Registry => _registry;
@@ -68,6 +85,12 @@ public sealed class BluetoothPresenceMonitor : IDisposable
             // Presence expiry is time-based, so it needs its own tick — no advertisement arrives
             // to tell us a device has gone.
             _expiryTimer = new System.Threading.Timer(_ => SafeExpire(), null, 2000, 2000);
+
+            // Saved periodically rather than on every sighting: names change rarely, sightings
+            // arrive several times a second, and rewriting the file that often would be pure churn.
+            if (_nameCache is not null)
+                _cacheSaveTimer = new System.Threading.Timer(
+                    _ => _nameCache.Save(_nameCachePath), null, 60_000, 60_000);
 
             Log.Info("Bluetooth", $"BLE scan started ({(_config.Bluetooth.ActiveScanning ? "active — requests names, still never connects" : "passive — listen only, most devices will show no name")}). Tracking {_config.Bluetooth.Devices.Count} configured device(s); presence times out after {_config.Bluetooth.PresenceTimeoutSeconds}s.");
         }
@@ -177,6 +200,11 @@ public sealed class BluetoothPresenceMonitor : IDisposable
     {
         _expiryTimer?.Dispose();
         _expiryTimer = null;
+
+        _cacheSaveTimer?.Dispose();
+        _cacheSaveTimer = null;
+        // Final save on the way out, so names learned since the last periodic write survive.
+        _nameCache?.Save(_nameCachePath);
 
         if (_watcher is not null)
         {

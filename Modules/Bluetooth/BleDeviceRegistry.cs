@@ -36,10 +36,13 @@ public sealed class BleDeviceRegistry
     private readonly Dictionary<string, BleDeviceSighting> _everSeen = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
-    public BleDeviceRegistry(TimeSpan presenceTimeout, Func<DateTime>? clock = null)
+    private readonly BluetoothNameCache? _nameCache;
+
+    public BleDeviceRegistry(TimeSpan presenceTimeout, Func<DateTime>? clock = null, BluetoothNameCache? nameCache = null)
     {
         _presenceTimeout = presenceTimeout;
         _clock = clock ?? (() => DateTime.UtcNow);
+        _nameCache = nameCache;
     }
 
     /// <summary>Raised the first time a device is seen after being absent. Never re-raised while
@@ -84,10 +87,17 @@ public sealed class BleDeviceRegistry
             // Advertisement packets alternate between types, and only some carry the name or the
             // service list. Carry forward what we already know rather than overwriting it with the
             // nulls of a sparser packet — otherwise a device's name flickers in and out of the UI.
+            //
+            // The name falls back through: this packet, what we saw earlier this session, then the
+            // on-disk cache. That last step is what makes a device recognisable immediately after
+            // a restart, rather than anonymous until a naming packet happens to arrive.
             var previous = _everSeen.GetValueOrDefault(address);
+            var resolvedName = !string.IsNullOrWhiteSpace(name) ? name
+                : previous?.AdvertisedName ?? _nameCache?.Lookup(address);
+
             sighting = new BleDeviceSighting(
                 address,
-                string.IsNullOrWhiteSpace(name) ? previous?.AdvertisedName : name,
+                resolvedName,
                 rssi,
                 _clock(),
                 serviceUuids is { Count: > 0 } ? serviceUuids : previous?.ServiceUuids ?? Array.Empty<string>());
@@ -96,6 +106,10 @@ public sealed class BleDeviceRegistry
             isNew = !_present.ContainsKey(address);
             _present[address] = sighting;
         }
+
+        // Outside the lock: persisting is the cache's own concern, and it takes its own.
+        if (!string.IsNullOrWhiteSpace(name)) _nameCache?.Remember(address, name);
+        else _nameCache?.Touch(address); // keep a regularly-seen device from being pruned
 
         if (isNew) DeviceAppeared?.Invoke(sighting);
         return isNew;
