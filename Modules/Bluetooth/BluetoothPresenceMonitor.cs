@@ -7,10 +7,20 @@ namespace VrSessionMonitor.Modules.Bluetooth;
 /// <summary>
 /// Watches BLE advertisements to tell which of the user's devices are switched on.
 ///
-/// PASSIVE SCANNING ONLY. This never connects. A BLE peripheral accepts exactly one central
-/// connection, so connecting to the heart rate strap would steal it from VRCOSC and connecting to
-/// a toy would steal it from Intiface. Passive scanning is unlimited and invisible to the device:
-/// it never transmits, so it also cannot provoke a scan response or drain the device's battery.
+/// SCANNING ONLY — this NEVER CONNECTS, and that is the property everything else rests on. A BLE
+/// peripheral accepts exactly one central connection, so connecting to the heart rate strap would
+/// steal it from VRCOSC and connecting to a toy would steal it from Intiface. Scanning is
+/// observation; any number of scanners can run at once.
+///
+/// Scanning defaults to ACTIVE, which does transmit a short scan request (that is how device names
+/// arrive — see BluetoothConfig.ActiveScanning). Transmitting is not what causes conflicts;
+/// connecting is. Passive remains available for anyone who would rather only listen.
+///
+/// What this can see is therefore presence, and nothing more. Confirmed by dumping a real strap's
+/// advertisement on 2026-08-28: it carries only flags, the service UUIDs it offers (180D heart
+/// rate, 180F battery) and its name — no measurement. The heart rate VALUE lives behind GATT
+/// characteristic 0x2A37 and is reachable only by connecting, so BPM has to come from whatever
+/// already holds that connection (VRCOSC, over OSC).
 ///
 /// This class is deliberately thin — it converts WinRT events into registry calls and nothing
 /// else. All the debouncing logic lives in BleDeviceRegistry, which is testable without a radio.
