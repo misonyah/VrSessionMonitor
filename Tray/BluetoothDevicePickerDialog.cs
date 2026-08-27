@@ -16,8 +16,14 @@ public sealed class BluetoothDevicePickerDialog : Form
     private readonly ListView _list;
     private readonly CheckedListBox _apps;
     private readonly TextBox _name;
+    private readonly Label _selectionLabel;
     private readonly List<BleDeviceSighting> _sightings;
     private readonly List<ManagedApp> _launchable;
+
+    /// <summary>Set once the user types their own name, so following the selection stops
+    /// overwriting their choice. Distinguished from our own writes by _suppressNameEdit.</summary>
+    private bool _nameEditedByUser;
+    private bool _suppressNameEdit;
 
     public BluetoothDeviceConfig? SelectedDevice { get; private set; }
 
@@ -60,6 +66,16 @@ public sealed class BluetoothDevicePickerDialog : Form
         _list.SelectedIndexChanged += (_, _) => OnSelectionChanged();
 
         _name = new TextBox { Dock = DockStyle.Top, PlaceholderText = "What to call it (optional)" };
+        _name.TextChanged += (_, _) => { if (!_suppressNameEdit) _nameEditedByUser = true; };
+
+        _selectionLabel = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 20,
+            ForeColor = SystemColors.GrayText,
+            Padding = new Padding(3, 2, 3, 0),
+            Text = "No device selected.",
+        };
 
         _apps = new CheckedListBox { Dock = DockStyle.Fill, CheckOnClick = true };
         foreach (var app in _launchable) _apps.Items.Add(app.DisplayName);
@@ -75,6 +91,7 @@ public sealed class BluetoothDevicePickerDialog : Form
         Controls.Add(new Label { Dock = DockStyle.Top, Height = 22, Text = "Start these apps when it appears:", Padding = new Padding(3, 4, 3, 0) });
         Controls.Add(_name);
         Controls.Add(new Label { Dock = DockStyle.Top, Height = 22, Text = "Name:", Padding = new Padding(3, 4, 3, 0) });
+        Controls.Add(_selectionLabel);
         Controls.Add(_list);
         Controls.Add(buttons);
         CancelButton = cancel;
@@ -82,11 +99,38 @@ public sealed class BluetoothDevicePickerDialog : Form
         if (_list.Items.Count > 0) _list.Items[0].Selected = true;
     }
 
+    /// <summary>
+    /// Keeps the name box and the confirmation line following the selected row.
+    ///
+    /// An earlier version only filled the name when the box was empty, so after the first row
+    /// populated it, selecting any other device left the previous device's name in place. The
+    /// entry that got saved then carried the right address with the wrong name — and since the
+    /// Bluetooth tab lists DisplayName first, it read as though the picker had ignored the click
+    /// and re-added the earlier device.
+    ///
+    /// A name the user typed themselves is never overwritten; that is the one case where the box
+    /// should not follow the selection.
+    /// </summary>
     private void OnSelectionChanged()
     {
-        if (_list.SelectedItems.Count == 0 || _list.SelectedItems[0].Tag is not BleDeviceSighting s) return;
-        if (_name.Text.Length == 0 && s.AdvertisedName is { Length: > 0 })
-            _name.Text = s.AdvertisedName;
+        if (_list.SelectedItems.Count == 0 || _list.SelectedItems[0].Tag is not BleDeviceSighting s)
+        {
+            _selectionLabel.Text = "No device selected.";
+            return;
+        }
+
+        if (!_nameEditedByUser)
+        {
+            _suppressNameEdit = true;
+            _name.Text = s.AdvertisedName ?? "";
+            _suppressNameEdit = false;
+        }
+
+        // Always shows the address, so what is about to be saved is never in doubt — the name can
+        // be blank, shared between devices, or edited, but the address is what gets matched.
+        _selectionLabel.Text = $"Will track {s.Address}"
+                               + (s.AdvertisedName is { Length: > 0 } ? $"  ({s.AdvertisedName})" : "  (no name advertised)")
+                               + (s.LooksLikeHeartRateMonitor ? "  — heart rate monitor" : "");
     }
 
     private void Accept()

@@ -135,13 +135,34 @@ public sealed class BluetoothPresenceMonitor : IDisposable
         Log.Info("Bluetooth", $"{DescribeFor(tracked, sighting)} is no longer visible.");
     }
 
+    /// <summary>
+    /// Always includes the address, never just a name.
+    ///
+    /// An earlier version returned the name alone when one was known, which made a real bug much
+    /// harder to diagnose: a device logged as "H9Z 42975" gave no way to tell which address it
+    /// actually was, so a saved entry pairing that name with a different device's address looked
+    /// self-consistent in the log. The address is the identity here; the name is a label that can
+    /// be blank, duplicated across devices, or edited by the user.
+    /// </summary>
     private static string DescribeFor(BluetoothDeviceConfig? tracked, BleDeviceSighting sighting)
     {
-        if (tracked is { DisplayName.Length: > 0 }) return tracked.DisplayName;
-        if (sighting.AdvertisedName is { Length: > 0 }) return sighting.AdvertisedName;
-        return sighting.LooksLikeHeartRateMonitor
-            ? $"heart rate monitor {sighting.Address}"
-            : sighting.Address;
+        var label = tracked is { DisplayName.Length: > 0 } ? tracked.DisplayName
+            : sighting.AdvertisedName is { Length: > 0 } ? sighting.AdvertisedName
+            : sighting.LooksLikeHeartRateMonitor ? "heart rate monitor"
+            : null;
+
+        if (label is null) return sighting.Address;
+
+        // When the user's label disagrees with what the device actually calls itself, show both.
+        // A mislabelled entry is otherwise invisible: the log would keep repeating the wrong name
+        // back, which is exactly how a device saved under another device's name went unnoticed.
+        var advertised = sighting.AdvertisedName;
+        var mismatch = advertised is { Length: > 0 }
+                       && !string.Equals(advertised, label, StringComparison.OrdinalIgnoreCase);
+
+        return mismatch
+            ? $"{label} [{sighting.Address}, advertises itself as \"{advertised}\"]"
+            : $"{label} [{sighting.Address}]";
     }
 
     /// <summary>WinRT hands the address over as a 48-bit integer; render it the way every other
