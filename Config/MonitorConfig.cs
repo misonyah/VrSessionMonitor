@@ -717,6 +717,38 @@ public sealed class HomeAssistantConfig
 }
 #endif
 
+/// <summary>
+/// Heart rate, read from VRCOSC's Bluetooth Heartrate module over OSC.
+///
+/// The parameter names are whatever the user set in that module's own settings, so they are
+/// configurable rather than assumed. The defaults here are the values read from this machine's
+/// VRCOSC config on 2026-08-28 — which are also the module's own defaults.
+///
+/// There is no battery setting because the module publishes no battery value; see
+/// HeartrateMonitor for why no other route to it exists either.
+/// </summary>
+public sealed class HeartrateConfig
+{
+    /// <summary>Off by default — it only does anything with VRCOSC running and configured.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Bool parameter that reports whether the strap is connected. VRCOSC calls this
+    /// setting "connected"; its default parameter name is HR.</summary>
+    public string ConnectedParameter { get; set; } = "HR";
+
+    /// <summary>Int parameter carrying beats per minute. VRCOSC calls this setting "value"; its
+    /// default parameter name is HRValue.</summary>
+    public string BpmParameter { get; set; } = "HRValue";
+
+    /// <summary>
+    /// How long a reading stays believable. VRCOSC sends only on change, so a strap that dies
+    /// mid-session simply stops sending: without this, its last reading would sit on screen
+    /// indefinitely, looking live. Generous, because a resting heart rate genuinely can hold the
+    /// same integer value for a while.
+    /// </summary>
+    public int StaleAfterSeconds { get; set; } = 60;
+}
+
 /// <summary>Log file retention. The log directory reached 625 MB across 44 files before this
 /// existed, because nothing ever deleted anything.</summary>
 public sealed class LoggingConfig
@@ -745,6 +777,7 @@ public sealed class MonitorConfig
 
     public LoggingConfig Logging { get; set; } = new();
     public BluetoothConfig Bluetooth { get; set; } = new();
+    public HeartrateConfig Heartrate { get; set; } = new();
     public NetworkConfig Network { get; set; } = new();
     public PollingConfig Polling { get; set; } = new();
     public PathsConfig Paths { get; set; } = new();

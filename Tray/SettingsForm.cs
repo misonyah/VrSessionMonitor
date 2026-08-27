@@ -58,6 +58,7 @@ public sealed class SettingsForm : Form
     private Label _vrChatLabel = null!;
     private Button _restartVrChatButton = null!;
     private Label _firmwareLabel = null!;
+    private Label _heartrateLabel = null!;
 
 #if INCLUDE_HOME_ASSISTANT
     private Label _homeAssistantStatusLabel = null!;
@@ -237,6 +238,7 @@ public sealed class SettingsForm : Form
         layout.Controls.Add(_restartVrChatButton);
 
         _firmwareLabel = AddStatusRow(layout, "Firmware self-heal: none yet");
+        _heartrateLabel = AddStatusRow(layout, "Heart rate: --");
 
         tab.Controls.Add(layout);
         return tab;
@@ -533,6 +535,12 @@ public sealed class SettingsForm : Form
     {
         _headsetLabel.Text = $"Headset: {(_headset.IsOnline ? "online" : "offline")}";
         _trackerLabel.Text = $"Trackers: {_trackers.Summarize()}";
+
+        // Two independent facts, so both are shown: whether the strap is switched on (our own BLE
+        // scan) and whether a reading is arriving (VRCOSC over OSC). They can disagree — most
+        // usefully when the strap is on but nothing has connected to it, which is the state where
+        // VRCOSC has been started but has not picked it up.
+        _heartrateLabel.Text = $"Heart rate: {_owner.SummarizeHeartrate()}";
 
         var p = _faceTracking.Current;
         var cams = _eyeTracking.Current;

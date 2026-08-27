@@ -28,6 +28,18 @@
          Override with `dotnet build -p:IncludeHomeAssistant=false` to compile it — and its two
          extra NuGet dependencies — out entirely. -->
     <IncludeHomeAssistant Condition="'$(IncludeHomeAssistant)'==''">true</IncludeHomeAssistant>
+
+    <!-- Gates VRChat OSC support and the two NuGet packages it needs. These used to hang off
+         IncludeHomeAssistant, which was accurate only while the AFK listener was the sole OSC
+         consumer; heart rate reads VRCOSC's parameters over the same transport and has nothing to
+         do with lighting. Home Assistant still REQUIRES OSC (its AFK signal arrives that way), so
+         turning OSC off turns Home Assistant off with it. -->
+    <IncludeOsc Condition="'$(IncludeOsc)'==''">true</IncludeOsc>
+    <IncludeHomeAssistant Condition="'$(IncludeOsc)'!='true'">false</IncludeHomeAssistant>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IncludeOsc)'=='true'">
+    <DefineConstants>$(DefineConstants);INCLUDE_OSC</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(IncludeHomeAssistant)'=='true'">
@@ -58,8 +70,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="VRChat.OSCQuery" Version="0.0.7" Condition="'$(IncludeHomeAssistant)'=='true'" />
-    <PackageReference Include="LucHeart.CoreOSC" Version="1.6.0" Condition="'$(IncludeHomeAssistant)'=='true'" />
+    <PackageReference Include="VRChat.OSCQuery" Version="0.0.7" Condition="'$(IncludeOsc)'=='true'" />
+    <PackageReference Include="LucHeart.CoreOSC" Version="1.6.0" Condition="'$(IncludeOsc)'=='true'" />
   </ItemGroup>
 
   <!-- The test project lives under tests/ inside this project dir (this dir is its own git

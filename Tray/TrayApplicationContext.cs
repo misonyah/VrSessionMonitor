@@ -31,12 +31,43 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly AdbController _adb;
     private readonly SessionOrchestrator _orchestrator;
     private readonly ManagedAppWindowService _managedApps;
+    private readonly HeartrateMonitor _heartrate;
+#if INCLUDE_OSC
+    private VrChatOscListener? _oscListener;
+#endif
     private readonly Modules.Bluetooth.BluetoothPresenceMonitor _bluetooth;
     private readonly Modules.Bluetooth.BluetoothTriggeredLauncher _bluetoothLauncher;
 
     /// <summary>Whether a tracked device is visible right now. Safe to call when scanning never
     /// started (no adapter, radio off) — it simply reports absent.</summary>
     public bool IsBluetoothDevicePresent(string address) => _bluetooth.Registry.IsPresent(address);
+
+    /// <summary>
+    /// One line combining the two independent things we know about the heart rate monitor: whether
+    /// the strap is switched on (our own passive BLE scan) and whether readings are arriving
+    /// (VRCOSC, over OSC). They are worth reporting separately because they disagree in a way that
+    /// tells you what to fix — a strap that is on but silent means VRCOSC has not connected to it,
+    /// while readings with no BLE sighting is normal, since many peripherals stop advertising once
+    /// something connects.
+    /// </summary>
+    public string SummarizeHeartrate()
+    {
+        if (!_config.Heartrate.Enabled && !_config.Bluetooth.Enabled)
+            return "not enabled";
+
+        var parts = new List<string>();
+
+        if (_config.Heartrate.Enabled)
+            parts.Add(_heartrate.Summarize());
+
+        // Only mention the strap when one is actually tracked, and only when it adds information.
+        var strap = _config.Bluetooth.Devices.FirstOrDefault(d =>
+            _bluetooth.Registry.LastSighting(d.Address)?.LooksLikeHeartRateMonitor == true);
+        if (strap is not null && _bluetooth.Registry.IsPresent(strap.Address))
+            parts.Add("strap switched on");
+
+        return parts.Count == 0 ? "no data" : string.Join(", ", parts);
+    }
 
     /// <summary>Everything the scan has seen this run, for the settings picker.</summary>
     public IReadOnlyList<Modules.Bluetooth.BleDeviceSighting> DiscoveredBluetoothDevices() =>
@@ -132,6 +163,17 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         // Passive BLE presence: never connects, so it cannot take the heart rate strap away from
         // VRCOSC or a toy away from Intiface. See BluetoothPresenceMonitor.
+        // Heart rate arrives over OSC, not Bluetooth: the value lives behind a GATT characteristic
+        // and a BLE peripheral takes only one connection, which VRCOSC already holds.
+        _heartrate = new HeartrateMonitor(_config);
+#if INCLUDE_OSC
+        if (_config.Heartrate.Enabled)
+        {
+            _oscListener = new VrChatOscListener(_config, _heartrate.ParameterNames);
+            _oscListener.ParameterReceived += _heartrate.OnParameter;
+        }
+#endif
+
         _bluetooth = new Modules.Bluetooth.BluetoothPresenceMonitor(_config);
         _bluetoothLauncher = new Modules.Bluetooth.BluetoothTriggeredLauncher(_config, new ProcessLauncher());
         _bluetooth.TrackedDeviceAppeared += (device, sighting) =>
@@ -208,6 +250,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _slimeLifecycle.Start();
         _firmwareNotify.Start();
         _managedApps.Start();
+#if INCLUDE_OSC
+        _oscListener?.Start();
+#endif
         _bluetooth.Start();
         // Settings reads presence through the accessors below rather than holding the monitor,
         // so the UI never has to know whether scanning actually started.
@@ -555,6 +600,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _slimeMotion.Dispose();
         _firmwareNotify.Dispose();
         _managedApps?.Dispose();
+#if INCLUDE_OSC
+        _oscListener?.Dispose();
+#endif
         _bluetooth?.Dispose();
         // (accessors for the Bluetooth settings tab are defined near the other UI helpers)
 #if INCLUDE_HOME_ASSISTANT
