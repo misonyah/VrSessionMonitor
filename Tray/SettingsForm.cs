@@ -74,6 +74,8 @@ public sealed class SettingsForm : Form
     // Outside the Home Assistant guard: Bluetooth presence has nothing to do with HA, and the
     // HA-off build has to compile too.
     private ListView? _bluetoothDeviceList;
+    private int _statusRowCount;
+    private readonly Dictionary<Label, PictureBox> _rowDots = new();
     private FlowLayoutPanel? _bluetoothStatusPanel;
     private readonly Dictionary<string, BluetoothStatusRow> _bluetoothRows = new(StringComparer.OrdinalIgnoreCase);
     private string _bluetoothRowSignature = "";
@@ -214,34 +216,40 @@ public sealed class SettingsForm : Form
     private TabPage BuildStatusTab()
     {
         var tab = new TabPage("Status");
+
+        // A real table rather than a stack of "Name: value" strings, so the values line up in one
+        // column and the tab can be read down rather than sentence by sentence. Four columns:
+        // state dot, name, value, and an optional action button.
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
+            ColumnCount = 4,
             AutoScroll = true,
             Padding = new Padding(10),
+            GrowStyle = TableLayoutPanelGrowStyle.AddRows,
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 80));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));            // dot
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));            // name
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));        // value
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));            // action
 
-        _sessionStatusLabel = AddStatusRow(layout, "Status: idle");
-        _headsetLabel = AddStatusRow(layout, "Headset: --");
-        _trackerLabel = AddStatusRow(layout, "Trackers: --");
-        _peripheralLabel = AddStatusRow(layout, "Eye/Face tracking: --");
-        _peripheralNextLabel = AddStatusRow(layout, "");
-        _peripheralNextLabel.Visible = false;
-        _peripheralNextLabel.Margin = new Padding(20, 0, 3, 3);
+        _sessionStatusLabel = AddStatusRow(layout, "Status");
+        _headsetLabel = AddStatusRow(layout, "Headset");
+        _trackerLabel = AddStatusRow(layout, "Trackers");
+        _peripheralLabel = AddStatusRow(layout, "Eye/Face tracking");
 
-        _steamVrLabel = AddStatusRow(layout, "SteamVR: --");
+        // A continuation of the row above rather than a row of its own, so it gets no dot or name
+        // and simply sits under the value it elaborates.
+        _peripheralNextLabel = AddContinuationRow(layout);
 
-        _vrChatLabel = new Label { Text = "VRChat: --", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
-        _restartVrChatButton = new Button { Text = "Restart", AutoSize = true };
+        _steamVrLabel = AddStatusRow(layout, "SteamVR");
+
+        _restartVrChatButton = new Button { Text = "Restart", AutoSize = true, Margin = new Padding(6, 3, 3, 3) };
         _restartVrChatButton.Click += (_, _) => _ = _orchestrator.RestartVrChatAsync();
-        layout.Controls.Add(_vrChatLabel);
-        layout.Controls.Add(_restartVrChatButton);
+        _vrChatLabel = AddStatusRow(layout, "VRChat", _restartVrChatButton);
 
-        _firmwareLabel = AddStatusRow(layout, "Firmware self-heal: none yet");
-        _heartrateLabel = AddStatusRow(layout, "Heart rate: --");
+        _firmwareLabel = AddStatusRow(layout, "Firmware self-heal");
+        _heartrateLabel = AddStatusRow(layout, "Heart rate");
 
         // One row per tracked Bluetooth device, each showing the icons of the apps it starts, so
         // "this device brings up these programs" is visible rather than something to remember.
@@ -344,31 +352,81 @@ public sealed class SettingsForm : Form
     }
 #endif
 
-    /// <summary>A status row with room for a state dot to its left. The dot is set later by
-    /// SetRowStatus, since the state is not known when the row is built.</summary>
-    private static Label AddStatusRow(TableLayoutPanel layout, string text)
+    /// <summary>
+    /// One table row: state dot, name, value, and an optional action control.
+    ///
+    /// The dot is its own PictureBox in its own cell rather than the Label's Image, because Label
+    /// has no TextImageRelation — that lives on ButtonBase — so an image and text sharing an
+    /// alignment just draw on top of each other, which is exactly how the dots ended up sitting
+    /// under the text. A cell of its own also aligns every dot with every other.
+    ///
+    /// Returns the VALUE label; callers set only the value, never the name.
+    /// </summary>
+    private Label AddStatusRow(TableLayoutPanel layout, string name, Control? action = null)
     {
+        var row = _statusRowCount++;
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var dot = new PictureBox
+        {
+            Image = StatusIcons.Dot(StatusLevel.Unknown),
+            SizeMode = PictureBoxSizeMode.AutoSize,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 3, 6, 3),
+        };
+        layout.Controls.Add(dot, 0, row);
+
+        layout.Controls.Add(new Label
+        {
+            Text = name,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 3, 12, 3),
+        }, 1, row);
+
+        var value = new Label
+        {
+            Text = "--",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 3, 3, 3),
+        };
+        layout.Controls.Add(value, 2, row);
+
+        if (action is not null) layout.Controls.Add(action, 3, row);
+
+        _rowDots[value] = dot;
+        return value;
+    }
+
+    /// <summary>A value-only row that continues the one above it — no dot, no name, indented so it
+    /// reads as detail rather than a separate thing being reported.</summary>
+    private Label AddContinuationRow(TableLayoutPanel layout)
+    {
+        var row = _statusRowCount++;
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
         var label = new Label
         {
-            Text = text,
+            Text = "",
             AutoSize = true,
-            Margin = new Padding(3, 6, 3, 3),
-            ImageAlign = ContentAlignment.MiddleLeft,
-            TextAlign = ContentAlignment.MiddleLeft,
-            // Indents the text past the dot. Without it the image draws underneath the text.
-            Padding = new Padding(16, 0, 0, 0),
+            Anchor = AnchorStyles.Left,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(12, 0, 3, 3),
+            Visible = false,
         };
-        layout.Controls.Add(label);
-        layout.SetColumnSpan(label, 2);
+        layout.Controls.Add(label, 2, row);
         return label;
     }
 
     /// <summary>Sets a row's state dot, skipping the assignment when it has not changed — these
     /// run on a 5s tick and reassigning an identical Image forces a needless repaint.</summary>
-    private static void SetRowStatus(Label label, StatusLevel level)
+    private void SetRowStatus(Label label, StatusLevel level)
     {
+        if (!_rowDots.TryGetValue(label, out var dot)) return;
+
         var image = StatusIcons.Dot(level);
-        if (!ReferenceEquals(label.Image, image)) label.Image = image;
+        if (!ReferenceEquals(dot.Image, image)) dot.Image = image;
     }
 
     /// <summary>
@@ -662,10 +720,10 @@ public sealed class SettingsForm : Form
     /// — Label/Button controls don't share ToolStripDropDownMenu's handle-creation bug.</summary>
     public void RefreshStatus()
     {
-        _headsetLabel.Text = $"Headset: {(_headset.IsOnline ? "online" : "offline")}";
+        _headsetLabel.Text = _headset.IsOnline ? "online" : "offline";
         SetRowStatus(_headsetLabel, _headset.IsOnline ? StatusLevel.Good : StatusLevel.Unknown);
 
-        _trackerLabel.Text = $"Trackers: {_trackers.Summarize()}";
+        _trackerLabel.Text = _trackers.Summarize();
         SetRowStatus(_trackerLabel, _trackers.OnlineCount switch
         {
             0 => StatusLevel.Unknown,                                    // none up: usually just "not in a session"
@@ -677,7 +735,7 @@ public sealed class SettingsForm : Form
         // scan) and whether a reading is arriving (VRCOSC over OSC). They can disagree — most
         // usefully when the strap is on but nothing has connected to it, which is the state where
         // VRCOSC has been started but has not picked it up.
-        _heartrateLabel.Text = $"Heart rate: {_owner.SummarizeHeartrate()}";
+        _heartrateLabel.Text = _owner.SummarizeHeartrate();
         SetRowStatus(_heartrateLabel, _owner.HeartrateStatusLevel());
 
         RefreshBluetoothStatusRows();
@@ -695,8 +753,9 @@ public sealed class SettingsForm : Form
         foreach (var cam in cams.Where(c => !c.Online || !c.Streaming))
             parts.Add(cam.Online ? $"{cam.Camera.Name} not streaming" : $"{cam.Camera.Name} offline");
         _peripheralLabel.Text = parts.Count == 0
-            ? $"Eye/Face tracking: all running ({p.ModuleProcessCount} module(s), {cams.Count(c => c.Streaming)}/{cams.Count} cameras streaming)"
-            : $"Eye/Face tracking: {string.Join(", ", parts)}";
+            ? $"all running ({p.ModuleProcessCount} module(s), {cams.Count(c => c.Streaming)}/{cams.Count} cameras streaming)"
+            : string.Join(", ", parts);
+        SetRowStatus(_peripheralLabel, parts.Count == 0 ? StatusLevel.Good : StatusLevel.Warning);
 
         var pending = new List<string>();
         pending.AddRange(_eyeTracking.DescribePendingActions());
@@ -710,21 +769,29 @@ public sealed class SettingsForm : Form
 
         var sv = _steamVr.Current;
         if (sv.VrServerRunning && sv.VrMonitorRunning && sv.VrCompositorRunning)
-            _steamVrLabel.Text = "SteamVR: running";
+        {
+            _steamVrLabel.Text = "running";
+            SetRowStatus(_steamVrLabel, StatusLevel.Good);
+        }
         else if (!sv.VrServerRunning && !sv.VrMonitorRunning && !sv.VrCompositorRunning)
-            _steamVrLabel.Text = "SteamVR: not running";
+        {
+            _steamVrLabel.Text = "not running";
+            SetRowStatus(_steamVrLabel, StatusLevel.Unknown);
+        }
         else
         {
             var down = new List<string>();
             if (!sv.VrServerRunning) down.Add("vrserver");
             if (!sv.VrMonitorRunning) down.Add("vrmonitor");
             if (!sv.VrCompositorRunning) down.Add("vrcompositor");
-            _steamVrLabel.Text = $"SteamVR: partial (down: {string.Join(", ", down)})";
+            _steamVrLabel.Text = $"partial (down: {string.Join(", ", down)})";
+            SetRowStatus(_steamVrLabel, StatusLevel.Warning);
         }
         if (_steamVr.DescribePendingAction() is string steamVrPending)
             _steamVrLabel.Text += $" — next: {steamVrPending}";
 
-        _vrChatLabel.Text = $"VRChat: {(_vrChat.Current.Running ? "running" : "not running")}";
+        _vrChatLabel.Text = _vrChat.Current.Running ? "running" : "not running";
+        SetRowStatus(_vrChatLabel, _vrChat.Current.Running ? StatusLevel.Good : StatusLevel.Unknown);
         if (_vrcOscLifecycle.DescribePendingAction() is string vrcOscPending)
             _vrChatLabel.Text += $" — next: {vrcOscPending}";
 
@@ -738,7 +805,7 @@ public sealed class SettingsForm : Form
     /// thread.</summary>
     public void UpdateSessionStatus(string state)
     {
-        var text = $"Status: {state}";
+        var text = state;
         if (InvokeRequired) Invoke(() => _sessionStatusLabel.Text = text);
         else _sessionStatusLabel.Text = text;
     }
@@ -746,7 +813,7 @@ public sealed class SettingsForm : Form
     /// <summary>Fires from HeadsetMonitor's own background polling loop, not the UI thread.</summary>
     public void UpdateHeadsetStatus(bool isOnline)
     {
-        var text = $"Headset: {(isOnline ? "online" : "offline")}";
+        var text = isOnline ? "online" : "offline";
         if (InvokeRequired) Invoke(() => _headsetLabel.Text = text);
         else _headsetLabel.Text = text;
     }
@@ -759,8 +826,8 @@ public sealed class SettingsForm : Form
         void Apply()
         {
             _firmwareLabel.Text = _firmwareNotify.LastEventAtUtc is DateTime at
-                ? $"Firmware self-heal: {_firmwareNotify.LastEventSummary} ({FormatAgo(DateTime.UtcNow - at)} ago)"
-                : "Firmware self-heal: none yet";
+                ? $"{_firmwareNotify.LastEventSummary} ({FormatAgo(DateTime.UtcNow - at)} ago)"
+                : "none yet";
         }
 
         if (InvokeRequired) Invoke(Apply); else Apply();
