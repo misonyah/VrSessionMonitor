@@ -16,9 +16,22 @@ public class OptimizationRegistryTests
             _ => Task.FromResult(true));
 
     [Fact]
-    public void BuildAll_returns_exactly_11_checks()
+    public void BuildAll_returns_every_check()
     {
-        Assert.Equal(11, Build().Count);
+        // Guards against a check being dropped by an edit. The count is expected to grow — bump it
+        // deliberately when adding one, so a check silently disappearing still fails here.
+        Assert.Equal(13, Build().Count);
+    }
+
+    [Fact]
+    public void The_gpu_scheduling_and_mpo_checks_are_present()
+    {
+        // Both are registry keys a driver or feature update can flip back, so their value is
+        // partly that they keep being checked, not only that they can be applied once.
+        var ids = Build().Select(o => o.Id).ToList();
+
+        Assert.Contains("gpu-hardware-scheduling", ids);
+        Assert.Contains("disable-mpo", ids);
     }
 
     [Fact]

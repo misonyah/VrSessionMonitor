@@ -4,10 +4,17 @@ using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Optimizations;
 
-/// <summary>Builds the v1 checklist (11 checks) from
-/// docs/superpowers/specs/2026-08-16-optimizations-tab-design.md's "v1 checklist" table. Adding a
-/// 12th check later means adding one more entry here — Id strings are persistence keys, so never
-/// change an existing one.</summary>
+/// <summary>Builds the optimization checklist. Started as the 11 in
+/// docs/superpowers/specs/2026-08-16-optimizations-tab-design.md's "v1 checklist" table; adding
+/// another means adding one more entry here — Id strings are persistence keys, so never change an
+/// existing one.
+///
+/// Deliberately NOT included: MSI mode for the GPU
+/// (Enum\PCI\...\MessageSignaledInterruptProperties\MSISupported). It is already enabled by
+/// default on both GPUs here, and the widely-shared benchmarks attributed to it actually come from
+/// raising the GPU's interrupt DevicePriority alongside it — which can starve other devices on the
+/// same controller. On this machine that means the USB tree the face tracker and SlimeVR dongles
+/// live on, so the risk lands exactly where a VR session would notice it.</summary>
 public static class OptimizationRegistry
 {
     public static List<IOptimization> BuildAll(
@@ -65,6 +72,33 @@ public static class OptimizationRegistry
                 // Windows creates a subkey per adapter, so per-target granting produced a fresh UAC
                 // prompt every time one appeared. See RegistryValueOptimization's constructor doc.
                 inheritedGrantPath: @"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"),
+
+            // Hardware-Accelerated GPU Scheduling. 2 = on, 1 = off; the value only takes effect
+            // after a reboot.
+            //
+            // Targets ENABLED, but this is the least clear-cut check here and is really about
+            // VISIBILITY: a driver update or a Windows feature update can silently flip it, and
+            // then a session that used to be smooth is not, with nothing to point at. HAGS is
+            // genuinely bidirectional — it lowers submission latency and is what Virtual Desktop's
+            // encoder path prefers, while some SteamVR setups stutter with it on. If a session
+            // regresses after enabling it, revert this one first; that it can be reverted from the
+            // same row is the point.
+            new RegistryValueOptimization("gpu-hardware-scheduling", "Hardware-Accelerated GPU Scheduling (reboot required)", OptimizationCategory.Registry,
+                () => new[] { new RegistryValueTarget(OptRegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode", 2, RegistryValueKind.DWord) },
+                registry),
+
+            // Multi-Plane Overlay. Setting OverlayTestMode to 5 is the documented way to switch MPO
+            // off, and it is the standard fix for DWM flicker and stutter on mixed-refresh-rate
+            // multi-monitor setups — exactly the shape of this machine, which drives a headset
+            // alongside desktop displays.
+            //
+            // Not free: MPO exists so the compositor can hand planes straight to the display engine,
+            // which saves power and a copy. Disabling it costs that. Worth it only if flicker or
+            // desktop stutter is actually being seen — this is a fix for a symptom, not a
+            // default-on tune, and it applies at the next DWM restart or reboot.
+            new RegistryValueOptimization("disable-mpo", "Disable Multi-Plane Overlay (fixes DWM flicker/stutter)", OptimizationCategory.Registry,
+                () => new[] { new RegistryValueTarget(OptRegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows\Dwm", "OverlayTestMode", 5, RegistryValueKind.DWord) },
+                registry),
 
             new RegistryValueOptimization("pause-windows-update", "Pause Windows Update during session", OptimizationCategory.Registry,
                 () => new[]
