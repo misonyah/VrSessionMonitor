@@ -32,6 +32,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly SessionOrchestrator _orchestrator;
     private readonly ManagedAppWindowService _managedApps;
     private readonly HeartrateMonitor _heartrate;
+    private readonly SessionPriorityService _sessionPriority;
 #if INCLUDE_OSC
     private VrChatOscListener? _oscListener;
 #endif
@@ -179,6 +180,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Heart rate arrives over OSC, not Bluetooth: the value lives behind a GATT characteristic
         // and a BLE peripheral takes only one connection, which VRCOSC already holds.
         _heartrate = new HeartrateMonitor(_config);
+        _sessionPriority = new SessionPriorityService(_config, new ProcessPriorityController());
 #if INCLUDE_OSC
         // ONE OSCQuery service for every consumer. VRChat fans parameters out to each service it
         // discovers, so a second one would work — but it means a second mDNS advertisement, a
@@ -257,6 +259,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _orchestrator.UpdateFindingsAvailable += OnUpdateFindingsAvailable;
         _firmwareNotify.NotificationReceived += (_, _) => _settingsForm.RefreshFirmwareLabel();
         _steamVr.FullyRunningChanged += running => _ = _optimizations.HandleSteamVrRunningChangedAsync(running);
+        // Same session boundary drives per-app CPU priority: lower a background app while the
+        // session runs, put it back afterwards.
+        _steamVr.FullyRunningChanged += running => _sessionPriority.HandleSteamVrRunningChanged(running);
 
         _headset.Start();
         _trackers.Start();
@@ -627,6 +632,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         _slimeLifecycle.Dispose();
         _slimeMotion.Dispose();
         _firmwareNotify.Dispose();
+        // Before anything else: put back any priority we lowered. Quitting mid-session would
+        // otherwise leave a background app throttled with nothing left running to undo it.
+        // Best-effort only — a force-kill never reaches this.
+        try { _sessionPriority?.RestoreOriginalPriorities(); } catch { /* never block shutdown */ }
+
         _managedApps?.Dispose();
 #if INCLUDE_OSC
         _oscListener?.Dispose();

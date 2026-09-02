@@ -2,6 +2,16 @@ namespace VrSessionMonitor.Config;
 
 public enum AppLaunchMethod { Executable, SteamAppId }
 
+/// <summary>
+/// CPU priority to hold a process at for the duration of a VR session.
+///
+/// Realtime is deliberately absent. It outranks kernel input and audio servicing, so a busy
+/// process there can make the machine stop responding to mouse and keyboard entirely — a state
+/// that usually ends in a hard reset. High is already enough to starve other work and is the
+/// strongest thing worth offering.
+/// </summary>
+public enum AppProcessPriority { Idle, BelowNormal, Normal, AboveNormal, High }
+
 /// <summary>Window state to put an app into once its main window exists.
 /// Fullscreen resizes the window to fill the target monitor's full bounds, including the area
 /// behind the taskbar (unlike Maximized, which respects the working area) — the window keeps its
@@ -79,4 +89,16 @@ public sealed class ManagedApp
     /// silently switching the UAC prompts back on. Only an explicit true/false overrides.
     /// </summary>
     public bool? SuppressUacPrompt { get; set; }
+
+    /// <summary>
+    /// Hold this process at a given CPU priority while a VR session is running, restoring whatever
+    /// it had when the session ends. Lowering a background application — a Unity editor, say — is
+    /// the usual reason to set this.
+    ///
+    /// Null means leave the process alone, which is the default for every app, so nothing is
+    /// touched unless it is asked for explicitly. Distinct from the vr-process-priority-boost
+    /// optimization, which writes IFEO registry entries applied when a process LAUNCHES; this
+    /// adjusts processes that are already running and puts them back afterwards.
+    /// </summary>
+    public AppProcessPriority? SessionPriority { get; set; }
 }

@@ -1460,12 +1460,47 @@ public sealed class SettingsForm : Form
             Margin = new Padding(20, 0, 3, 6),
         });
 
+        // CPU priority held only for the length of a VR session, then put back.
+        var priorityRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(3, 6, 3, 0) };
+        priorityRow.Controls.Add(new Label { Text = "Priority during a VR session:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
+
+        var priorityCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
+        priorityCombo.Items.Add(LeaveAlone);
+        foreach (var p in Enum.GetValues<AppProcessPriority>()) priorityCombo.Items.Add(p.ToString());
+        priorityCombo.SelectedItem = app.SessionPriority?.ToString() ?? LeaveAlone;
+        priorityCombo.SelectedIndexChanged += (_, _) =>
+        {
+            var picked = priorityCombo.SelectedItem as string;
+            app.SessionPriority = picked is null or LeaveAlone
+                ? null
+                : Enum.Parse<AppProcessPriority>(picked);
+            Save();
+        };
+        priorityRow.Controls.Add(priorityCombo);
+        windowLayout.Controls.Add(priorityRow);
+
+        windowLayout.Controls.Add(new Label
+        {
+            Text = "Applied when SteamVR starts and undone when it stops, so a background app can be "
+                   + "pushed out of the way without closing it — BelowNormal on a Unity editor, say. "
+                   + "Whatever the process was at beforehand is what it goes back to. Realtime isn't "
+                   + "offered: it outranks input and audio handling and can lock the machine up. "
+                   + "Note this only helps if the CPU is what's actually short.",
+            AutoSize = true,
+            MaximumSize = new Size(340, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 6),
+        });
+
         windowGroup.Controls.Add(windowLayout);
         layout.Controls.Add(windowGroup);
 
         _appDetailPanel.Controls.Add(layout);
         _appDetailPanel.ResumeLayout();
     }
+
+    /// <summary>Dropdown entry meaning "no session priority for this app" — the default.</summary>
+    private const string LeaveAlone = "Leave alone";
 
     /// <summary>Keeps the legacy per-app config properties in sync for apps whose old flag is still
     /// read elsewhere. The foundation plan's final review found that writing only one side turns
