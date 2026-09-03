@@ -34,6 +34,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly HeartrateMonitor _heartrate;
     private readonly SessionPriorityService _sessionPriority;
     private readonly Modules.Suspend.SessionSuspendService _sessionSuspend;
+    private readonly Modules.Audio.SessionAudioService _sessionAudio;
 #if INCLUDE_OSC
     private VrChatOscListener? _oscListener;
 #endif
@@ -122,6 +123,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         catch { /* pagefile may be disabled, or WMI unavailable */ }
         return 0;
     }
+
+    /// <summary>Playback endpoints for the audio settings pickers. Returns an empty list rather
+    /// than throwing when the COM enumeration is unavailable, so the tab still opens.</summary>
+    public IReadOnlyList<Modules.Audio.AudioDevice> GetAudioPlaybackDevices() =>
+        new Modules.Audio.AudioDeviceController().GetPlaybackDevices();
 
     /// <summary>Everything the scan has seen this run, for the settings picker.</summary>
     public IReadOnlyList<Modules.Bluetooth.BleDeviceSighting> DiscoveredBluetoothDevices() =>
@@ -221,20 +227,35 @@ public sealed class TrayApplicationContext : ApplicationContext
         _heartrate = new HeartrateMonitor(_config);
         _sessionPriority = new SessionPriorityService(_config, new ProcessPriorityController());
         _sessionSuspend = new Modules.Suspend.SessionSuspendService(_config, new Modules.Suspend.ProcessSuspender());
+        _sessionAudio = new Modules.Audio.SessionAudioService(_config, new Modules.Audio.AudioDeviceController());
 #if INCLUDE_OSC
         // ONE OSCQuery service for every consumer. VRChat fans parameters out to each service it
         // discovers, so a second one would work — but it means a second mDNS advertisement, a
         // second HTTP server and a second socket for no benefit, and anyone reading the OSC debug
         // panel in VRChat would see this app listed twice.
         var oscParameters = _heartrate.ParameterNames.ToList();
+
+        // VRChat's AFK flag now has two consumers: the Home Assistant light map, and audio
+        // switching. Audio does not depend on Home Assistant at all, so this subscription cannot
+        // sit behind that guard — with HA compiled out, audio would silently never switch.
+        var wantAfk = _config.Audio.Enabled;
 #if INCLUDE_HOME_ASSISTANT
-        // VRChat's own AFK flag, which drives the Home Assistant AFK light map.
-        if (_config.HomeAssistant.Enabled) oscParameters.Add(VrChatOscParameters.Afk);
+        wantAfk |= _config.HomeAssistant.Enabled;
 #endif
+        if (wantAfk) oscParameters.Add(VrChatOscParameters.Afk);
         if (oscParameters.Count > 0)
         {
             _oscListener = new VrChatOscListener(_config, oscParameters);
             if (_config.Heartrate.Enabled) _oscListener.ParameterReceived += _heartrate.OnParameter;
+
+            // Audio follows the headset coming off, with its own short hold — see
+            // SessionAudioService for why it does not reuse the 30s lights hold.
+            if (_config.Audio.Enabled)
+                _oscListener.ParameterReceived += (address, value) =>
+                {
+                    if (address.EndsWith("/" + VrChatOscParameters.Afk, StringComparison.OrdinalIgnoreCase))
+                        _sessionAudio.OnAfkChanged(value is true);
+                };
         }
 #endif
 
@@ -304,6 +325,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _steamVr.FullyRunningChanged += running => _sessionPriority.HandleSteamVrRunningChanged(running);
         // Freezing background apps frees their RAM for the session; thawed when it ends.
         _steamVr.FullyRunningChanged += running => _sessionSuspend.HandleSteamVrRunningChanged(running);
+        // Audio follows the ears, not the session — but a session ending is a certain "headset off".
+        _steamVr.FullyRunningChanged += running => { if (!running) _sessionAudio.OnSessionEnded(); };
 
         _headset.Start();
         _trackers.Start();
@@ -680,6 +703,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Thaw first: a process left frozen looks hung and there is nothing else running that
         // could resume it.
         try { _sessionSuspend?.ResumeAll(); } catch { /* never block shutdown */ }
+        try { _sessionAudio?.Dispose(); } catch { /* never block shutdown */ }
         try { _sessionPriority?.RestoreOriginalPriorities(); } catch { /* never block shutdown */ }
 
         _managedApps?.Dispose();

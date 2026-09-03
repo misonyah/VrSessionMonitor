@@ -76,6 +76,10 @@ public sealed class SettingsForm : Form
     // Outside the Home Assistant guard: Bluetooth presence has nothing to do with HA, and the
     // HA-off build has to compile too.
     private ListView? _bluetoothDeviceList;
+    private TabPage? _audioTab;
+    private ComboBox? _audioVrCombo;
+    private ComboBox? _audioAwayCombo;
+    private CheckedListBox? _audioBlockList;
     private int _statusRowCount;
     private readonly Dictionary<Label, PictureBox> _rowDots = new();
     private FlowLayoutPanel? _bluetoothStatusPanel;
@@ -148,6 +152,7 @@ public sealed class SettingsForm : Form
         AppsTabIndex = _tabs.TabPages.Count;
         _tabs.TabPages.Add(BuildAppsTab());
         _tabs.TabPages.Add(BuildBluetoothTab());
+        _tabs.TabPages.Add(BuildAudioTab());
         _tabs.TabPages.Add(BuildAdvancedTab());
         _optimizationsTabPage = BuildOptimizationsTab();
         _tabs.TabPages.Add(_optimizationsTabPage);
@@ -1888,6 +1893,170 @@ public sealed class SettingsForm : Form
         _config.Save(_configPath);
         RefreshBluetoothDevices();
     }
+
+    /// <summary>
+    /// Audio device rules. Devices are picked from a live list rather than typed, because endpoint
+    /// names are long and near-identical between similar hardware, and their ids are what actually
+    /// gets matched.
+    ///
+    /// The list is re-read whenever this tab is shown, which matters more here than elsewhere:
+    /// Virtual Desktop's endpoint only exists while it is streaming, so it is simply absent unless
+    /// the headset is connected. A configured device that is missing is still listed, marked as not
+    /// connected, so selecting it once does not get silently lost later.
+    /// </summary>
+    private TabPage BuildAudioTab()
+    {
+        _audioTab = new TabPage("Audio");
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10), WrapContents = false, AutoScroll = true };
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Moves Windows' default playback device to follow where you are: the headset while "
+                   + "you're wearing it, your normal headphones once you take it off.",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(3, 0, 3, 8),
+        });
+
+        var enabled = new CheckBox { Text = "Switch audio automatically", Checked = _config.Audio.Enabled, AutoSize = true };
+        enabled.CheckedChanged += (_, _) =>
+        {
+            _config.Audio.Enabled = enabled.Checked;
+            _config.Save(_configPath);
+            Log.Info("SettingsForm", $"Automatic audio switching set to {enabled.Checked} — takes effect on restart.");
+        };
+        layout.Controls.Add(enabled);
+        layout.Controls.Add(new Label
+        {
+            Text = "Takes effect when VrSessionMonitor restarts.",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 8),
+        });
+
+        _audioVrCombo = AddAudioDeviceRow(layout, "While wearing the headset:",
+            v => _config.Audio.VrDeviceId = v);
+        _audioAwayCombo = AddAudioDeviceRow(layout, "When the headset is off:",
+            v => _config.Audio.AwayDeviceId = v);
+
+        var delayRow = new FlowLayoutPanel { AutoSize = true };
+        delayRow.Controls.Add(new Label { Text = "Wait before switching:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
+        var delay = new NumericUpDown { Minimum = 0, Maximum = 60, Width = 60, Value = Math.Clamp(_config.Audio.SwitchDelaySeconds, 0, 60) };
+        delay.ValueChanged += (_, _) => { _config.Audio.SwitchDelaySeconds = (int)delay.Value; _config.Save(_configPath); };
+        delayRow.Controls.Add(delay);
+        delayRow.Controls.Add(new Label { Text = "seconds (0 = immediately)", AutoSize = true, Margin = new Padding(3, 6, 3, 3), ForeColor = SystemColors.GrayText });
+        layout.Controls.Add(delayRow);
+        layout.Controls.Add(new Label
+        {
+            Text = "Stops audio flapping if you lift the headset for a moment. Kept short on purpose — "
+                   + "the Home Assistant lights use a much longer 30s hold, which would be a long "
+                   + "silence to sit through here.",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 10),
+        });
+
+        layout.Controls.Add(new Label { Text = "Never use these as the default:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
+        _audioBlockList = new CheckedListBox { Width = 520, Height = 130, CheckOnClick = true };
+        _audioBlockList.ItemCheck += (_, _) =>
+        {
+            // ItemCheck fires BEFORE the item's checked state updates, so the control is read after
+            // the event has been processed rather than during it.
+            BeginInvoke(() =>
+            {
+                if (_audioBlockList is null) return;
+                _config.Audio.NeverDefaultDeviceIds = _audioBlockList.CheckedItems
+                    .OfType<AudioDeviceEntry>().Select(x => x.Id).ToList();
+                _config.Save(_configPath);
+            });
+        };
+        layout.Controls.Add(_audioBlockList);
+        layout.Controls.Add(new Label
+        {
+            Text = "Enforced even when Windows picks one itself, which it does whenever hardware is "
+                   + "plugged in. Useful for anything you never want sound coming out of by surprise.",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(3, 2, 3, 6),
+        });
+
+        _audioTab.Controls.Add(layout);
+        RefreshAudioDevices();
+        return _audioTab;
+    }
+
+    /// <summary>A device holder whose ToString drives what the pickers display.</summary>
+    private sealed record AudioDeviceEntry(string Id, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    private ComboBox AddAudioDeviceRow(FlowLayoutPanel parent, string caption, Action<string> set)
+    {
+        var row = new FlowLayoutPanel { AutoSize = true };
+        row.Controls.Add(new Label { Text = caption, AutoSize = true, Width = 170, Margin = new Padding(3, 6, 3, 3) });
+
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 340 };
+        combo.SelectedIndexChanged += (_, _) =>
+        {
+            set(combo.SelectedItem is AudioDeviceEntry e ? e.Id : "");
+            _config.Save(_configPath);
+        };
+        row.Controls.Add(combo);
+        parent.Controls.Add(row);
+        return combo;
+    }
+
+    /// <summary>Re-reads the endpoint list and rebuilds every picker, preserving selections.</summary>
+    public void RefreshAudioDevices()
+    {
+        if (_audioVrCombo is null || _audioAwayCombo is null || _audioBlockList is null) return;
+
+        var entries = _owner.GetAudioPlaybackDevices()
+            .Select(d => new AudioDeviceEntry(d.Id, d.FriendlyName)).ToList();
+
+        // Keep a configured device that is not currently present, so choosing Virtual Desktop's
+        // endpoint while streaming does not silently clear itself the moment streaming stops.
+        void KeepMissing(string id)
+        {
+            if (id is { Length: > 0 } && entries.All(e => !string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase)))
+                entries.Add(new AudioDeviceEntry(id, "(not connected) " + ShortenDeviceId(id)));
+        }
+
+        KeepMissing(_config.Audio.VrDeviceId);
+        KeepMissing(_config.Audio.AwayDeviceId);
+        foreach (var id in _config.Audio.NeverDefaultDeviceIds) KeepMissing(id);
+
+        FillCombo(_audioVrCombo, entries, _config.Audio.VrDeviceId);
+        FillCombo(_audioAwayCombo, entries, _config.Audio.AwayDeviceId);
+
+        _audioBlockList.Items.Clear();
+        foreach (var entry in entries)
+        {
+            var index = _audioBlockList.Items.Add(entry);
+            if (_config.Audio.NeverDefaultDeviceIds.Contains(entry.Id, StringComparer.OrdinalIgnoreCase))
+                _audioBlockList.SetItemChecked(index, true);
+        }
+    }
+
+    private static void FillCombo(ComboBox combo, List<AudioDeviceEntry> entries, string selectedId)
+    {
+        combo.Items.Clear();
+        combo.Items.Add(new AudioDeviceEntry("", "(leave alone)"));
+        foreach (var entry in entries) combo.Items.Add(entry);
+
+        combo.SelectedItem = combo.Items.OfType<AudioDeviceEntry>()
+            .FirstOrDefault(e => string.Equals(e.Id, selectedId, StringComparison.OrdinalIgnoreCase))
+            ?? combo.Items.OfType<AudioDeviceEntry>().First();
+    }
+
+    /// <summary>Endpoint ids are long and unreadable; show just the tail so one missing device is at
+    /// least distinguishable from another.</summary>
+    private static string ShortenDeviceId(string id) =>
+        id.Length <= 12 ? id : "..." + id[^12..];
 
     private TabPage BuildAdvancedTab()
     {

@@ -749,6 +749,41 @@ public sealed class HeartrateConfig
     public int StaleAfterSeconds { get; set; } = 60;
 }
 
+/// <summary>
+/// Follows the default playback device to where the user's ears are: the headset while it is on,
+/// their normal headphones once it comes off.
+///
+/// Devices are chosen by the user from a live list rather than matched on name, because endpoint
+/// names are long, near-identical between similar hardware, and change when Windows re-enumerates.
+/// Ids are stable and exact.
+/// </summary>
+public sealed class AudioConfig
+{
+    /// <summary>Off by default: this changes a system-wide setting, which should be deliberate.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Endpoint to use while the headset is on — normally Virtual Desktop's, which only
+    /// exists while it is streaming, so it is routinely absent.</summary>
+    public string VrDeviceId { get; set; } = "";
+
+    /// <summary>Endpoint to use once the headset is off.</summary>
+    public string AwayDeviceId { get; set; } = "";
+
+    /// <summary>Endpoints that must never become the default, enforced even when Windows selects
+    /// one on its own — which it does whenever hardware arrives.</summary>
+    public List<string> NeverDefaultDeviceIds { get; set; } = new();
+
+    /// <summary>
+    /// How long the headset must stay off before audio moves.
+    ///
+    /// Deliberately far shorter than the Home Assistant AFK hold (30s): waiting half a minute in
+    /// silence after lifting the headset would be infuriating, while lights genuinely should not
+    /// react to a glance at the dashboard. A few seconds is enough to stop it flapping when the
+    /// headset is briefly moved. 0 switches immediately.
+    /// </summary>
+    public int SwitchDelaySeconds { get; set; } = 3;
+}
+
 /// <summary>Log file retention. The log directory reached 625 MB across 44 files before this
 /// existed, because nothing ever deleted anything.</summary>
 public sealed class LoggingConfig
@@ -778,6 +813,7 @@ public sealed class MonitorConfig
     public LoggingConfig Logging { get; set; } = new();
     public BluetoothConfig Bluetooth { get; set; } = new();
     public HeartrateConfig Heartrate { get; set; } = new();
+    public AudioConfig Audio { get; set; } = new();
     public NetworkConfig Network { get; set; } = new();
     public PollingConfig Polling { get; set; } = new();
     public PathsConfig Paths { get; set; } = new();
