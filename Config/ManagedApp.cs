@@ -101,4 +101,20 @@ public sealed class ManagedApp
     /// adjusts processes that are already running and puts them back afterwards.
     /// </summary>
     public AppProcessPriority? SessionPriority { get; set; }
+
+    /// <summary>
+    /// Freeze this process while a VR session runs, and thaw it when the session ends.
+    ///
+    /// This is about MEMORY. A suspended process stops touching its pages, so Windows evicts them
+    /// and hands the physical RAM to the session, and it never faults them back because it is not
+    /// running. The alternative — closing the application — frees the same memory but throws away
+    /// its state; freezing keeps every editor and unsaved buffer exactly where it was.
+    ///
+    /// Off by default and genuinely not safe for everything. A frozen process still holds every
+    /// lock and handle it had, network connections can time out while it is stopped, and anything
+    /// midway through writing a file stays midway through. Good for editors and browsers; bad for
+    /// anything doing I/O that matters. SuspendSafety refuses the VR chain, system processes and
+    /// this app regardless of what is configured here.
+    /// </summary>
+    public bool SuspendDuringSession { get; set; }
 }

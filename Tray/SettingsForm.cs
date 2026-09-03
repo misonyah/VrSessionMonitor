@@ -59,6 +59,8 @@ public sealed class SettingsForm : Form
     private Button _restartVrChatButton = null!;
     private Label _firmwareLabel = null!;
     private Label _heartrateLabel = null!;
+    private Label _warningLabel = null!;
+    private readonly ToolTip _statusToolTip = new();
 
 #if INCLUDE_HOME_ASSISTANT
     private Label _homeAssistantStatusLabel = null!;
@@ -250,6 +252,7 @@ public sealed class SettingsForm : Form
 
         _firmwareLabel = AddStatusRow(layout, "Firmware self-heal");
         _heartrateLabel = AddStatusRow(layout, "Heart rate");
+        _warningLabel = AddStatusRow(layout, "Warnings");
 
         // One row per tracked Bluetooth device, each showing the icons of the apps it starts, so
         // "this device brings up these programs" is visible rather than something to remember.
@@ -437,6 +440,30 @@ public sealed class SettingsForm : Form
     /// throws away anything the user was interacting with. Presence itself is a label and a dot
     /// updated in place.
     /// </summary>
+    /// <summary>
+    /// Shows the conditions that have actually cost frames on this machine — tight memory and
+    /// wide-open avatar limits — so they are visible before a session rather than discovered
+    /// mid-session at 20 FPS. Advisory only; nothing here changes a setting.
+    /// </summary>
+    private void RefreshWarnings()
+    {
+        var warnings = _owner.CurrentSessionWarnings();
+
+        if (warnings.Count == 0)
+        {
+            _warningLabel.Text = "none";
+            SetRowStatus(_warningLabel, StatusLevel.Good);
+            return;
+        }
+
+        _warningLabel.Text = string.Join("  |  ", warnings.Select(w => w.Summary));
+        // Tooltip carries the explanation, so the row stays one line but the reasoning is reachable.
+        _statusToolTip.SetToolTip(_warningLabel,
+            string.Join(Environment.NewLine + Environment.NewLine,
+                warnings.Select(w => w.Summary + Environment.NewLine + w.Detail)));
+        SetRowStatus(_warningLabel, StatusLevel.Warning);
+    }
+
     private void RefreshBluetoothStatusRows()
     {
         if (_bluetoothStatusPanel is null) return;
@@ -738,6 +765,7 @@ public sealed class SettingsForm : Form
         _heartrateLabel.Text = _owner.SummarizeHeartrate();
         SetRowStatus(_heartrateLabel, _owner.HeartrateStatusLevel());
 
+        RefreshWarnings();
         RefreshBluetoothStatusRows();
 
         var p = _faceTracking.Current;
@@ -1486,6 +1514,25 @@ public sealed class SettingsForm : Form
                    + "Whatever the process was at beforehand is what it goes back to. Realtime isn't "
                    + "offered: it outranks input and audio handling and can lock the machine up. "
                    + "Note this only helps if the CPU is what's actually short.",
+            AutoSize = true,
+            MaximumSize = new Size(340, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(20, 0, 3, 6),
+        });
+
+        windowLayout.Controls.Add(BuildCheckbox("Freeze this app during a VR session", app.SuspendDuringSession, v =>
+        {
+            app.SuspendDuringSession = v;
+            Save();
+        }));
+        windowLayout.Controls.Add(new Label
+        {
+            Text = "Pauses every thread when SteamVR starts and releases the app's memory to the "
+                   + "system, then resumes it untouched afterwards — the same RAM you'd get by "
+                   + "closing it, without losing what's open. Editors and browsers are good "
+                   + "candidates. Not safe for anything mid-download or mid-write: a frozen app "
+                   + "keeps its locks, and network connections can time out while it's stopped. "
+                   + "The VR apps themselves and system processes are always refused.",
             AutoSize = true,
             MaximumSize = new Size(340, 0),
             ForeColor = SystemColors.GrayText,

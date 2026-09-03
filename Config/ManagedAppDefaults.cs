@@ -166,6 +166,35 @@ public static class ManagedAppDefaults
                     "Programs", "OscGoesBrrr", "OscGoesBrrr.exe"),
                 ProcessName = "OscGoesBrrr",
             },
+            // Freeze candidates. Disabled, no window rules, no launching — they exist only so
+            // SuspendDuringSession is one click away for the applications that actually caused
+            // memory exhaustion here on 2026-09-02 (67 VS Code processes, Unity and Chrome between
+            // them held over 15 GB while VRChat stuttered from paging). Nothing happens to any of
+            // them unless the user ticks it.
+            new()
+            {
+                Id = "vscode",
+                DisplayName = "Visual Studio Code",
+                Enabled = false,
+                Order = order++,
+                ProcessName = "Code",
+            },
+            new()
+            {
+                Id = "unity",
+                DisplayName = "Unity Editor",
+                Enabled = false,
+                Order = order++,
+                ProcessName = "Unity",
+            },
+            new()
+            {
+                Id = "chrome",
+                DisplayName = "Chrome",
+                Enabled = false,
+                Order = order++,
+                ProcessName = "chrome",
+            },
             new()
             {
                 Id = "xsoverlay",

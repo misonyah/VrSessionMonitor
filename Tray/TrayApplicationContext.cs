@@ -33,6 +33,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ManagedAppWindowService _managedApps;
     private readonly HeartrateMonitor _heartrate;
     private readonly SessionPriorityService _sessionPriority;
+    private readonly Modules.Suspend.SessionSuspendService _sessionSuspend;
 #if INCLUDE_OSC
     private VrChatOscListener? _oscListener;
 #endif
@@ -82,6 +83,44 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (!_heartrate.IsFresh) return StatusLevel.Warning;
         if (!state.Connected) return StatusLevel.Warning;
         return state.Bpm > 0 ? StatusLevel.Good : StatusLevel.Warning;
+    }
+
+    /// <summary>Live warnings for the Status tab: the conditions that have actually cost frames
+    /// here. Memory is read fresh each call; the avatar settings come from VRChat's own registry
+    /// keys, which it writes on exit, so they reflect the last session it closed.</summary>
+    public IReadOnlyList<SessionWarning> CurrentSessionWarnings()
+    {
+        var list = new List<SessionWarning>();
+
+        try
+        {
+            var info = GC.GetGCMemoryInfo();
+            var freeGb = (info.TotalAvailableMemoryBytes - info.MemoryLoadBytes) / (double)(1024 * 1024 * 1024);
+            if (SessionHealthCheck.CheckMemory(freeGb, PagefileUsageGb()) is SessionWarning m) list.Add(m);
+        }
+        catch (Exception ex) { Log.Debug("Health", $"Memory check failed: {ex.Message}"); }
+
+        var (rating, maxAvatars) = SessionHealthCheck.ReadVrChatAvatarSettings();
+        if (SessionHealthCheck.CheckAvatarLimits(rating, maxAvatars) is SessionWarning a) list.Add(a);
+
+        if (_sessionSuspend.FrozenCount > 0)
+            list.Add(new SessionWarning(
+                $"{_sessionSuspend.FrozenCount} process(es) frozen: {string.Join(", ", _sessionSuspend.FrozenAppNames)}",
+                "These are paused for the session and will look unresponsive until it ends. They resume automatically when SteamVR stops, or when this app exits."));
+
+        return list;
+    }
+
+    private static double PagefileUsageGb()
+    {
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher("SELECT CurrentUsage FROM Win32_PageFileUsage");
+            foreach (var o in searcher.Get())
+                return Convert.ToDouble(o["CurrentUsage"]) / 1024.0;
+        }
+        catch { /* pagefile may be disabled, or WMI unavailable */ }
+        return 0;
     }
 
     /// <summary>Everything the scan has seen this run, for the settings picker.</summary>
@@ -181,6 +220,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // and a BLE peripheral takes only one connection, which VRCOSC already holds.
         _heartrate = new HeartrateMonitor(_config);
         _sessionPriority = new SessionPriorityService(_config, new ProcessPriorityController());
+        _sessionSuspend = new Modules.Suspend.SessionSuspendService(_config, new Modules.Suspend.ProcessSuspender());
 #if INCLUDE_OSC
         // ONE OSCQuery service for every consumer. VRChat fans parameters out to each service it
         // discovers, so a second one would work — but it means a second mDNS advertisement, a
@@ -262,6 +302,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Same session boundary drives per-app CPU priority: lower a background app while the
         // session runs, put it back afterwards.
         _steamVr.FullyRunningChanged += running => _sessionPriority.HandleSteamVrRunningChanged(running);
+        // Freezing background apps frees their RAM for the session; thawed when it ends.
+        _steamVr.FullyRunningChanged += running => _sessionSuspend.HandleSteamVrRunningChanged(running);
 
         _headset.Start();
         _trackers.Start();
@@ -635,6 +677,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Before anything else: put back any priority we lowered. Quitting mid-session would
         // otherwise leave a background app throttled with nothing left running to undo it.
         // Best-effort only — a force-kill never reaches this.
+        // Thaw first: a process left frozen looks hung and there is nothing else running that
+        // could resume it.
+        try { _sessionSuspend?.ResumeAll(); } catch { /* never block shutdown */ }
         try { _sessionPriority?.RestoreOriginalPriorities(); } catch { /* never block shutdown */ }
 
         _managedApps?.Dispose();
