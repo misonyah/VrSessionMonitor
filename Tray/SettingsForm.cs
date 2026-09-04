@@ -80,6 +80,7 @@ public sealed class SettingsForm : Form
     private ComboBox? _audioVrCombo;
     private ComboBox? _audioAwayCombo;
     private CheckedListBox? _audioBlockList;
+    private bool _populatingAudioBlockList;
     private int _statusRowCount;
     private readonly Dictionary<Label, PictureBox> _rowDots = new();
     private FlowLayoutPanel? _bluetoothStatusPanel;
@@ -1962,8 +1963,18 @@ public sealed class SettingsForm : Form
         _audioBlockList = new CheckedListBox { Width = 520, Height = 130, CheckOnClick = true };
         _audioBlockList.ItemCheck += (_, _) =>
         {
-            // ItemCheck fires BEFORE the item's checked state updates, so the control is read after
-            // the event has been processed rather than during it.
+            // Ignore our own population. SetItemChecked raises ItemCheck exactly as a user click
+            // does, so without this, filling the list from config immediately writes it back —
+            // and, during construction, does so before there is a window to marshal onto.
+            if (_populatingAudioBlockList) return;
+
+            // ItemCheck fires BEFORE the item's checked state updates, so the control has to be
+            // read after the event has been processed rather than during it. BeginInvoke needs a
+            // created handle: called from the constructor it throws InvalidOperationException and
+            // takes the whole process down, which is exactly what happened on 2026-09-04 as soon
+            // as the config held a blocked device.
+            if (!IsHandleCreated) return;
+
             BeginInvoke(() =>
             {
                 if (_audioBlockList is null) return;
@@ -2033,12 +2044,21 @@ public sealed class SettingsForm : Form
         FillCombo(_audioVrCombo, entries, _config.Audio.VrDeviceId);
         FillCombo(_audioAwayCombo, entries, _config.Audio.AwayDeviceId);
 
-        _audioBlockList.Items.Clear();
-        foreach (var entry in entries)
+        // Guarded so the ItemCheck handler treats these as population rather than user intent.
+        _populatingAudioBlockList = true;
+        try
         {
-            var index = _audioBlockList.Items.Add(entry);
-            if (_config.Audio.NeverDefaultDeviceIds.Contains(entry.Id, StringComparer.OrdinalIgnoreCase))
-                _audioBlockList.SetItemChecked(index, true);
+            _audioBlockList.Items.Clear();
+            foreach (var entry in entries)
+            {
+                var index = _audioBlockList.Items.Add(entry);
+                if (_config.Audio.NeverDefaultDeviceIds.Contains(entry.Id, StringComparer.OrdinalIgnoreCase))
+                    _audioBlockList.SetItemChecked(index, true);
+            }
+        }
+        finally
+        {
+            _populatingAudioBlockList = false;
         }
     }
 
