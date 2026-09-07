@@ -1526,19 +1526,21 @@ public sealed class SettingsForm : Form
             Margin = new Padding(20, 0, 3, 6),
         });
 
-        windowLayout.Controls.Add(BuildCheckbox("Freeze this app during a VR session", app.SuspendDuringSession, v =>
+        windowLayout.Controls.Add(BuildCheckbox("Freeze this app if memory runs low during a VR session", app.SuspendDuringSession, v =>
         {
             app.SuspendDuringSession = v;
             Save();
         }));
         windowLayout.Controls.Add(new Label
         {
-            Text = "Pauses every thread when SteamVR starts and releases the app's memory to the "
-                   + "system, then resumes it untouched afterwards — the same RAM you'd get by "
-                   + "closing it, without losing what's open. Editors and browsers are good "
-                   + "candidates. Not safe for anything mid-download or mid-write: a frozen app "
-                   + "keeps its locks, and network connections can time out while it's stopped. "
-                   + "The VR apps themselves and system processes are always refused.",
+            Text = "Only if the PC actually runs low on memory during a session — the app keeps "
+                   + "working normally until then. If it does happen, every thread is paused and "
+                   + "its memory released to the system, then it resumes untouched when the "
+                   + "session ends: the same RAM you'd get by closing it, without losing what's "
+                   + "open. Editors and browsers are good candidates. Not safe for anything "
+                   + "mid-download or mid-write: a frozen app keeps its locks, and network "
+                   + "connections can time out while it's stopped. The VR apps themselves and "
+                   + "system processes are always refused.",
             AutoSize = true,
             MaximumSize = new Size(340, 0),
             ForeColor = SystemColors.GrayText,

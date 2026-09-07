@@ -784,6 +784,25 @@ public sealed class AudioConfig
     public int SwitchDelaySeconds { get; set; } = 3;
 }
 
+/// <summary>
+/// When to freeze the applications opted into SuspendDuringSession.
+///
+/// Pressure-triggered rather than session-triggered: freezing an editor the moment SteamVR starts
+/// pays the cost of an unusable application every session, including the ones where memory was
+/// never short. The applications keep running until the machine actually needs the RAM back.
+/// </summary>
+public sealed class MemoryPressureConfig
+{
+    /// <summary>Free physical RAM below which the opted-in applications are frozen. Default is the
+    /// level at which paging measurably hurt on this machine: at 3.2 GB free with 29.5 GB in the
+    /// pagefile VRChat stuttered badly, while 22 GB free was completely clean.</summary>
+    public double FreeMemoryThresholdGb { get; set; } = 8.0;
+
+    /// <summary>How often to check free memory while a session is running. Cheap — one call to
+    /// GlobalMemoryStatusEx — so this is about reacting promptly, not about cost.</summary>
+    public int CheckIntervalSeconds { get; set; } = 10;
+}
+
 /// <summary>Log file retention. The log directory reached 625 MB across 44 files before this
 /// existed, because nothing ever deleted anything.</summary>
 public sealed class LoggingConfig
@@ -814,6 +833,7 @@ public sealed class MonitorConfig
     public BluetoothConfig Bluetooth { get; set; } = new();
     public HeartrateConfig Heartrate { get; set; } = new();
     public AudioConfig Audio { get; set; } = new();
+    public MemoryPressureConfig MemoryPressure { get; set; } = new();
     public NetworkConfig Network { get; set; } = new();
     public PollingConfig Polling { get; set; } = new();
     public PathsConfig Paths { get; set; } = new();
