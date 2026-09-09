@@ -801,6 +801,55 @@ public sealed class MemoryPressureConfig
     /// <summary>How often to check free memory while a session is running. Cheap — one call to
     /// GlobalMemoryStatusEx — so this is about reacting promptly, not about cost.</summary>
     public int CheckIntervalSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// Hard faults per second that must accompany the low reading before anything is frozen.
+    ///
+    /// Low available memory on its own is not evidence of a problem — Windows deliberately keeps
+    /// almost nothing genuinely free, filling the rest with reclaimable cache. Paging is what
+    /// actually hurts, and it is measurable: 297/sec here while VRChat stuttered, 64/sec once
+    /// healthy. Requiring both turns "this number looks small" into "the machine is demonstrably
+    /// paging". 0 disables the corroboration and goes back to memory alone.
+    /// </summary>
+    public double HardFaultsPerSecondThreshold { get; set; } = 200;
+
+    /// <summary>
+    /// How many consecutive checks must show pressure before acting.
+    ///
+    /// A single sample froze 52 processes on 2026-09-08 ten seconds into a session, while VRChat
+    /// was still loading. Sustained pressure is a real problem; one transient spike during startup
+    /// is just a game loading.
+    /// </summary>
+    public int ConsecutiveChecksRequired { get; set; } = 3;
+
+    /// <summary>
+    /// How long after a session starts to ignore pressure entirely.
+    ///
+    /// VRChat allocates heavily while it loads a world and its avatars — memory is at its most
+    /// transient exactly then, and it resolves itself. Acting during that window freezes the user's
+    /// applications to solve a problem that was about to disappear.
+    /// </summary>
+    public int GracePeriodSeconds { get; set; } = 90;
+}
+
+/// <summary>
+/// Reminds you to charge tracked devices once a session ends.
+///
+/// Sampled DURING the session, because once SteamVR stops the devices are gone and their levels
+/// cannot be read — the moment you want the answer is the moment you can no longer ask. The last
+/// reading taken while the session was alive is what gets reported.
+/// </summary>
+public sealed class BatteryReminderConfig
+{
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Battery percentage at or below which a device is worth charging. A device that is
+    /// on charge is never reported however low it is.</summary>
+    public int WarnBelowPercent { get; set; } = 30;
+
+    /// <summary>How often to sample while a session runs. Each sample spawns a short-lived child
+    /// process, so this is deliberately infrequent.</summary>
+    public int SampleIntervalMinutes { get; set; } = 5;
 }
 
 /// <summary>Log file retention. The log directory reached 625 MB across 44 files before this
@@ -834,6 +883,7 @@ public sealed class MonitorConfig
     public HeartrateConfig Heartrate { get; set; } = new();
     public AudioConfig Audio { get; set; } = new();
     public MemoryPressureConfig MemoryPressure { get; set; } = new();
+    public BatteryReminderConfig BatteryReminder { get; set; } = new();
     public NetworkConfig Network { get; set; } = new();
     public PollingConfig Polling { get; set; } = new();
     public PathsConfig Paths { get; set; } = new();

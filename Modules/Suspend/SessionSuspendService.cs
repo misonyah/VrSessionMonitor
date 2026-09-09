@@ -41,16 +41,30 @@ public sealed class SessionSuspendService : IDisposable
 
     private System.Threading.Timer? _watchTimer;
     private readonly Func<double> _freeMemoryGb;
+    private readonly Func<double> _hardFaultsPerSecond;
+    private DateTime? _sessionStartedAt;
+    private int _consecutivePressureChecks;
 
-    /// <param name="freeMemoryGb">Free physical RAM in GB, or a negative value when it cannot be
-    /// read. Injectable so the pressure logic is testable without consuming real memory.</param>
+    /// <param name="freeMemoryGb">Available physical RAM in GB, or negative when unreadable.</param>
+    /// <param name="hardFaultsPerSecond">Pages read from disk per second, or negative when
+    /// unavailable. Both are injectable so the pressure logic is testable without consuming real
+    /// memory or waiting for real paging.</param>
     public SessionSuspendService(MonitorConfig config, IProcessSuspender suspender,
-        int? currentProcessId = null, Func<double>? freeMemoryGb = null)
+        int? currentProcessId = null, Func<double>? freeMemoryGb = null,
+        Func<double>? hardFaultsPerSecond = null)
     {
         _config = config;
         _suspender = suspender;
         _currentProcessId = currentProcessId ?? SuspendSafety.CurrentProcessId;
         _freeMemoryGb = freeMemoryGb ?? SystemMemory.FreePhysicalGb;
+        _hardFaultsPerSecond = hardFaultsPerSecond ?? SystemMemory.HardFaultsPerSecond;
+    }
+
+    /// <summary>Test seam: pretend the session started long enough ago that the grace period has
+    /// passed, so a test does not have to wait 90 seconds.</summary>
+    internal void SkipGracePeriodForTests()
+    {
+        lock (_lock) _sessionStartedAt = DateTime.UtcNow.AddYears(-1);
     }
 
     /// <summary>Plain method rather than an event subscription, matching OptimizationsManager and
@@ -79,9 +93,14 @@ public sealed class SessionSuspendService : IDisposable
         {
             _watchTimer?.Dispose();
             _watchTimer = new System.Threading.Timer(_ => SafeCheckMemoryPressure(), null, interval, interval);
+            _sessionStartedAt = DateTime.UtcNow;
+            _consecutivePressureChecks = 0;
         }
 
-        Log.Info("Suspend", $"Watching memory this session. Opted-in apps will be frozen only if free RAM drops below {_config.MemoryPressure.FreeMemoryThresholdGb:0.#} GB.");
+        // A rate computed against a sample from hours ago is meaningless.
+        SystemMemory.ResetHardFaultSampling();
+
+        Log.Info("Suspend", $"Watching memory this session. Opted-in apps are frozen only after {_config.MemoryPressure.ConsecutiveChecksRequired} consecutive checks showing under {_config.MemoryPressure.FreeMemoryThresholdGb:0.#} GB available AND over {_config.MemoryPressure.HardFaultsPerSecondThreshold:0} hard faults/sec, ignoring the first {_config.MemoryPressure.GracePeriodSeconds}s while VRChat loads.");
     }
 
     private void StopWatching()
@@ -112,13 +131,44 @@ public sealed class SessionSuspendService : IDisposable
         lock (_lock)
         {
             if (_suspended.Count > 0) return; // already acted this session
+
+            // VRChat allocates heavily while loading a world and its avatars. Memory is at its
+            // most transient exactly then and recovers on its own, so acting inside this window
+            // freezes the user's applications to solve a problem that was about to disappear.
+            if (_sessionStartedAt is DateTime started
+                && (DateTime.UtcNow - started).TotalSeconds < _config.MemoryPressure.GracePeriodSeconds)
+                return;
         }
 
         var freeGb = _freeMemoryGb();
         if (freeGb < 0) return; // could not read it; do nothing rather than guess
-        if (freeGb >= _config.MemoryPressure.FreeMemoryThresholdGb) return;
 
-        Log.Info("Suspend", $"Free memory is down to {freeGb:0.#} GB, below the {_config.MemoryPressure.FreeMemoryThresholdGb:0.#} GB threshold — freezing the opted-in apps to release theirs.");
+        var faults = _hardFaultsPerSecond();
+        var memoryLow = freeGb < _config.MemoryPressure.FreeMemoryThresholdGb;
+
+        // Faults corroborate rather than decide. A negative reading means "unavailable" (including
+        // the first sample of a session), and a threshold of 0 disables the requirement entirely —
+        // in both cases fall back to the memory reading alone rather than never acting.
+        var faultsRequired = _config.MemoryPressure.HardFaultsPerSecondThreshold > 0;
+        var faultsHigh = !faultsRequired || faults < 0
+            || faults >= _config.MemoryPressure.HardFaultsPerSecondThreshold;
+
+        if (!memoryLow || !faultsHigh)
+        {
+            lock (_lock) _consecutivePressureChecks = 0; // pressure has to be SUSTAINED
+            return;
+        }
+
+        int consecutive;
+        lock (_lock) consecutive = ++_consecutivePressureChecks;
+
+        if (consecutive < _config.MemoryPressure.ConsecutiveChecksRequired)
+        {
+            Log.Debug("Suspend", $"Memory pressure {consecutive}/{_config.MemoryPressure.ConsecutiveChecksRequired}: {freeGb:0.#} GB available, {(faults < 0 ? "fault rate unknown" : $"{faults:0} hard faults/sec")}.");
+            return;
+        }
+
+        Log.Info("Suspend", $"Sustained memory pressure: {freeGb:0.#} GB available with {(faults < 0 ? "an unknown fault rate" : $"{faults:0} hard faults/sec")}, over {consecutive} consecutive checks — freezing the opted-in apps to release theirs.");
         SuspendConfiguredApps();
     }
 
