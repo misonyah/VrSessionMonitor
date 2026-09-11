@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Threading.Tasks;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Modules;
@@ -14,6 +14,10 @@ public class HeadsetMonitorDebounceTests
         var config = new MonitorConfig();
         config.Network.HeadsetIp = "10.0.0.5";
         config.Network.HeadsetIpSecondary = ""; // primary only for these cases
+        // Pinned, not inherited: these cases script exactly three failures, and the shipped
+        // default has already moved once (3 -> 8 on 2026-08-14 for a duty-cycling idle Quest),
+        // which silently broke them. The mechanism is what is under test here, not the default.
+        config.Polling.HeadsetOfflineDebounceFailures = 3;
 
         var mon = new HeadsetMonitor(config, pingOverride: _ => Task.FromResult(pings.Count > 0 && pings.Dequeue()));
         var events = new List<HeadsetStateChangedEventArgs>();

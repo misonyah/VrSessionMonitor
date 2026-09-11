@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
@@ -480,6 +480,20 @@ public sealed class PollingConfig
     public int HeadsetOfflineDebounceFailures { get; set; } = 8;
     public int TrackerCheckIntervalMs { get; set; } = 10000;
     public int TrackerPingTimeoutMs { get; set; } = 500;
+    /// <summary>Consecutive failed pings required before SlimeVrTrackerMonitor declares a tracker
+    /// offline. Third instance of the same debounce pattern as HeadsetOfflineDebounceFailures
+    /// above and EyeCameraOfflineDebounceFailures below, and added for the same reason: the
+    /// tracker monitor counted ConsecutiveFailures but never consulted it, so a single dropped
+    /// ICMP packet flipped a tracker's status straight to offline and the next successful ping
+    /// flipped it back. Reported after a real session on 2026-09-11, where tracker status "kept
+    /// flipping even though they were active".
+    ///
+    /// These boards are the most flap-prone of the three: ESP8266 on WiFi, battery powered, with
+    /// radio power-saving, and a session puts other WiFi traffic alongside them. Only the
+    /// online-to-offline direction waits; one successful ping restores a tracker immediately, as
+    /// with the headset and eye camera. At the 10s poll interval, 3 failures = 30s of genuine
+    /// silence before a tracker is called offline.</summary>
+    public int TrackerOfflineDebounceFailures { get; set; } = 3;
     public int ProcessPollIntervalMs { get; set; } = 1000;
     public int ProcessLaunchTimeoutMs { get; set; } = 60000;
     public int UpdateCheckIntervalMinutes { get; set; } = 120;

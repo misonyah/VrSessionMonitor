@@ -1,4 +1,4 @@
-using System.Net.NetworkInformation;
+﻿using System.Net.NetworkInformation;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
@@ -21,14 +21,19 @@ public sealed class SlimeVrTrackerMonitor : IDisposable
 {
     private readonly MonitorConfig _config;
     private readonly Dictionary<string, TrackerStatus> _status = new();
+    private readonly Func<string, Task<bool>> _ping;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
 
     public IReadOnlyDictionary<string, TrackerStatus> Status => _status;
 
-    public SlimeVrTrackerMonitor(MonitorConfig config)
+    /// <param name="pingOverride">Injectable reachability check, same seam as HeadsetMonitor's -
+    /// the debounce logic is only testable if failures can be scripted rather than waiting on a
+    /// real board to drop real packets.</param>
+    public SlimeVrTrackerMonitor(MonitorConfig config, Func<string, Task<bool>>? pingOverride = null)
     {
         _config = config;
+        _ping = pingOverride ?? PingAsync;
         foreach (var t in config.Trackers)
             _status[t.Ip] = new TrackerStatus { Tracker = t };
     }
@@ -66,15 +71,20 @@ public sealed class SlimeVrTrackerMonitor : IDisposable
         return _status;
     }
 
-    private async Task CheckOneAsync(TrackerConfig tracker)
+    private async Task<bool> PingAsync(string ip)
     {
         using var ping = new Ping();
+        var reply = await ping.SendPingAsync(ip, _config.Polling.TrackerPingTimeoutMs).ConfigureAwait(false);
+        return reply.Status == IPStatus.Success;
+    }
+
+    private async Task CheckOneAsync(TrackerConfig tracker)
+    {
         bool online;
         try
         {
-            var reply = await ping.SendPingAsync(tracker.Ip, _config.Polling.TrackerPingTimeoutMs).ConfigureAwait(false);
-            online = reply.Status == IPStatus.Success;
-            Log.Trace("SlimeVrTrackers", $"{tracker.Name,-16} {tracker.Ip,-15} -> {(online ? $"OK {reply.RoundtripTime}ms" : reply.Status.ToString())}");
+            online = await _ping(tracker.Ip).ConfigureAwait(false);
+            Log.Trace("SlimeVrTrackers", $"{tracker.Name,-16} {tracker.Ip,-15} -> {(online ? "OK" : "unreachable")}");
         }
         catch (Exception ex)
         {
@@ -84,16 +94,33 @@ public sealed class SlimeVrTrackerMonitor : IDisposable
 
         var status = _status[tracker.Ip];
         var wasOnline = status.IsOnline;
-        status.IsOnline = online;
-        if (online) status.LastSeenUtc = DateTime.UtcNow;
         status.ConsecutiveFailures = online ? 0 : status.ConsecutiveFailures + 1;
 
-        if (wasOnline && !online)
+        // Debounced online->offline only (see PollingConfig.TrackerOfflineDebounceFailures).
+        // ConsecutiveFailures was already being counted here but never consulted, so one dropped
+        // ping declared a live tracker offline and the next good ping undid it - the flapping
+        // that gets reported after a session. A single success still restores it immediately.
+        var failureThreshold = Math.Max(1, _config.Polling.TrackerOfflineDebounceFailures);
+        if (online)
+        {
+            status.IsOnline = true;
+            status.LastSeenUtc = DateTime.UtcNow;
+        }
+        else if (status.ConsecutiveFailures >= failureThreshold)
+        {
+            status.IsOnline = false;
+        }
+        else if (wasOnline)
+        {
+            Log.Trace("SlimeVrTrackers", $"{tracker.Name} ping failure {status.ConsecutiveFailures}/{failureThreshold} - not yet declaring offline.");
+        }
+
+        if (wasOnline && !status.IsOnline)
         {
             var extNote = tracker.HasExtension ? " (has an extension sensor — if only the extension half is missing in SlimeVR, a physical power-cycle may be needed; see firmware notes)" : "";
             Log.Warn("SlimeVrTrackers", $"Tracker '{tracker.Name}' ({tracker.Ip}) went OFFLINE.{extNote}");
         }
-        else if (!wasOnline && online)
+        else if (!wasOnline && status.IsOnline)
         {
             Log.Info("SlimeVrTrackers", $"Tracker '{tracker.Name}' ({tracker.Ip}) came back ONLINE.");
         }
