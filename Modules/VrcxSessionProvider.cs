@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using VrSessionMonitor.Logging;
@@ -54,6 +54,78 @@ public sealed class VrcxSessionProvider
         {
             Log.Warn("VrcxSession", $"Failed to read VRCX session cookies: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// The groups you belong to, straight out of VRCX's own cache - no VRChat API call, no live
+    /// session, works with VRCX closed.
+    ///
+    /// VRCX keeps them in `configs` under key `config:vrcx_currentusergroups_<your user id>`, whose
+    /// value is a JSON array of group objects (id, name, iconUrl, ownerId, roleIds, roles).
+    /// Matched with LIKE on the prefix rather than composing the key from a user id, so this needs
+    /// no knowledge of who is logged in - and there is only ever one such row per account.
+    ///
+    /// Note the cached objects carry no shortCode, unlike GET users/{id}/groups, so ShortCode is
+    /// always null here. That only costs the short-code autocomplete alias; picking a group by name
+    /// still resolves to the right grp_ id, which is what the Automation tab stores.
+    ///
+    /// Best-effort like everything else here: no VRCX, no row, or format drift yields an empty
+    /// list, and the caller falls back to whatever other suggestion sources it has.
+    /// </summary>
+    public IReadOnlyList<VrcGroupInfo> TryLoadCachedGroups()
+    {
+        try
+        {
+            if (!File.Exists(_dbPath)) { Log.Debug("VrcxSession", $"VRCX DB not found at {_dbPath}."); return Array.Empty<VrcGroupInfo>(); }
+
+            var cs = new SqliteConnectionStringBuilder
+            {
+                DataSource = _dbPath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Cache = SqliteCacheMode.Shared,
+            }.ToString();
+
+            using var conn = new SqliteConnection(cs);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT value FROM configs WHERE key LIKE 'config:vrcx_currentusergroups_%' LIMIT 1";
+            var value = cmd.ExecuteScalar() as string;
+            if (string.IsNullOrEmpty(value)) { Log.Debug("VrcxSession", "No cached group list in VRCX DB."); return Array.Empty<VrcGroupInfo>(); }
+
+            return ParseCachedGroups(value);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("VrcxSession", $"Failed to read cached VRCX groups: {ex.Message}");
+            return Array.Empty<VrcGroupInfo>();
+        }
+    }
+
+    /// <summary>Pure: VRCX's cached-groups JSON → the groups. Empty on any failure, and entries
+    /// missing an id or name are skipped rather than surfacing as blank dropdown rows.</summary>
+    public static IReadOnlyList<VrcGroupInfo> ParseCachedGroups(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return Array.Empty<VrcGroupInfo>();
+
+            var groups = new List<VrcGroupInfo>();
+            foreach (var element in doc.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.Object) continue;
+                var id = element.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                var name = element.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
+                if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name)) continue;
+                groups.Add(new VrcGroupInfo(id, name, null));
+            }
+            return groups;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("VrcxSession", $"Could not parse cached VRCX groups: {ex.Message}");
+            return Array.Empty<VrcGroupInfo>();
         }
     }
 

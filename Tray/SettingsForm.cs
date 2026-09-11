@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Linq;
@@ -939,6 +939,12 @@ public sealed class SettingsForm : Form
 #if INCLUDE_HOME_ASSISTANT
     // ───────────────────────────── Automation tab ─────────────────────────────
 
+    /// <summary>One row of the Group dropdown. Id is what gets stored in config; Name is what you
+    /// pick. A configured group that is not in VRCX's cache still gets an entry (Name falling back
+    /// to the raw id) - a DataGridViewComboBoxCell throws "value is not valid" for any bound value
+    /// missing from its list, which would otherwise make an unrecognised id unopenable.</summary>
+    private sealed record GroupChoice(string Id, string Name);
+
     /// <summary>Editable list backing VrChatGroupAutomationMonitor's watch list - see that
     /// class's doc for the actual detection/OSC-send mechanism. Changes here are saved to config
     /// immediately but only take effect on restart, matching this app's general "no config
@@ -957,15 +963,20 @@ public sealed class SettingsForm : Form
         header.Controls.Add(new Label
         {
             Text = "Toggles an avatar OSC bool parameter true while you're in a matching VRChat\n" +
-                   "group's instance, false otherwise. Type a group by name, short code, or grp_ ID\n" +
-                   "in the Group column — names/codes autocomplete and resolve to the ID for you\n" +
-                   "(that needs VRCX running + logged in; grp_ IDs also come from VRChat's logs).\n" +
+                   "group's instance, false otherwise. Pick a group from the Group dropdown -\n" +
+                   "the list is your own groups, read from VRCX's cache, so nothing needs typing\n" +
+                   "and VRCX does not have to be running.\n" +
                    "Restart the app after changing this list for it to take effect. Tick Represent to\n" +
                    "also set that group as your VRChat represented group while you're in it.",
             AutoSize = true,
             Margin = new Padding(12, 3, 3, 3),
         });
         layout.Controls.Add(header, 0, 0);
+
+        // Populated below off the UI thread's way; starts with whatever ids the config already
+        // holds so binding never throws before the real names arrive (see EnsureGroupChoice).
+        var groupChoices = new BindingList<GroupChoice>();
+        var fallbackChoices = new BindingList<GroupChoice>();
 
         var grid = new DataGridView
         {
@@ -975,7 +986,21 @@ public sealed class SettingsForm : Form
             AllowUserToDeleteRows = true,
             RowHeadersVisible = false,
         };
-        var groupCol = new DataGridViewTextBoxColumn { HeaderText = "Group (name, code, or grp_ ID)", DataPropertyName = nameof(GroupAutomationEntry.GroupId), FillWeight = 40 };
+        // A dropdown, not a text box: the groups you belong to are already cached by VRCX, so
+        // there is nothing for you to type or paste. DisplayMember/ValueMember means the cell
+        // shows the group's name while the bound GroupAutomationEntry.GroupId still stores the
+        // grp_ id the monitor matches on.
+        var groupCol = new DataGridViewComboBoxColumn
+        {
+            HeaderText = "Group",
+            DataPropertyName = nameof(GroupAutomationEntry.GroupId),
+            FillWeight = 40,
+            DisplayMember = nameof(GroupChoice.Name),
+            ValueMember = nameof(GroupChoice.Id),
+            DataSource = groupChoices,
+            AutoComplete = true,
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+        };
         grid.Columns.Add(groupCol);
         var nameCol = new DataGridViewTextBoxColumn { HeaderText = "Display name", DataPropertyName = nameof(GroupAutomationEntry.DisplayName), FillWeight = 30 };
         grid.Columns.Add(nameCol);
@@ -988,99 +1013,110 @@ public sealed class SettingsForm : Form
 
         void SaveGroups() => _config.Save(_configPath);
 
-        // The Group column accepts a name, short code, or grp_ id. When a committed value matches one
-        // of your groups by name/code (populated below from the VRChat API via VRCX), resolve it to
-        // the grp_ id in place and fill Display name if it's blank — so you never have to paste a raw
-        // grp_ id. A value already starting with grp_, or one we don't recognize, is left untouched.
-        var groupsByKey = new Dictionary<string, VrcGroupInfo>(StringComparer.OrdinalIgnoreCase);
+        // Picking a group fills Display name from the selection, so nothing has to be typed here.
+        // Only fills a blank - a name you have edited yourself is yours to keep.
         grid.CellEndEdit += (_, e) =>
         {
             if (e.RowIndex >= 0 && e.ColumnIndex == groupCol.Index)
             {
-                var cell = grid.Rows[e.RowIndex].Cells[groupCol.Index];
-                var typed = (cell.Value as string)?.Trim();
-                if (!string.IsNullOrEmpty(typed) && !typed.StartsWith("grp_", StringComparison.Ordinal)
-                    && groupsByKey.TryGetValue(typed, out var g))
+                var selectedId = grid.Rows[e.RowIndex].Cells[groupCol.Index].Value as string;
+                var choice = groupChoices.FirstOrDefault(c => c.Id == selectedId);
+                if (choice is not null && choice.Name != choice.Id)
                 {
-                    cell.Value = g.Id;
                     var nameCell = grid.Rows[e.RowIndex].Cells[nameCol.Index];
                     if (string.IsNullOrWhiteSpace(nameCell.Value as string))
-                        nameCell.Value = g.Name;
+                        nameCell.Value = choice.Name;
                 }
             }
             SaveGroups();
         };
+
+        // A bound id with no matching list entry throws out of the cell's painting path, which is
+        // not recoverable from the user's side. Swallow it here; EnsureGroupChoice already makes it
+        // practically unreachable, and a silently blank cell beats a modal error on every repaint.
+        grid.DataError += (_, e) => e.ThrowException = false;
         grid.UserDeletedRow += (_, _) => SaveGroups();
         grid.RowValidated += (_, _) => SaveGroups();
 
         var vrchatLow = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + @"Low\VRChat\VRChat";
-        // ScanGroupIds/ScanOscBoolParams read every VRChat output_log_*.txt and every avatar OSC
-        // config JSON — tens–hundreds of MB for a heavy user, which would freeze the Settings window
-        // if done synchronously here. Build the two collections EMPTY and wire them to the grid's
-        // EditingControlShowing handler and the fallback textbox now (they're referenced by object,
-        // so late population is fine — autocomplete is pure convenience). Then run both scans on a
-        // background thread and marshal back to populate them: AutoCompleteStringCollection.AddRange
-        // must run on the UI/STA thread, hence the BeginInvoke. Never block the constructor here.
-        var groupIdSuggestions = new AutoCompleteStringCollection();
+        // ScanOscBoolParams reads every avatar OSC config JSON, and reading VRCX's DB touches
+        // disk too — enough to freeze the Settings window if done synchronously here. Build the
+        // collections EMPTY and wire them up now (they're referenced by object, so late population
+        // is fine), then scan on a background thread and marshal back: both
+        // AutoCompleteStringCollection.AddRange and the BindingList behind the Group dropdown must
+        // be touched on the UI/STA thread, hence the BeginInvoke. Never block the constructor.
         var oscParamSuggestions = new AutoCompleteStringCollection();
-        _ = Task.Run(async () =>
+
+        // Every id already in the config gets a dropdown entry up front, before any of them can be
+        // bound, so a group VRCX has not cached (left since, or cached under another account) still
+        // opens and keeps its value instead of tripping the combo cell's validation.
+        void EnsureGroupChoice(string id, string? name = null)
+        {
+            if (string.IsNullOrWhiteSpace(id)) return;
+            var existing = groupChoices.FirstOrDefault(c => c.Id == id);
+            if (existing is null) groupChoices.Add(new GroupChoice(id, name ?? id));
+            else if (name is not null && existing.Name == existing.Id)
+            {
+                groupChoices[groupChoices.IndexOf(existing)] = new GroupChoice(id, name);
+            }
+        }
+
+        foreach (var entry in _config.VrChatGroupAutomation.Groups) EnsureGroupChoice(entry.GroupId);
+        EnsureGroupChoice(_config.VrChatGroupAutomation.FallbackRepresentGroupId);
+
+        _ = Task.Run(() =>
         {
             try
             {
-                var groupIds = AutomationSuggestionSources.ScanGroupIds(vrchatLow).ToArray();
                 var oscParams = AutomationSuggestionSources.ScanOscBoolParams(Path.Combine(vrchatLow, "OSC")).ToArray();
 
-                // Also fetch the groups you actually belong to (name + short code + grp_ id) so the
-                // Group column can autocomplete by name/code and resolve to the id. Needs VRCX running
-                // and logged in; best-effort — no session just means those name entries are absent and
-                // the log-mined grp_ ids still work.
-                IReadOnlyList<VrcGroupInfo> groups = Array.Empty<VrcGroupInfo>();
-                try
-                {
-                    using var represent = new VrcRepresentClient(new VrcxSessionProvider());
-                    if (represent.HasSession)
-                        groups = await represent.GetMyGroupsAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex) { Log.Debug("SettingsForm", $"Group name fetch failed: {ex.Message}"); }
-
-                var nameAndCodeSuggestions = groups
-                    .SelectMany(g => new[] { g.Name, g.ShortCode })
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .Select(s => s!)
-                    .ToArray();
+                // Groups come from VRCX's own cache rather than the VRChat API: no live session, no
+                // request, and it works with VRCX closed. Log-mined grp_ ids are no longer offered
+                // as Group choices - an id scraped out of a log has no name to show in a dropdown,
+                // and every group you belong to is in the cache anyway.
+                var groups = new VrcxSessionProvider().TryLoadCachedGroups();
 
                 BeginInvoke((Action)(() =>
                 {
-                    groupIdSuggestions.AddRange(groupIds);
-                    groupIdSuggestions.AddRange(nameAndCodeSuggestions);
                     oscParamSuggestions.AddRange(oscParams);
-                    foreach (var g in groups)
-                    {
-                        if (!string.IsNullOrWhiteSpace(g.Name)) groupsByKey[g.Name] = g;
-                        if (!string.IsNullOrWhiteSpace(g.ShortCode)) groupsByKey[g.ShortCode!] = g;
-                        groupsByKey[g.Id] = g;
-                    }
+                    foreach (var g in groups.OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
+                        EnsureGroupChoice(g.Id, g.Name);
+
                 }));
             }
             catch (Exception ex)
             {
-                Log.Debug("SettingsForm", $"Automation autocomplete scan failed: {ex.Message}");
+                Log.Debug("SettingsForm", $"Automation suggestion scan failed: {ex.Message}");
             }
         });
 
         var fallbackRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         fallbackRow.Controls.Add(new Label { Text = "Fallback represented group (blank = clear):", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
-        var fallbackBox = new TextBox
+        // Also a dropdown - same reason as the Group column. The leading blank entry is the
+        // documented "clear representation" value, so it has to stay selectable.
+        var fallbackBox = new ComboBox
         {
-            Text = _config.VrChatGroupAutomation.FallbackRepresentGroupId,
             Width = 260,
-            AutoCompleteMode = AutoCompleteMode.SuggestAppend,
-            AutoCompleteSource = AutoCompleteSource.CustomSource,
-            AutoCompleteCustomSource = groupIdSuggestions,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            DisplayMember = nameof(GroupChoice.Name),
+            ValueMember = nameof(GroupChoice.Id),
+            DataSource = fallbackChoices,
         };
-        fallbackBox.Leave += (_, _) =>
+        void SyncFallbackChoices()
         {
-            _config.VrChatGroupAutomation.FallbackRepresentGroupId = fallbackBox.Text.Trim();
+            var selected = _config.VrChatGroupAutomation.FallbackRepresentGroupId ?? "";
+            fallbackChoices.Clear();
+            fallbackChoices.Add(new GroupChoice("", "(none - clear representation)"));
+            foreach (var choice in groupChoices) fallbackChoices.Add(choice);
+            fallbackBox.SelectedValue = selected;
+        }
+        groupChoices.ListChanged += (_, _) => SyncFallbackChoices();
+        SyncFallbackChoices();
+        fallbackBox.SelectedValueChanged += (_, _) =>
+        {
+            if (fallbackBox.SelectedValue is not string id) return;
+            if (id == _config.VrChatGroupAutomation.FallbackRepresentGroupId) return;
+            _config.VrChatGroupAutomation.FallbackRepresentGroupId = id;
             _config.Save(_configPath);
         };
         fallbackRow.Controls.Add(fallbackBox);
@@ -1088,15 +1124,11 @@ public sealed class SettingsForm : Form
 
         grid.EditingControlShowing += (_, e) =>
         {
+            // The Group column is a combo box now, so its editing control is not a TextBox and
+            // never reaches here - it needs no autocomplete source of its own.
             if (e.Control is not TextBox tb) return;
             var col = grid.CurrentCell?.OwningColumn;
-            if (col == groupCol)
-            {
-                tb.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
-                tb.AutoCompleteSource = AutoCompleteSource.CustomSource;
-                tb.AutoCompleteCustomSource = groupIdSuggestions;
-            }
-            else if (col == paramCol)
+            if (col == paramCol)
             {
                 tb.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
                 tb.AutoCompleteSource = AutoCompleteSource.CustomSource;
