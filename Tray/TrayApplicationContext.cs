@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Linq;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
@@ -45,6 +45,28 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// <summary>Whether a tracked device is visible right now. Safe to call when scanning never
     /// started (no adapter, radio off) — it simply reports absent.</summary>
     public bool IsBluetoothDevicePresent(string address) => _bluetooth.Registry.IsPresent(address);
+
+    // ── Session freeze, surfaced to the Status tab's per-app toggles ──
+
+    /// <summary>Apps that may be frozen this session, whether or not any are frozen yet - the
+    /// toggle list has to exist before pressure ever fires, otherwise there is nothing to
+    /// pre-emptively thaw.</summary>
+    public IReadOnlyList<string> FreezableAppNames =>
+        _config.ManagedApps.Where(a => a.SuspendDuringSession).Select(a => a.DisplayName).ToList();
+
+    public bool IsAppFrozen(string displayName) => _sessionSuspend.IsFrozen(displayName);
+
+    public bool IsAppThawedByUser(string displayName) => _sessionSuspend.IsThawedByUser(displayName);
+
+    /// <summary>Thaw for the rest of the session (the toggle going off).</summary>
+    public void ThawApp(string displayName) => _sessionSuspend.ThawApp(displayName);
+
+    /// <summary>Hand back to the pressure logic and freeze now if opted in (the toggle going on).</summary>
+    public void RefreezeApp(string displayName) => _sessionSuspend.RefreezeApp(displayName);
+
+    /// <summary>Called after the opted-in set changes so unticking takes effect immediately
+    /// instead of at the end of the session.</summary>
+    public void ReconcileFrozenApps() => _sessionSuspend.ReconcileWithConfig();
 
     /// <summary>
     /// One line combining the two independent things we know about the heart rate monitor: whether

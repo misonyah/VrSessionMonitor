@@ -84,6 +84,10 @@ public sealed class SettingsForm : Form
     private int _statusRowCount;
     private readonly Dictionary<Label, PictureBox> _rowDots = new();
     private FlowLayoutPanel? _bluetoothStatusPanel;
+    private FlowLayoutPanel? _frozenAppsPanel;
+    private string _frozenRowSignature = "";
+    private bool _syncingFrozenToggles;
+    private readonly Dictionary<string, (Label State, CheckBox Toggle)> _frozenRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, BluetoothStatusRow> _bluetoothRows = new(StringComparer.OrdinalIgnoreCase);
     private string _bluetoothRowSignature = "";
 
@@ -271,6 +275,19 @@ public sealed class SettingsForm : Form
         };
         layout.Controls.Add(_bluetoothStatusPanel);
         layout.SetColumnSpan(_bluetoothStatusPanel, 2);
+
+        // One row per app that may be frozen this session, each with a toggle. A frozen editor is
+        // exactly what you want back for a minute mid-session, and it otherwise looks hung with no
+        // visible cause - so the state and the way to undo it belong in the same place.
+        _frozenAppsPanel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(3, 2, 3, 3),
+        };
+        layout.Controls.Add(_frozenAppsPanel);
+        layout.SetColumnSpan(_frozenAppsPanel, 4);
 
         tab.Controls.Add(layout);
         return tab;
@@ -489,6 +506,93 @@ public sealed class SettingsForm : Form
             if (row.State.Text != text) row.State.Text = text;
             SetRowStatus(row.State, present ? StatusLevel.Good : StatusLevel.Unknown);
         }
+    }
+
+    /// <summary>
+    /// Keeps the frozen-app rows on the Status tab in step, following the same discipline as the
+    /// Bluetooth rows: rebuild only when the SET of freezable apps changes, and otherwise update
+    /// the label and toggle in place. This runs on the 5s tick, and tearing down controls that
+    /// often flickers and steals whatever the user was clicking.
+    /// </summary>
+    private void RefreshFrozenAppRows()
+    {
+        if (_frozenAppsPanel is null) return;
+
+        var apps = _owner.FreezableAppNames;
+        var signature = string.Join("|", apps);
+        if (signature != _frozenRowSignature)
+        {
+            _frozenRowSignature = signature;
+            RebuildFrozenAppRows(apps);
+        }
+
+        foreach (var (name, row) in _frozenRows)
+        {
+            var frozen = _owner.IsAppFrozen(name);
+            var thawed = _owner.IsAppThawedByUser(name);
+            var text = frozen ? "frozen" : thawed ? "kept running this session" : "running";
+            if (row.State.Text != text) row.State.Text = text;
+            SetRowStatus(row.State, frozen ? StatusLevel.Warning : StatusLevel.Good);
+
+            // Assigning Checked fires CheckedChanged, which would immediately re-apply the state
+            // being displayed - and fight the user mid-click. Suppress while syncing.
+            var shouldBeChecked = frozen || !thawed;
+            if (row.Toggle.Checked != shouldBeChecked)
+            {
+                _syncingFrozenToggles = true;
+                try { row.Toggle.Checked = shouldBeChecked; }
+                finally { _syncingFrozenToggles = false; }
+            }
+        }
+    }
+
+    private void RebuildFrozenAppRows(IReadOnlyList<string> apps)
+    {
+        _frozenAppsPanel!.SuspendLayout();
+        _frozenAppsPanel.Controls.Clear();
+        _frozenRows.Clear();
+
+        if (apps.Count == 0)
+        {
+            _frozenAppsPanel.Controls.Add(new Label
+            {
+                Text = "No apps are set to freeze during a session (see the Apps tab).",
+                AutoSize = true,
+                Margin = new Padding(3, 6, 3, 3),
+            });
+            _frozenAppsPanel.ResumeLayout();
+            return;
+        }
+
+        _frozenAppsPanel.Controls.Add(new Label
+        {
+            Text = "Freeze during session — untick to keep an app running for the rest of this session:",
+            AutoSize = true,
+            Margin = new Padding(3, 6, 3, 3),
+        });
+
+        foreach (var name in apps)
+        {
+            var row = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(12, 0, 0, 0) };
+            var toggle = new CheckBox { Text = name, Checked = true, AutoSize = true, Margin = new Padding(3, 4, 6, 2) };
+            var state = new Label { Text = "running", AutoSize = true, Margin = new Padding(3, 7, 3, 2) };
+
+            var appName = name; // captured per row
+            toggle.CheckedChanged += (_, _) =>
+            {
+                if (_syncingFrozenToggles) return;
+                if (toggle.Checked) _owner.RefreezeApp(appName);
+                else _owner.ThawApp(appName);
+                RefreshFrozenAppRows();
+            };
+
+            row.Controls.Add(toggle);
+            row.Controls.Add(state);
+            _frozenAppsPanel.Controls.Add(row);
+            _frozenRows[name] = (state, toggle);
+        }
+
+        _frozenAppsPanel.ResumeLayout();
     }
 
     private void RebuildBluetoothStatusRows(List<BluetoothDeviceConfig> devices)
@@ -773,6 +877,7 @@ public sealed class SettingsForm : Form
 
         RefreshWarnings();
         RefreshBluetoothStatusRows();
+        RefreshFrozenAppRows();
 
         var p = _faceTracking.Current;
         var cams = _eyeTracking.Current;
@@ -1562,6 +1667,11 @@ public sealed class SettingsForm : Form
         {
             app.SuspendDuringSession = v;
             Save();
+            // Applies now, not at the end of the session. Unticking this while the app is frozen
+            // used to leave it frozen with no way back, because the opted-in list was only read at
+            // the moment of freezing.
+            _owner.ReconcileFrozenApps();
+            RefreshFrozenAppRows();
         }));
         windowLayout.Controls.Add(new Label
         {

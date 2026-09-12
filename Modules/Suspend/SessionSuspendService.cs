@@ -1,4 +1,4 @@
-using VrSessionMonitor.Config;
+﻿using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Modules.Suspend;
@@ -37,6 +37,11 @@ public sealed class SessionSuspendService : IDisposable
 
     /// <summary>PIDs we suspended, with the app they belong to, so resume touches nothing else.</summary>
     private readonly Dictionary<int, string> _suspended = new();
+
+    /// <summary>Apps the user has thawed by hand this session, which pressure must not re-freeze.
+    /// Session-scoped on purpose: cleared when a session starts and when one ends, so a decision
+    /// made to get at an editor mid-session never silently persists into the next session.</summary>
+    private readonly HashSet<string> _userThawed = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
     private System.Threading.Timer? _watchTimer;
@@ -95,6 +100,7 @@ public sealed class SessionSuspendService : IDisposable
             _watchTimer = new System.Threading.Timer(_ => SafeCheckMemoryPressure(), null, interval, interval);
             _sessionStartedAt = DateTime.UtcNow;
             _consecutivePressureChecks = 0;
+            _userThawed.Clear();
         }
 
         // A rate computed against a sample from hours ago is meaningless.
@@ -172,9 +178,14 @@ public sealed class SessionSuspendService : IDisposable
         SuspendConfiguredApps();
     }
 
-    public void SuspendConfiguredApps()
+    /// <param name="onlyDisplayName">Restricts the sweep to one app, for the status view's
+    /// per-app toggle. Null means every opted-in app, the pressure-triggered path.</param>
+    public void SuspendConfiguredApps(string? onlyDisplayName = null)
     {
-        var apps = _config.ManagedApps.Where(a => a.SuspendDuringSession).ToList();
+        var apps = _config.ManagedApps.Where(a => a.SuspendDuringSession)
+            .Where(a => onlyDisplayName is null
+                || string.Equals(a.DisplayName, onlyDisplayName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
         if (apps.Count == 0) return;
 
         var frozen = 0;
@@ -182,6 +193,13 @@ public sealed class SessionSuspendService : IDisposable
         foreach (var app in apps)
         {
             if (string.IsNullOrWhiteSpace(app.ProcessName)) continue;
+
+            lock (_lock)
+            {
+                // Thawed by hand this session - leave it alone, or the toggle in the status view
+                // would be undone by the next pressure check.
+                if (_userThawed.Contains(app.DisplayName)) continue;
+            }
 
             foreach (var pid in _suspender.GetProcessIds(app.ProcessName))
             {
@@ -220,6 +238,7 @@ public sealed class SessionSuspendService : IDisposable
         List<KeyValuePair<int, string>> toResume;
         lock (_lock)
         {
+            _userThawed.Clear(); // the session is over; next one starts from the config again
             if (_suspended.Count == 0) return;
             toResume = _suspended.ToList();
             _suspended.Clear();
@@ -242,6 +261,99 @@ public sealed class SessionSuspendService : IDisposable
         // gives the user no way to work out why.
         if (failed.Count > 0)
             Log.Error("Suspend", $"FAILED to resume: {string.Join(", ", failed)}. These are still frozen and will look hung — resume them with Process Explorer, or end and restart them.");
+    }
+
+    /// <summary>
+    /// Thaws one app by hand and keeps it thawed for the rest of the session.
+    ///
+    /// The status view's per-app toggle: a frozen editor is exactly the thing you want back for a
+    /// minute mid-session, and without the remembered override the next pressure check would
+    /// simply freeze it again. "Rest of the session" is the whole scope - StartWatching and
+    /// ResumeAll both clear it, so the next session goes back to obeying the config.
+    /// </summary>
+    public void ThawApp(string displayName)
+    {
+        List<int> pids;
+        lock (_lock)
+        {
+            _userThawed.Add(displayName);
+            pids = _suspended.Where(kv => string.Equals(kv.Value, displayName, StringComparison.OrdinalIgnoreCase))
+                .Select(kv => kv.Key).ToList();
+            foreach (var pid in pids) _suspended.Remove(pid);
+        }
+
+        if (pids.Count == 0)
+        {
+            Log.Info("Suspend", $"'{displayName}' will not be frozen again this session.");
+            return;
+        }
+
+        var resumed = 0;
+        var failed = new List<string>();
+        foreach (var pid in pids)
+        {
+            if (!_suspender.IsRunning(pid)) continue;
+            if (_suspender.Resume(pid)) resumed++;
+            else failed.Add($"{displayName} (PID {pid})");
+        }
+
+        if (resumed > 0)
+            Log.Info("Suspend", $"Thawed {resumed} process(es) of '{displayName}' on request; it will not be frozen again this session.");
+        if (failed.Count > 0)
+            Log.Error("Suspend", $"FAILED to thaw: {string.Join(", ", failed)}. Still frozen and will look hung - resume with Process Explorer, or end and restart.");
+    }
+
+    /// <summary>Re-freezes an app the user thawed, dropping the override so pressure governs it
+    /// again. Freezes immediately if it is opted in, matching the toggle's "on means frozen now"
+    /// reading rather than "frozen the next time memory gets tight".</summary>
+    public void RefreezeApp(string displayName)
+    {
+        lock (_lock) _userThawed.Remove(displayName);
+        SuspendConfiguredApps(onlyDisplayName: displayName);
+    }
+
+    /// <summary>
+    /// Brings what is frozen back in line with the config, for when the opted-in set changes
+    /// mid-session.
+    ///
+    /// Unticking "freeze this app" used to have no effect until the session ended, because the
+    /// opted-in list was only ever read at the moment of freezing - the app stayed frozen with no
+    /// way to get it back. Anything still frozen that is no longer opted in gets thawed here.
+    /// </summary>
+    public void ReconcileWithConfig()
+    {
+        var optedIn = _config.ManagedApps.Where(a => a.SuspendDuringSession)
+            .Select(a => a.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        List<string> noLongerWanted;
+        lock (_lock)
+        {
+            noLongerWanted = _suspended.Values.Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(name => !optedIn.Contains(name)).ToList();
+        }
+
+        foreach (var name in noLongerWanted)
+        {
+            Log.Info("Suspend", $"'{name}' is no longer set to freeze - thawing it now.");
+            ThawApp(name);
+            // Not left in _userThawed: the override is for a deliberate mid-session thaw. Re-ticking
+            // the box should let pressure freeze it again without needing the toggle as well.
+            lock (_lock) _userThawed.Remove(name);
+        }
+    }
+
+    /// <summary>True if any process of this app is frozen right now.</summary>
+    public bool IsFrozen(string displayName)
+    {
+        lock (_lock)
+            return _suspended.Values.Any(n => string.Equals(n, displayName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>True if the user thawed this app by hand this session, so pressure will leave it
+    /// alone until the session ends.</summary>
+    public bool IsThawedByUser(string displayName)
+    {
+        lock (_lock) return _userThawed.Contains(displayName);
     }
 
     /// <summary>Which apps are frozen right now, for the status view.</summary>
