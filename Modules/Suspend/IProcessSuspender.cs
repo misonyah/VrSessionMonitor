@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using VrSessionMonitor.Logging;
 
@@ -20,6 +20,11 @@ public interface IProcessSuspender
     bool TrimWorkingSet(int processId);
 
     bool IsRunning(int processId);
+
+    /// <summary>Physical RAM this process currently holds, or 0 if it cannot be read. Used to
+    /// freeze the biggest holders first, so the fewest applications are disturbed to recover a
+    /// given amount of memory.</summary>
+    long GetWorkingSetBytes(int processId);
 }
 
 public sealed class ProcessSuspender : IProcessSuspender
@@ -85,6 +90,14 @@ public sealed class ProcessSuspender : IProcessSuspender
         do { previous = ResumeThread(handle); } while (previous > 1 && ++guard < 64);
         return previous >= 0;
     });
+
+    public long GetWorkingSetBytes(int processId)
+    {
+        // WorkingSet64 rather than a native QueryWorkingSet call: this only has to rank processes
+        // against each other, and a process exiting between enumeration and here is ordinary.
+        try { using var p = System.Diagnostics.Process.GetProcessById(processId); return p.WorkingSet64; }
+        catch { return 0; }
+    }
 
     public bool TrimWorkingSet(int processId)
     {

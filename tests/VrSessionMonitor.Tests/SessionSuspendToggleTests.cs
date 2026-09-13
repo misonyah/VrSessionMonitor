@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Modules.Suspend;
@@ -31,6 +31,12 @@ public class SessionSuspendToggleTests
         public bool Resume(int processId) { Resumed.Add(processId); return true; }
         public bool TrimWorkingSet(int processId) => true;
         public bool IsRunning(int processId) => Alive.Contains(processId);
+
+        /// <summary>Per-PID sizes for the biggest-first ordering; anything unset reads as 1 GB so
+        /// existing cases have a measurable working set without caring about the number.</summary>
+        public readonly Dictionary<int, long> WorkingSet = new();
+        public long GetWorkingSetBytes(int processId) =>
+            WorkingSet.TryGetValue(processId, out var b) ? b : 1024L * 1024 * 1024;
     }
 
     private static ManagedApp App(string id, string processName, bool suspend = true) =>

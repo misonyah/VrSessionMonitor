@@ -42,6 +42,11 @@ public sealed class SessionSuspendService : IDisposable
     /// Session-scoped on purpose: cleared when a session starts and when one ends, so a decision
     /// made to get at an editor mid-session never silently persists into the next session.</summary>
     private readonly HashSet<string> _userThawed = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Physical RAM held by the processes we froze, measured just before freezing each.
+    /// This is the amount our own freezing pushed out of RAM, which is what makes the pagefile
+    /// look alarming afterwards - see FrozenWorkingSetGb.</summary>
+    private long _frozenBytes;
     private readonly object _lock = new();
 
     private System.Threading.Timer? _watchTimer;
@@ -174,8 +179,63 @@ public sealed class SessionSuspendService : IDisposable
             return;
         }
 
-        Log.Info("Suspend", $"Sustained memory pressure: {freeGb:0.#} GB available with {(faults < 0 ? "an unknown fault rate" : $"{faults:0} hard faults/sec")}, over {consecutive} consecutive checks — freezing the opted-in apps to release theirs.");
-        SuspendConfiguredApps();
+        Log.Info("Suspend", $"Sustained memory pressure: {freeGb:0.#} GB available with {(faults < 0 ? "an unknown fault rate" : $"{faults:0} hard faults/sec")}, over {consecutive} consecutive checks — freezing opted-in apps until there is enough free.");
+        SuspendUntilEnoughFree();
+    }
+
+    /// <summary>
+    /// Freezes opted-in apps one at a time, biggest holder of RAM first, and stops as soon as free
+    /// memory is back above the threshold.
+    ///
+    /// Freezing the whole opted-in list at once takes far more than the situation calls for - one
+    /// low reading froze 52 processes on 2026-09-08 - when the point is only to get back over the
+    /// line. Biggest first means the fewest applications get disturbed to recover a given amount,
+    /// and since TrimWorkingSet releases each one's pages immediately, re-reading free memory after
+    /// each app is a real measurement rather than a guess at what was recovered.
+    ///
+    /// Order is computed once up front rather than re-measured per app: the working sets of
+    /// processes we have not touched do not change meaningfully over the second or two this takes,
+    /// and re-sorting would mean re-reading every candidate for each app frozen.
+    /// </summary>
+    public void SuspendUntilEnoughFree()
+    {
+        var candidates = _config.ManagedApps.Where(a => a.SuspendDuringSession)
+            .Where(a => !string.IsNullOrWhiteSpace(a.ProcessName))
+            .Where(a => { lock (_lock) return !_userThawed.Contains(a.DisplayName); })
+            .Select(a => (App: a, Bytes: _suspender.GetProcessIds(a.ProcessName)
+                .Where(pid => { lock (_lock) return !_suspended.ContainsKey(pid); })
+                .Sum(_suspender.GetWorkingSetBytes)))
+            .Where(x => x.Bytes > 0)
+            .OrderByDescending(x => x.Bytes)
+            .ToList();
+
+        if (candidates.Count == 0)
+        {
+            // Nothing measurable to free - fall back to the unconditional sweep rather than
+            // silently doing nothing, since a process whose working set could not be read is still
+            // worth freezing under real pressure.
+            SuspendConfiguredApps();
+            return;
+        }
+
+        var threshold = _config.MemoryPressure.FreeMemoryThresholdGb;
+        var frozenApps = 0;
+
+        foreach (var (app, bytes) in candidates)
+        {
+            SuspendConfiguredApps(onlyDisplayName: app.DisplayName);
+            frozenApps++;
+
+            var free = _freeMemoryGb();
+            if (free < 0) break; // unreadable now; stop rather than freeze everything blind
+            if (free >= threshold)
+            {
+                Log.Info("Suspend", $"{free:0.#} GB free after freezing {frozenApps} app(s) - above the {threshold:0.#} GB threshold, leaving the rest running.");
+                return;
+            }
+        }
+
+        Log.Info("Suspend", $"Froze all {frozenApps} opted-in app(s); free memory is still under the {threshold:0.#} GB threshold.");
     }
 
     /// <param name="onlyDisplayName">Restricts the sweep to one app, for the status view's
@@ -214,13 +274,21 @@ public sealed class SessionSuspendService : IDisposable
                     continue;
                 }
 
+                // Read before suspending: once trimmed, the working set no longer reflects what
+                // this process was holding, and that figure is what FrozenWorkingSetGb discounts.
+                var heldBytes = _suspender.GetWorkingSetBytes(pid);
+
                 if (!_suspender.Suspend(pid))
                 {
                     Log.Debug("Suspend", $"Could not freeze {app.DisplayName} (PID {pid}) — probably elevated above this app.");
                     continue;
                 }
 
-                lock (_lock) _suspended[pid] = app.DisplayName;
+                lock (_lock)
+                {
+                    _suspended[pid] = app.DisplayName;
+                    _frozenBytes += heldBytes;
+                }
                 frozen++;
 
                 // Only after a successful suspend: trimming a running process just makes it fault
@@ -239,6 +307,7 @@ public sealed class SessionSuspendService : IDisposable
         lock (_lock)
         {
             _userThawed.Clear(); // the session is over; next one starts from the config again
+            _frozenBytes = 0;
             if (_suspended.Count == 0) return;
             toResume = _suspended.ToList();
             _suspended.Clear();
@@ -280,6 +349,10 @@ public sealed class SessionSuspendService : IDisposable
             pids = _suspended.Where(kv => string.Equals(kv.Value, displayName, StringComparison.OrdinalIgnoreCase))
                 .Select(kv => kv.Key).ToList();
             foreach (var pid in pids) _suspended.Remove(pid);
+            // Approximate on purpose: once thawed, this app faults its own pages back in, so the
+            // remaining tally should no longer speak for it. Zeroing when the last one is thawed
+            // keeps it from drifting upward across a session of toggling.
+            if (_suspended.Count == 0) _frozenBytes = 0;
         }
 
         if (pids.Count == 0)
@@ -363,6 +436,19 @@ public sealed class SessionSuspendService : IDisposable
     }
 
     public int FrozenCount { get { lock (_lock) return _suspended.Count; } }
+
+    /// <summary>
+    /// RAM held by the frozen processes at the moment they were frozen, in GB.
+    ///
+    /// Freezing pushes exactly this much out of physical memory and into the pagefile, which makes
+    /// the "pushed to the pagefile" health warning climb precisely because the fix worked. Those
+    /// pages cost nothing now - a frozen process never faults them back in - so the warning
+    /// discounts this figure rather than reporting paging that cannot hurt the session.
+    /// </summary>
+    public double FrozenWorkingSetGb
+    {
+        get { lock (_lock) return _frozenBytes / (double)(1024L * 1024 * 1024); }
+    }
 
     /// <summary>Stops the watch. Resuming frozen processes is the caller's job on shutdown, since
     /// it must happen whether or not this was ever disposed cleanly.</summary>

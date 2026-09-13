@@ -120,7 +120,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             var info = GC.GetGCMemoryInfo();
             var freeGb = (info.TotalAvailableMemoryBytes - info.MemoryLoadBytes) / (double)(1024 * 1024 * 1024);
-            if (SessionHealthCheck.CheckMemory(freeGb, PagefileUsageGb()) is SessionWarning m) list.Add(m);
+            if (SessionHealthCheck.CheckMemory(freeGb, PagefileUsageGb(), _sessionSuspend.FrozenWorkingSetGb) is SessionWarning m) list.Add(m);
         }
         catch (Exception ex) { Log.Debug("Health", $"Memory check failed: {ex.Message}"); }
 

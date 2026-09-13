@@ -1,4 +1,4 @@
-using VrSessionMonitor.Modules;
+﻿using VrSessionMonitor.Modules;
 using Xunit;
 
 namespace VrSessionMonitor.Tests;
@@ -69,5 +69,39 @@ public class SessionHealthCheckTests
     {
         Assert.NotNull(SessionHealthCheck.CheckAvatarLimits(5, 10));   // shows everything
         Assert.NotNull(SessionHealthCheck.CheckAvatarLimits(2, 31));   // too many at once
+    }
+
+    [Fact]
+    public void Pages_we_froze_ourselves_are_not_reported_as_paging()
+    {
+        // The exact shape of the complaint: freezing pushes those apps' RAM to the pagefile, so the
+        // figure climbs precisely because the fix worked - while a frozen process never faults its
+        // pages back in, so they cost the session nothing.
+        Assert.Null(SessionHealthCheck.CheckMemory(freeGb: 22, pagefileGb: 18, frozenGb: 12));
+    }
+
+    [Fact]
+    public void Paging_by_apps_still_running_is_still_reported()
+    {
+        // Only part of the pagefile is ours; the rest is live paging and still worth saying.
+        var w = SessionHealthCheck.CheckMemory(freeGb: 22, pagefileGb: 30, frozenGb: 12);
+        Assert.NotNull(w);
+        Assert.Contains("18", w!.Summary);
+        Assert.Contains("still running", w.Summary);
+    }
+
+    [Fact]
+    public void A_frozen_figure_never_drives_the_number_below_zero()
+    {
+        Assert.Null(SessionHealthCheck.CheckMemory(freeGb: 22, pagefileGb: 4, frozenGb: 40));
+    }
+
+    [Fact]
+    public void Low_free_memory_still_warns_regardless_of_the_discount()
+    {
+        // Discounting is only about the pagefile half; genuinely tight RAM is unaffected.
+        var w = SessionHealthCheck.CheckMemory(freeGb: 3.2, pagefileGb: 20, frozenGb: 20);
+        Assert.NotNull(w);
+        Assert.Contains("3.2 GB of RAM free", w!.Summary);
     }
 }

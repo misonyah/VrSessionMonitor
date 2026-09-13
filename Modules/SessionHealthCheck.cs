@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Modules;
@@ -34,14 +34,28 @@ public static class SessionHealthCheck
     /// <summary>Above this many simultaneous avatars, main-thread cost dominates in a busy world.</summary>
     public const int HighAvatarCap = 20;
 
-    /// <summary>Pure so it can be tested without touching the machine.</summary>
-    public static SessionWarning? CheckMemory(double freeGb, double pagefileGb)
+    /// <summary>
+    /// Pure so it can be tested without touching the machine.
+    /// </summary>
+    /// <param name="frozenGb">RAM held by processes this app has frozen. Freezing pushes exactly
+    /// that much to the pagefile, so counting it would make the warning climb because the fix
+    /// worked - and those pages cost nothing, since a frozen process never faults them back in.
+    /// Discounted from the pagefile figure rather than hiding the warning outright, so genuine
+    /// paging by everything still running is still reported.</param>
+    public static SessionWarning? CheckMemory(double freeGb, double pagefileGb, double frozenGb = 0)
     {
-        if (freeGb >= LowMemoryGb && pagefileGb <= HighPagefileGb) return null;
+        var activePagefileGb = Math.Max(0, pagefileGb - Math.Max(0, frozenGb));
+        if (freeGb >= LowMemoryGb && activePagefileGb <= HighPagefileGb) return null;
 
         var parts = new List<string>();
         if (freeGb < LowMemoryGb) parts.Add($"only {freeGb:0.#} GB of RAM free");
-        if (pagefileGb > HighPagefileGb) parts.Add($"{pagefileGb:0.#} GB pushed to the pagefile");
+        if (activePagefileGb > HighPagefileGb)
+        {
+            parts.Add(frozenGb > 0
+                ? $"{activePagefileGb:0.#} GB pushed to the pagefile by apps still running"
+                : $"{activePagefileGb:0.#} GB pushed to the pagefile");
+        }
+        if (parts.Count == 0) return null;
 
         return new SessionWarning(
             $"Memory is tight — {string.Join(", ", parts)}",
