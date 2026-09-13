@@ -30,6 +30,9 @@ public sealed class SessionAudioService : IDisposable
     private DateTime _pendingSince;
     private System.Threading.Timer? _holdTimer;
 
+    /// <summary>Devices THIS service muted, so restoring never unmutes one the user silenced.</summary>
+    private readonly Dictionary<string, string> _mutedByUs = new(StringComparer.OrdinalIgnoreCase);
+
     public SessionAudioService(MonitorConfig config, IAudioDeviceController controller, Func<DateTime>? clock = null)
     {
         _config = config;
@@ -43,7 +46,11 @@ public sealed class SessionAudioService : IDisposable
 
     /// <summary>A session ending always means away, with no hold — the headset is off for certain
     /// and there is nothing to debounce.</summary>
-    public void OnSessionEnded() => ApplyContext(ListeningContext.Away);
+    public void OnSessionEnded()
+    {
+        ApplyContext(ListeningContext.Away);
+        RestoreMutedDevices(); // belt and braces: ApplyContext returns early when disabled
+    }
 
     private void RequestContext(ListeningContext context)
     {
@@ -114,18 +121,98 @@ public sealed class SessionAudioService : IDisposable
                 _config.Audio.VrDeviceId, _config.Audio.AwayDeviceId,
                 _config.Audio.NeverDefaultDeviceIds, current);
 
-            if (wanted is null) return; // already right, or nothing safe to switch to
+            if (wanted is not null)
+            {
+                if (_controller.SetDefaultPlaybackDevice(wanted.Id))
+                    Log.Info("Audio", $"{(context == ListeningContext.InHeadset ? "Headset on" : "Headset off")} — default playback set to {wanted.FriendlyName}.");
+                else
+                    Log.Warn("Audio", $"Could not switch playback to {wanted.FriendlyName}.");
+            }
 
-            if (_controller.SetDefaultPlaybackDevice(wanted.Id))
-                Log.Info("Audio", $"{(context == ListeningContext.InHeadset ? "Headset on" : "Headset off")} — default playback set to {wanted.FriendlyName}.");
-            else
-                Log.Warn("Audio", $"Could not switch playback to {wanted.FriendlyName}.");
+            // Volume and room-silencing apply to whichever device is now in use, so they run even
+            // when the default was already correct and nothing was switched.
+            var inUse = wanted ?? current;
+            if (context == ListeningContext.InHeadset) ApplyHeadsetAudio(inUse, available);
+            else RestoreMutedDevices();
         }
         catch (Exception ex)
         {
             // Audio switching is a convenience; it must never take anything else down.
             Log.Debug("Audio", $"Applying the audio context threw: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Makes the headset device clearly audible, and optionally silences the rest of the room.
+    ///
+    /// The volume change sets the LEVEL only. Mute is separate state that the user may have set
+    /// deliberately, and raising the level of a muted device is silent and harmless, whereas
+    /// unmuting one that was deliberately silenced is not.
+    /// </summary>
+    private void ApplyHeadsetAudio(AudioDevice? headset, IReadOnlyList<AudioDevice> available)
+    {
+        if (headset is not null && _config.Audio.SetVrDeviceToFullVolume)
+        {
+            var wanted = Math.Clamp(_config.Audio.VrDeviceVolumePercent, 0, 100) / 100f;
+            var current = _controller.GetVolumeScalar(headset.Id);
+
+            // Only write when it differs: a no-op write still raises a system volume-change
+            // notification, which other software reacts to.
+            if (current < 0 || Math.Abs(current - wanted) > 0.01f)
+            {
+                if (_controller.SetVolumeScalar(headset.Id, wanted))
+                    Log.Info("Audio", $"{headset.FriendlyName} volume set to {wanted * 100:0}% (mute left as it was).");
+                else
+                    Log.Debug("Audio", $"Could not set the volume of {headset.FriendlyName}.");
+            }
+        }
+
+        if (!_config.Audio.MuteOtherDevicesInVr) return;
+
+        foreach (var device in available)
+        {
+            if (headset is not null && string.Equals(device.Id, headset.Id, StringComparison.OrdinalIgnoreCase)) continue;
+
+            var wasMuted = _controller.GetMute(device.Id);
+            if (wasMuted is null || wasMuted.Value) continue; // unreadable, or already silent
+
+            if (!_controller.SetMute(device.Id, true)) continue;
+
+            // Remember only what WE muted, so restoring never unmutes something the user silenced
+            // themselves.
+            lock (_lock) _mutedByUs[device.Id] = device.FriendlyName;
+            Log.Info("Audio", $"Muted {device.FriendlyName} for the session so audio stays in the headset.");
+        }
+    }
+
+    /// <summary>
+    /// Unmutes only the devices this service muted.
+    ///
+    /// Runs on the way out of the headset and on shutdown. Leaving speakers silent with nothing
+    /// left running to explain why is the same failure as leaving a process frozen, and is far
+    /// more confusing than the problem it was solving.
+    /// </summary>
+    public void RestoreMutedDevices()
+    {
+        List<KeyValuePair<string, string>> toRestore;
+        lock (_lock)
+        {
+            if (_mutedByUs.Count == 0) return;
+            toRestore = _mutedByUs.ToList();
+            _mutedByUs.Clear();
+        }
+
+        var restored = 0;
+        var failed = new List<string>();
+        foreach (var (id, name) in toRestore)
+        {
+            if (_controller.SetMute(id, false)) restored++;
+            else failed.Add(name);
+        }
+
+        if (restored > 0) Log.Info("Audio", $"Unmuted {restored} device(s) now the headset is off.");
+        if (failed.Count > 0)
+            Log.Error("Audio", $"FAILED to unmute: {string.Join(", ", failed)}. These are still silent — unmute them in Windows' sound settings.");
     }
 
     /// <summary>Re-evaluates against the current context — for device arrival/removal.</summary>
@@ -144,6 +231,8 @@ public sealed class SessionAudioService : IDisposable
 
     public void Dispose()
     {
+        // Unmute before anything else: there is nothing left running that could do it afterwards.
+        try { RestoreMutedDevices(); } catch { /* never block shutdown */ }
         lock (_lock) StopTimerLocked();
     }
 }

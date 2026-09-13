@@ -796,6 +796,30 @@ public sealed class AudioConfig
     /// headset is briefly moved. 0 switches immediately.
     /// </summary>
     public int SwitchDelaySeconds { get; set; } = 3;
+
+    /// <summary>
+    /// Raise the headset device to full volume when switching to it, so it is clearly audible.
+    ///
+    /// Sets the LEVEL only and never touches the mute flag. Those are separate pieces of state: a
+    /// device muted on purpose has to stay muted when its level changes. Raising the level of a
+    /// muted device is silent and harmless; unmuting one that was deliberately silenced is not.
+    /// </summary>
+    public bool SetVrDeviceToFullVolume { get; set; } = true;
+
+    /// <summary>The level to use, 0-100. Rarely worth changing from 100, but a device with a hot
+    /// amplifier might want less.</summary>
+    public int VrDeviceVolumePercent { get; set; } = 100;
+
+    /// <summary>
+    /// Mute every OTHER playback device while in the headset, so nothing leaks into the room.
+    ///
+    /// Off by default, because it changes state the user can see and did not set. Switching the
+    /// default device already sends ordinary applications to the headset; this only matters for
+    /// software that targets a specific endpoint regardless of the default. Whatever is muted is
+    /// restored when the session ends, and on shutdown, so speakers are never left silent with no
+    /// explanation.
+    /// </summary>
+    public bool MuteOtherDevicesInVr { get; set; }
 }
 
 /// <summary>

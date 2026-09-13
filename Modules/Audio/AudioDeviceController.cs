@@ -3,8 +3,8 @@ using VrSessionMonitor.Logging;
 
 namespace VrSessionMonitor.Modules.Audio;
 
-/// <summary>Enumerates playback endpoints and sets the system default. An interface so the policy
-/// can be tested without touching real audio hardware.</summary>
+/// <summary>Enumerates playback endpoints, sets the system default, and reads/writes their volume.
+/// An interface so the policy can be tested without touching real audio hardware.</summary>
 public interface IAudioDeviceController
 {
     IReadOnlyList<AudioDevice> GetPlaybackDevices();
@@ -12,6 +12,22 @@ public interface IAudioDeviceController
 
     /// <summary>Returns false when the change was refused; never throws.</summary>
     bool SetDefaultPlaybackDevice(string deviceId);
+
+    /// <summary>Master volume as 0.0-1.0, or -1 when it could not be read.</summary>
+    float GetVolumeScalar(string deviceId);
+
+    /// <summary>
+    /// Sets master volume as 0.0-1.0. Deliberately does NOT touch the mute flag: volume and mute
+    /// are separate pieces of state, and a device muted on purpose must stay muted when its level
+    /// is raised. Raising the level of a muted device is silent and harmless; unmuting one that
+    /// was deliberately silenced is not.
+    /// </summary>
+    bool SetVolumeScalar(string deviceId, float scalar);
+
+    /// <summary>Mute flag, or null when it could not be read.</summary>
+    bool? GetMute(string deviceId);
+
+    bool SetMute(string deviceId, bool mute);
 }
 
 /// <summary>
@@ -173,6 +189,111 @@ public sealed class AudioDeviceController : IAudioDeviceController
         {
             // The interface is undocumented; a Windows change that moves or removes it lands here.
             Log.Warn("Audio", $"Could not set the default playback device: {ex.Message}. Automatic audio switching is unavailable on this build of Windows.");
+            return false;
+        }
+    }
+
+    // --- volume -------------------------------------------------------------
+    // IAudioEndpointVolume, unlike IPolicyConfig above, is a documented and supported interface.
+    // The event-context GUID is passed as empty: it exists so an application can recognise its own
+    // changes coming back through a notification callback, and nothing here subscribes to those.
+
+    [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioEndpointVolume
+    {
+        int RegisterControlChangeNotify(IntPtr notify);
+        int UnregisterControlChangeNotify(IntPtr notify);
+        int GetChannelCount(out uint count);
+        int SetMasterVolumeLevel(float levelDb, ref Guid eventContext);
+        int SetMasterVolumeLevelScalar(float level, ref Guid eventContext);
+        int GetMasterVolumeLevel(out float levelDb);
+        int GetMasterVolumeLevelScalar(out float level);
+        int SetChannelVolumeLevel(uint channel, float levelDb, ref Guid eventContext);
+        int SetChannelVolumeLevelScalar(uint channel, float level, ref Guid eventContext);
+        int GetChannelVolumeLevel(uint channel, out float levelDb);
+        int GetChannelVolumeLevelScalar(uint channel, out float level);
+        int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid eventContext);
+        int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+    }
+
+    private const int CLSCTX_ALL = 23;
+
+    /// <summary>Resolves an endpoint's volume control, or null when the device is gone or refuses.</summary>
+    private static IAudioEndpointVolume? OpenVolume(string deviceId)
+    {
+        try
+        {
+            var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+            if (enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, out var collection) != 0) return null;
+            if (collection.GetCount(out var count) != 0) return null;
+
+            for (var i = 0; i < count; i++)
+            {
+                if (collection.Item(i, out var device) != 0) continue;
+                if (device.GetId(out var id) != 0) continue;
+                if (!string.Equals(id, deviceId, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var iid = typeof(IAudioEndpointVolume).GUID;
+                if (device.Activate(ref iid, CLSCTX_ALL, IntPtr.Zero, out var iface) != 0) return null;
+                return iface as IAudioEndpointVolume;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("Audio", $"Could not open volume control for {deviceId}: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    public float GetVolumeScalar(string deviceId)
+    {
+        var volume = OpenVolume(deviceId);
+        if (volume is null) return -1;
+
+        try { return volume.GetMasterVolumeLevelScalar(out var level) == 0 ? level : -1; }
+        catch { return -1; }
+    }
+
+    public bool SetVolumeScalar(string deviceId, float scalar)
+    {
+        var volume = OpenVolume(deviceId);
+        if (volume is null) return false;
+
+        try
+        {
+            var context = Guid.Empty;
+            return volume.SetMasterVolumeLevelScalar(Math.Clamp(scalar, 0f, 1f), ref context) == 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("Audio", $"Could not set the volume of {deviceId}: {ex.Message}");
+            return false;
+        }
+    }
+
+    public bool? GetMute(string deviceId)
+    {
+        var volume = OpenVolume(deviceId);
+        if (volume is null) return null;
+
+        try { return volume.GetMute(out var muted) == 0 ? muted : null; }
+        catch { return null; }
+    }
+
+    public bool SetMute(string deviceId, bool mute)
+    {
+        var volume = OpenVolume(deviceId);
+        if (volume is null) return false;
+
+        try
+        {
+            var context = Guid.Empty;
+            return volume.SetMute(mute, ref context) == 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("Audio", $"Could not set the mute state of {deviceId}: {ex.Message}");
             return false;
         }
     }
