@@ -83,7 +83,7 @@ public sealed class SettingsForm : Form
     private bool _populatingAudioBlockList;
     private int _statusRowCount;
     private readonly Dictionary<Label, PictureBox> _rowDots = new();
-    private readonly DropdownWheelGuard _wheelGuard = new();
+    private readonly ScrollWheelValueGuard _wheelGuard = new();
     private FlowLayoutPanel? _bluetoothStatusPanel;
     private FlowLayoutPanel? _frozenAppsPanel;
     private string _frozenRowSignature = "";
@@ -136,8 +136,8 @@ public sealed class SettingsForm : Form
         _optimizations = optimizations;
         _managedAppService = managedAppService;
 
-        // Scrolling the page with the pointer over a dropdown must not change its value - see
-        // DropdownWheelGuard. Registered for this form's lifetime and removed on close, rather
+        // Scrolling the page must not edit whatever the pointer happens to be over - see
+        // ScrollWheelValueGuard. Registered for this form's lifetime and removed on close, rather
         // than left installed application-wide for a form that is usually not open.
         Application.AddMessageFilter(_wheelGuard);
         FormClosed += (_, _) => Application.RemoveMessageFilter(_wheelGuard);
