@@ -46,7 +46,7 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
         _launcher = launcher ?? new ProcessLauncher();
 
         _machine = new PresenceLifecycleMachine(
-            presenceSignal: () => _headset.IsOnline || _viveTrackerPresent(),
+            presenceSignal: () => HeadsetWantsVirtualHere(_config, _headset) || _viveTrackerPresent(),
             isRunning: () => _launcher.IsRunning("vhui64") || _launcher.IsRunning("sr_runtime"),
             ensureRunning: EnsureBothRunningAsync,
             shutdown: () =>
@@ -64,6 +64,13 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
             runningTick: EnsureBothRunningAsync,
             onTransition: (from, to) => Log.Info("VhSranipalLifecycle", $"Presence state {from} -> {to}."));
     }
+
+    /// <summary>The headset half of this manager's presence signal: only a headset whose profile has
+    /// the VirtualHere part (the Quest, where the Vive face tracker hangs off its USB-C) counts. A
+    /// Steam Frame being online must not bring up vhui64/sr_runtime (and SRanipal's UAC prompt).</summary>
+    internal static bool HeadsetWantsVirtualHere(MonitorConfig config, IHeadsetMonitor headset) =>
+        headset.IsOnline &&
+        (HeadsetProfiles.Find(config, headset.ActiveHeadsetId)?.Part(HeadsetPartNames.VirtualHere) ?? true);
 
     /// <summary>Current presence-machine state. Internal, for test observability only.</summary>
     internal PresenceState State => _machine.State;

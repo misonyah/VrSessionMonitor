@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Linq;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
+using VrSessionMonitor.Modules.Frame;
 using VrSessionMonitor.Modules;
 using VrSessionMonitor.Optimizations;
 #if INCLUDE_HOME_ASSISTANT
@@ -42,6 +43,10 @@ public sealed class SettingsForm : Form
     private readonly SlimeVrLifecycleManager _slimeLifecycle;
     private readonly FirmwareNotificationListener _firmwareNotify;
     private readonly SessionOrchestrator _orchestrator;
+    private readonly FrameLinkMonitor _frameLink;
+    private Label _frameLinkLabel = null!;
+    private Label _steamVrAutostartLabel = null!;
+    private Button _steamVrAutostartFixButton = null!;
     private readonly OptimizationsManager _optimizations;
     private readonly ManagedAppWindowService _managedAppService;
 
@@ -116,8 +121,10 @@ public sealed class SettingsForm : Form
         FirmwareNotificationListener firmwareNotify,
         SessionOrchestrator orchestrator,
         OptimizationsManager optimizations,
-        ManagedAppWindowService managedAppService)
+        ManagedAppWindowService managedAppService,
+        FrameLinkMonitor frameLink)
     {
+        _frameLink = frameLink;
         _owner = owner;
         _config = config;
         _configPath = configPath;
@@ -253,7 +260,8 @@ public sealed class SettingsForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));            // action
 
         _sessionStatusLabel = AddStatusRow(layout, "Status");
-        _headsetLabel = AddStatusRow(layout, "Headset");
+        _headsetLabel = AddStatusRow(layout, "Headset", BuildHeadsetSelector());
+        _frameLinkLabel = AddStatusRow(layout, "Frame link");
         _trackerLabel = AddStatusRow(layout, "Trackers");
         _peripheralLabel = AddStatusRow(layout, "Eye/Face tracking");
 
@@ -270,6 +278,10 @@ public sealed class SettingsForm : Form
         _firmwareLabel = AddStatusRow(layout, "Firmware self-heal");
         _heartrateLabel = AddStatusRow(layout, "Heart rate");
         _warningLabel = AddStatusRow(layout, "Warnings");
+
+        _steamVrAutostartFixButton = new Button { Text = "Fix", AutoSize = true, Margin = new Padding(6, 3, 3, 3), Visible = false };
+        _steamVrAutostartFixButton.Click += (_, _) => FixSteamVrAutostarts();
+        _steamVrAutostartLabel = AddStatusRow(layout, "SteamVR auto-start", _steamVrAutostartFixButton);
 
         // One row per tracked Bluetooth device, each showing the icons of the apps it starts, so
         // "this device brings up these programs" is visible rather than something to remember.
@@ -864,8 +876,13 @@ public sealed class SettingsForm : Form
     /// — Label/Button controls don't share ToolStripDropDownMenu's handle-creation bug.</summary>
     public void RefreshStatus()
     {
-        _headsetLabel.Text = _headset.IsOnline ? "online" : "offline";
+        var active = HeadsetProfiles.Find(_config, _headset.ActiveHeadsetId);
+        _headsetLabel.Text = HeadsetStatusText();
         SetRowStatus(_headsetLabel, _headset.IsOnline ? StatusLevel.Good : StatusLevel.Unknown);
+
+        _frameLinkLabel.Text = _frameLink.StatusText.Length > 0 ? _frameLink.StatusText : "—";
+        SetRowStatus(_frameLinkLabel, _frameLink.StatusText.Length == 0 ? StatusLevel.Unknown
+            : _frameLink.Healthy ? StatusLevel.Good : StatusLevel.Warning);
 
         _trackerLabel.Text = _trackers.Summarize();
         SetRowStatus(_trackerLabel, _trackers.OnlineCount switch
@@ -883,16 +900,22 @@ public sealed class SettingsForm : Form
         SetRowStatus(_heartrateLabel, _owner.HeartrateStatusLevel());
 
         RefreshWarnings();
+        RefreshSteamVrAutostarts();
         RefreshBluetoothStatusRows();
         RefreshFrozenAppRows();
 
         var p = _faceTracking.Current;
         var cams = _eyeTracking.Current;
         var parts = new List<string>();
-        if (!p.VirtualHereRunning) parts.Add("VirtualHere down");
-        if (!p.SRanipalRunning) parts.Add("SRanipal down");
-        else if (!p.SRanipalServiceRunning) parts.Add("SRanipalService down (zombie sr_runtime?)");
-        if (p.VirtualHereRunning && !p.ViveCameraDevicePresent) parts.Add("Vive tracker not attached");
+        // The VirtualHere -> SRanipal -> Vive tracker chain only exists for headsets that have it
+        // (the Quest); on the Frame those "down" lines would be permanent noise.
+        if (active?.Part(HeadsetPartNames.VirtualHere) ?? true)
+        {
+            if (!p.VirtualHereRunning) parts.Add("VirtualHere down");
+            if (!p.SRanipalRunning) parts.Add("SRanipal down");
+            else if (!p.SRanipalServiceRunning) parts.Add("SRanipalService down (zombie sr_runtime?)");
+            if (p.VirtualHereRunning && !p.ViveCameraDevicePresent) parts.Add("Vive tracker not attached");
+        }
         if (!p.VrcFaceTrackingRunning) parts.Add("VRCFaceTracking down");
         else if (p.ModuleProcessCount == 0) parts.Add("no tracking modules loaded");
         else if (p.SRanipalRunning && p.ViveCameraDevicePresent && !p.ModuleConnectedToSRanipal) parts.Add("face module not connected to SRanipal");
@@ -957,9 +980,87 @@ public sealed class SettingsForm : Form
     }
 
     /// <summary>Fires from HeadsetMonitor's own background polling loop, not the UI thread.</summary>
+    /// <summary>Apps SteamVR itself starts on every launch ("startup overlay apps"). They bypass the
+    /// per-headset logic (e.g. the VIVE eye-calibration dashboard drags SRanipal and its UAC prompt into
+    /// a Steam Frame session), so VrSessionMonitor should own all auto-starts.</summary>
+    private void RefreshSteamVrAutostarts()
+    {
+        var dir = SteamVrAutolaunchStore.DefaultDir();
+        if (dir is null)
+        {
+            _steamVrAutostartLabel.Text = "SteamVR config not found";
+            SetRowStatus(_steamVrAutostartLabel, StatusLevel.Unknown);
+            _steamVrAutostartFixButton.Visible = false;
+            return;
+        }
+
+        var on = new SteamVrAutolaunchStore(dir).ReadAll().Where(e => e.Autolaunch).ToList();
+        _steamVrAutostartFixButton.Visible = on.Count > 0;
+        if (on.Count == 0)
+        {
+            _steamVrAutostartLabel.Text = "none — VrSessionMonitor starts everything";
+            SetRowStatus(_steamVrAutostartLabel, StatusLevel.Good);
+            return;
+        }
+
+        var apps = _config.ManagedApps.ToArray();
+        var names = on.Select(e => apps.FirstOrDefault(a => a.SteamVrAppKeys.Contains(e.AppKey, StringComparer.OrdinalIgnoreCase))?.DisplayName ?? e.AppKey)
+                      .Distinct();
+        _steamVrAutostartLabel.Text = $"starts itself: {string.Join(", ", names)}";
+        SetRowStatus(_steamVrAutostartLabel, StatusLevel.Warning);
+    }
+
+    private void FixSteamVrAutostarts()
+    {
+        if (_steamVr.Current.VrServerRunning)
+        {
+            MessageBox.Show(this, "Close SteamVR first — it rewrites these settings when it exits, which would undo the fix.",
+                "SteamVR auto-start", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var dir = SteamVrAutolaunchStore.DefaultDir();
+        if (dir is null) return;
+        var store = new SteamVrAutolaunchStore(dir);
+        var errors = new List<string>();
+        foreach (var e in store.ReadAll().Where(e => e.Autolaunch))
+            if (!store.TryDisable(e.AppKey, out var err)) errors.Add(err);
+
+        RefreshSteamVrAutostarts();
+        if (errors.Count > 0)
+            MessageBox.Show(this, "Some could not be changed:\n" + string.Join("\n", errors), "SteamVR auto-start",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    private string HeadsetStatusText()
+    {
+        var active = HeadsetProfiles.Find(_config, _headset.ActiveHeadsetId);
+        var mode = string.IsNullOrWhiteSpace(_config.PinnedHeadset) ? "auto" : "pinned";
+        return _headset.IsOnline ? $"{active?.DisplayName ?? "online"} ({mode})" : $"offline ({mode})";
+    }
+
+    /// <summary>Auto / one entry per profile. Picking a profile pins detection to it (only that
+    /// headset is pinged); Auto lets whichever headset answers be the active one.</summary>
+    private ComboBox BuildHeadsetSelector()
+    {
+        var profiles = HeadsetProfiles.Effective(_config).ToList();
+        var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130, Margin = new Padding(6, 3, 3, 3) };
+        box.Items.Add("Auto");
+        foreach (var p in profiles) box.Items.Add(p.DisplayName);
+        var pinnedIndex = profiles.FindIndex(p => string.Equals(p.Id, _config.PinnedHeadset, StringComparison.OrdinalIgnoreCase));
+        box.SelectedIndex = pinnedIndex + 1;   // -1 (not pinned / unknown) -> 0 = Auto
+        box.SelectedIndexChanged += (_, _) =>
+        {
+            _config.PinnedHeadset = box.SelectedIndex <= 0 ? "" : profiles[box.SelectedIndex - 1].Id;
+            _config.Save(_configPath);
+            _headsetLabel.Text = HeadsetStatusText();
+        };
+        return box;
+    }
+
     public void UpdateHeadsetStatus(bool isOnline)
     {
-        var text = isOnline ? "online" : "offline";
+        var text = HeadsetStatusText();
         if (InvokeRequired) Invoke(() => _headsetLabel.Text = text);
         else _headsetLabel.Text = text;
     }
@@ -1021,9 +1122,9 @@ public sealed class SettingsForm : Form
         var netGroup = new GroupBox { Text = "Network", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(380, 0) };
         var netLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
         netLayout.Controls.Add(BuildTextRow("Headset IP", _config.Network.HeadsetIp,
-            v => { _config.Network.HeadsetIp = v; _config.Save(_configPath); }));
+            v => { _config.Network.HeadsetIp = v; HeadsetProfiles.SyncQuestFromNetwork(_config); _config.Save(_configPath); }));
         netLayout.Controls.Add(BuildTextRow("Headset IP (secondary, optional)", _config.Network.HeadsetIpSecondary,
-            v => { _config.Network.HeadsetIpSecondary = v; _config.Save(_configPath); }));
+            v => { _config.Network.HeadsetIpSecondary = v; HeadsetProfiles.SyncQuestFromNetwork(_config); _config.Save(_configPath); }));
         foreach (var cam in _config.EyeCameras)
         {
             var camRef = cam;
@@ -1032,6 +1133,26 @@ public sealed class SettingsForm : Form
         }
         netGroup.Controls.Add(netLayout);
         layout.Controls.Add(netGroup);
+
+        // Per-headset detection hosts and parts. The Quest's hosts stay the "Headset IP" fields above
+        // (synced into its profile); other headsets get a comma-separated hosts field here.
+        var headsetsGroup = new GroupBox { Text = "Headsets", AutoSize = true, Padding = new Padding(8), MinimumSize = new Size(380, 0) };
+        var headsetsLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+        foreach (var profile in HeadsetProfiles.Effective(_config))
+        {
+            var pr = profile;
+            headsetsLayout.Controls.Add(new Label { Text = $"{pr.DisplayName} ({pr.SessionKind})", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 8, 3, 2) });
+            if (!string.Equals(pr.Id, HeadsetProfiles.QuestId, StringComparison.OrdinalIgnoreCase))
+                headsetsLayout.Controls.Add(BuildTextRow("Detect hosts (comma-separated)", string.Join(", ", pr.DetectHosts),
+                    v => { pr.DetectHosts = v.Split(',').Select(h => h.Trim()).Where(h => h.Length > 0).ToList(); _config.Save(_configPath); }));
+            foreach (var key in pr.Parts.Keys.ToList())
+            {
+                var k = key;
+                headsetsLayout.Controls.Add(BuildCheckbox(k, pr.Parts[k], v => { pr.Parts[k] = v; _config.Save(_configPath); }));
+            }
+        }
+        headsetsGroup.Controls.Add(headsetsLayout);
+        layout.Controls.Add(headsetsGroup);
 
         var actionsGroup = new GroupBox { Text = "Actions", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(8) };
         var actionsLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };

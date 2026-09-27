@@ -7,5 +7,7 @@ public interface IHeadsetMonitor
 {
     bool IsOnline { get; }
     string RespondingIp { get; }
+    /// <summary>Id of the headset profile that answered the last successful ping; "" when offline.</summary>
+    string ActiveHeadsetId { get; }
     event EventHandler<HeadsetStateChangedEventArgs> StateChanged;
 }

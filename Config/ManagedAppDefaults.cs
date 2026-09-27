@@ -43,6 +43,32 @@ public static class ManagedAppDefaults
         }
 
         config.SeededAppIds = known.ToList();
+        ApplyDefaultSteamVrAppKeys(config.ManagedApps);
+    }
+
+    /// <summary>SteamVR app keys known to start the same app as a managed entry. Keys are the
+    /// vrappconfig file names under &lt;Steam&gt;\config\vrappconfig. Baballonia has two: the Steam
+    /// store copy registers as steam.overlay.4091970, the standalone install as its manifest key.
+    /// The VIVE eye-calibration dashboard is listed under SRanipal because it pulls sr_runtime (and
+    /// its UAC prompt) into every SteamVR start.</summary>
+    private static readonly Dictionary<string, string[]> DefaultSteamVrAppKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["ovrtoolkit"] = new[] { "steam.overlay.1068820" },
+        ["xsoverlay"] = new[] { "steam.overlay.1173510" },
+        ["vrcosc"] = new[] { "volcanicarts.vrcosc" },
+        ["vrcfacetracking"] = new[] { "benaclejames.vrcft" },
+        ["baballonia"] = new[] { "projectbabble.baballonia", "steam.overlay.4091970" },
+        ["slimevr"] = new[] { "steam.overlay.3245490", "slimevr.steamvr.feeder" },
+        ["sranipal"] = new[] { "vive.pro.eye.calibration.dashboard" },
+    };
+
+    /// <summary>Fills SteamVrAppKeys for known apps that have none yet (new seeds, and configs written
+    /// before the field existed). Never overwrites a list the user edited.</summary>
+    private static void ApplyDefaultSteamVrAppKeys(IEnumerable<ManagedApp> apps)
+    {
+        foreach (var app in apps)
+            if (app.SteamVrAppKeys.Count == 0 && DefaultSteamVrAppKeys.TryGetValue(app.Id, out var keys))
+                app.SteamVrAppKeys = keys.ToList();
     }
 
     public static List<ManagedApp> SeedFrom(MonitorConfig config)
@@ -207,6 +233,7 @@ public static class ManagedAppDefaults
             },
         };
 
+        ApplyDefaultSteamVrAppKeys(apps);
         return apps;
     }
 }

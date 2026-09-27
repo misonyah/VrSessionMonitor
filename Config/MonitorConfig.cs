@@ -916,6 +916,17 @@ public sealed class MonitorConfig
     /// Not user-facing; delete an entry by hand to be offered that app again.</summary>
     public List<string> SeededAppIds { get; set; } = new();
 
+    /// <summary>Headset profiles (see Config/HeadsetProfile.cs). Seeded once with Quest 2 (from
+    /// Network.*) and Steam Frame.</summary>
+    public List<HeadsetProfile> Headsets { get; set; } = new();
+    /// <summary>Profile id to use regardless of detection; "" = auto-detect.</summary>
+    public string PinnedHeadset { get; set; } = "";
+    /// <summary>Written by the app: the most recently active headset, the tie-breaker when several
+    /// profiles answer pings at once.</summary>
+    public string LastActiveHeadset { get; set; } = "";
+    /// <summary>Built-in headset profile ids already offered, so a deleted one isn't re-added.</summary>
+    public List<string> SeededHeadsetIds { get; set; } = new();
+
     public LoggingConfig Logging { get; set; } = new();
     public BluetoothConfig Bluetooth { get; set; } = new();
     public HeartrateConfig Heartrate { get; set; } = new();
@@ -1029,6 +1040,7 @@ public sealed class MonitorConfig
                         loaded.ManagedApps = ManagedAppDefaults.SeedFrom(loaded);
                     else
                         ManagedAppDefaults.AddNewlyIntroducedApps(loaded);
+                    HeadsetProfiles.SeedDefaults(loaded);
                     return loaded;
                 }
 
@@ -1059,17 +1071,25 @@ public sealed class MonitorConfig
     /// truncated/half-written on disk.</summary>
     public void Save(string path)
     {
-        var directory = Path.GetDirectoryName(path)!;
-        Directory.CreateDirectory(directory);
+        // Process-wide: saves come from UI handlers, OptimizationsManager and HeadsetMonitor's
+        // thread (LastActiveHeadset). They all share one ".tmp" name, so unserialized saves collide
+        // with "file in use" IOExceptions (reproduced by a parallel-save test).
+        lock (SaveLock)
+        {
+            var directory = Path.GetDirectoryName(path)!;
+            Directory.CreateDirectory(directory);
 
-        var tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(this, JsonOptions));
+            var tempPath = path + ".tmp";
+            File.WriteAllText(tempPath, JsonSerializer.Serialize(this, JsonOptions));
 
-        if (File.Exists(path))
-            File.Replace(tempPath, path, null);
-        else
-            File.Move(tempPath, path);
+            if (File.Exists(path))
+                File.Replace(tempPath, path, null);
+            else
+                File.Move(tempPath, path);
+        }
     }
+
+    private static readonly object SaveLock = new();
 
     // Deliberately empty — this is what a fresh clone gets. Trackers/cameras are entirely
     // hardware-specific, so shipping someone else's real network topology in source doesn't
@@ -1085,6 +1105,7 @@ public sealed class MonitorConfig
             EyeCameras = new List<EyeCameraConfig>(),
         };
         config.ManagedApps = ManagedAppDefaults.SeedFrom(config);
+        HeadsetProfiles.SeedDefaults(config);
         return config;
     }
 }

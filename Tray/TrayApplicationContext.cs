@@ -2,6 +2,7 @@
 using System.Linq;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
+using VrSessionMonitor.Modules.Frame;
 using VrSessionMonitor.Modules;
 using VrSessionMonitor.Optimizations;
 #if INCLUDE_HOME_ASSISTANT
@@ -16,6 +17,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly MonitorConfig _config;
     private readonly string _configPath;
     private readonly HeadsetMonitor _headset;
+    private readonly FrameLinkMonitor _frameLink;
     private readonly SlimeVrTrackerMonitor _trackers;
     private readonly SteamVrMonitor _steamVr;
     private readonly VrChatMonitor _vrChat;
@@ -219,6 +221,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _ = SRanipalServicePermissions.EnsureStartStopPermissionAsync(_config);
 
         _headset = new HeadsetMonitor(_config);
+        _frameLink = new FrameLinkMonitor(_config, _headset, new SshRunner(), new HotspotKeeperClient(),
+            msg => SteamVrNotifier.TryNotify(_config, msg));
         _trackers = new SlimeVrTrackerMonitor(_config);
         _steamVr = new SteamVrMonitor(_config);
         _vrChat = new VrChatMonitor(_config);
@@ -317,7 +321,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         // see SettingsForm's own doc comment for why. Created once and shown/hidden from here on,
         // never recreated.
         _settingsForm = new SettingsForm(this, _config, _configPath, _headset, _trackers, _steamVr,
-            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _slimeLifecycle, _firmwareNotify, _orchestrator, _optimizations, _managedApps);
+            _vrChat, _faceTracking, _eyeTracking, _vrcFtLifecycle, _vrcOscLifecycle, _vhSranipalLifecycle, _slimeLifecycle, _firmwareNotify, _orchestrator, _optimizations, _managedApps, _frameLink);
 
         _notifyIcon = new NotifyIcon
         {
@@ -368,6 +372,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _steamVr.FullyRunningChanged += running => _batteryReminder.HandleSteamVrRunningChanged(running);
 
         _headset.Start();
+        _frameLink.Start();
         _trackers.Start();
         _steamVr.Start();
         _vrChat.Start();
@@ -420,6 +425,14 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void OnHeadsetStateChanged(object? sender, HeadsetStateChangedEventArgs e)
     {
+        // Remember the headset in use: the tie-breaker when several profiles answer pings at once.
+        if (e.IsOnline && !string.IsNullOrEmpty(e.HeadsetId) && _config.LastActiveHeadset != e.HeadsetId)
+        {
+            _config.LastActiveHeadset = e.HeadsetId;
+            try { _config.Save(_configPath); }
+            catch (Exception ex) { Log.Warn("Tray", $"Saving LastActiveHeadset failed: {ex.Message}"); }
+        }
+
         UpdateTrayTooltip();
         if (e.IsOnline)
             _notifyIcon.ShowBalloonTip(3000, "VR Session Monitor", "Headset detected — starting session flow.", ToolTipIcon.Info);
@@ -432,7 +445,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// making the tooltip flip between whichever fired last.</summary>
     private void UpdateTrayTooltip()
     {
-        var text = $"VR Session Monitor — headset {(_headset.IsOnline ? "online" : "offline")}";
+        var name = HeadsetProfiles.Find(_config, _headset.ActiveHeadsetId)?.DisplayName ?? "headset";
+        var text = $"VR Session Monitor — {(_headset.IsOnline ? $"{name} online" : "headset offline")}";
 
         // Snapshot: this runs on HeadsetMonitor's polling thread, while the UI thread can be
         // adding/removing entries. Enumerating the live List<ManagedApp> here can throw
@@ -487,6 +501,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             if (_config.Network.HeadsetIp != found.Ip)
             {
                 _config.Network.HeadsetIp = found.Ip;
+                HeadsetProfiles.SyncQuestFromNetwork(_config);
                 headsetUpdated = true;
                 Log.Info("Tray", $"Auto-detected headset at {found.Ip} (MAC {found.Mac}).");
             }
@@ -724,6 +739,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         Log.Info("Tray", "Exit requested.");
         _notifyIcon.Visible = false;
         _settingsForm.Dispose();
+        _frameLink.Dispose();
         _headset.Dispose();
         _trackers.Dispose();
         _steamVr.Dispose();

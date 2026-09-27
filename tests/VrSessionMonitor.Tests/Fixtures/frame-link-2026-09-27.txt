@@ -1,0 +1,25 @@
+##WLANAP_INFO
+Interface wlanap
+	ifindex 5
+	type AP
+	channel 37 (6135 MHz), width: 160 MHz, center1: 6185 MHz
+##STATION
+Station aa:bb:cc:dd:ee:ff (on wlanap)
+	inactive time:	1 ms
+	tx retries:	0
+	tx failed:	0
+	rx drop misc:	0
+	signal:  	0 dBm
+	signal avg:	0 dBm
+	tx bitrate:	2161.3 MBit/s 160MHz HE-MCS 10 HE-NSS 2 HE-GI 0 HE-DCM 0
+	rx bitrate:	1441.3 MBit/s 160MHz HE-MCS 7 HE-NSS 2 HE-GI 0 HE-DCM 0
+	last ack signal:-50 dBm
+	avg ack signal:	-50 dBm
+	connected time:	1137 seconds
+##WLAN0_LINK
+Not connected.
+##NMCLI
+lo:connected (externally):lo
+wlan0:disconnected:
+p2p-dev-wlan0:disconnected:
+wlanap:unmanaged:

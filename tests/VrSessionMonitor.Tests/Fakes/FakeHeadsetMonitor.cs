@@ -7,6 +7,7 @@ public sealed class FakeHeadsetMonitor : IHeadsetMonitor
 {
     public bool IsOnline { get; private set; }
     public string RespondingIp { get; set; } = "10.0.0.5";
+    public string ActiveHeadsetId { get; set; } = "quest2";
     public event EventHandler<HeadsetStateChangedEventArgs>? StateChanged;
 
     /// <summary>Sets online state and raises StateChanged, mirroring the real transition edge.</summary>
@@ -14,6 +15,6 @@ public sealed class FakeHeadsetMonitor : IHeadsetMonitor
     {
         if (online == IsOnline) return;
         IsOnline = online;
-        StateChanged?.Invoke(this, new HeadsetStateChangedEventArgs { IsOnline = online, Ip = RespondingIp });
+        StateChanged?.Invoke(this, new HeadsetStateChangedEventArgs { IsOnline = online, Ip = RespondingIp, HeadsetId = online ? ActiveHeadsetId : "" });
     }
 }

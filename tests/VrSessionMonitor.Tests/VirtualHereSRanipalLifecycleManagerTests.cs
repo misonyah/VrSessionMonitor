@@ -121,4 +121,24 @@ public class VirtualHereSRanipalLifecycleManagerTests
         Assert.True(c.Launcher.IsRunning("sr_runtime"));
         Assert.Equal(PresenceState.Running, c.Mgr.State);
     }
+
+    [Fact]
+    public void Presence_ignores_online_frame_without_virtualhere_part()
+    {
+        var config = new MonitorConfig();
+        HeadsetProfiles.SeedDefaults(config);
+        var headset = new FakeHeadsetMonitor { ActiveHeadsetId = "frame" };
+        headset.SetOnline(true);
+        Assert.False(VirtualHereSRanipalLifecycleManager.HeadsetWantsVirtualHere(config, headset));
+    }
+
+    [Fact]
+    public void Presence_true_for_online_quest()
+    {
+        var config = new MonitorConfig();
+        HeadsetProfiles.SeedDefaults(config);
+        var headset = new FakeHeadsetMonitor { ActiveHeadsetId = "quest2" };
+        headset.SetOnline(true);
+        Assert.True(VirtualHereSRanipalLifecycleManager.HeadsetWantsVirtualHere(config, headset));
+    }
 }

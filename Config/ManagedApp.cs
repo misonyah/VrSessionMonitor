@@ -117,4 +117,9 @@ public sealed class ManagedApp
     /// this app regardless of what is configured here.
     /// </summary>
     public bool SuspendDuringSession { get; set; }
+
+    /// <summary>SteamVR app keys (vrappconfig file names) that start this same app from SteamVR's own
+    /// "startup overlay apps" list. Used to flag and switch off SteamVR auto-starts that would bypass
+    /// VrSessionMonitor's per-headset decisions.</summary>
+    public List<string> SteamVrAppKeys { get; set; } = new();
 }

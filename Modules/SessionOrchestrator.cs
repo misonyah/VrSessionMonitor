@@ -4,6 +4,7 @@ using System.Net.NetworkInformation;
 using Stateless;
 using VrSessionMonitor.Config;
 using VrSessionMonitor.Logging;
+using VrSessionMonitor.Modules.Frame;
 
 namespace VrSessionMonitor.Modules;
 
@@ -44,6 +45,18 @@ public sealed class SessionOrchestrator
 
     private readonly SemaphoreSlim _runGate = new(1, 1);
 
+    private const string SteamVrAppId = "250820";
+    private readonly ISshRunner _ssh;
+    private readonly IHotspotKeeper _hotspotKeeper;
+    private string _activeHeadsetId = "";
+
+    /// <summary>SteamLink equivalent of _launchChainCompletedForVdPid: the flow completed while this
+    /// vrserver PID was alive; a brief ping flap with the same vrserver doesn't re-run it.</summary>
+    private int? _steamLinkCompletedForVrServerPid;
+
+    /// <summary>Profile id of the headset the last session-start ran for.</summary>
+    public string ActiveHeadsetId => _activeHeadsetId;
+
     /// <summary>
     /// PID of the VD Streamer instance the launch chain (Steam/VRChat/SlimeVR/OVR Toolkit) last
     /// completed for. Found necessary live 2026-07-24: a bare headset ping flap (Quest briefly
@@ -73,7 +86,8 @@ public sealed class SessionOrchestrator
         MonitorConfig config, SlimeVrTrackerMonitor trackers, UpdateChecker updateChecker, AdbController adb,
         IProcessLauncher? launcher = null, Func<DateTime>? clock = null,
         Func<TimeSpan, Task<bool>>? streamWaiter = null, Func<Task>? preflightOverride = null,
-        Action<string>? launchUri = null)
+        Action<string>? launchUri = null,
+        ISshRunner? ssh = null, IHotspotKeeper? hotspotKeeper = null)
     {
         _config = config;
         _trackers = trackers;
@@ -84,6 +98,8 @@ public sealed class SessionOrchestrator
         _streamWaiterOverride = streamWaiter;
         _preflightOverride = preflightOverride;
         _launchUri = launchUri ?? (uri => Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }));
+        _ssh = ssh ?? new SshRunner();
+        _hotspotKeeper = hotspotKeeper ?? new HotspotKeeperClient();
 
         _sm.OnTransitioned(t =>
         {
@@ -122,6 +138,7 @@ public sealed class SessionOrchestrator
             .Permit(SessionTrigger.PingFlapDetected, SessionState.Complete)
             .Permit(SessionTrigger.AwaitStream, SessionState.WaitingForStream)
             .Permit(SessionTrigger.VrChatPhase, SessionState.LaunchingVrChat)
+            .Permit(SessionTrigger.SlimeVrPhase, SessionState.LaunchingSlimeVr)   // SteamLink: no VRChat phase
             .Permit(SessionTrigger.Fault, SessionState.Failed);
 
         sm.Configure(SessionState.WaitingForStream)
@@ -154,7 +171,8 @@ public sealed class SessionOrchestrator
     {
         if (e.IsOnline)
         {
-            _ = RunSessionStartAsync(); // fire-and-forget; internal gate prevents overlap
+            if (!string.IsNullOrEmpty(e.HeadsetId)) _activeHeadsetId = e.HeadsetId;
+            _ = RunSessionStartAsync(e.HeadsetId); // fire-and-forget; internal gate prevents overlap
         }
         else
         {
@@ -163,7 +181,7 @@ public sealed class SessionOrchestrator
         }
     }
 
-    public async Task RunSessionStartAsync()
+    public async Task RunSessionStartAsync(string? headsetId = null)
     {
         if (!await _runGate.WaitAsync(0).ConfigureAwait(false))
         {
@@ -173,11 +191,20 @@ public sealed class SessionOrchestrator
 
         try
         {
+            var profile = HeadsetProfiles.Find(_config, string.IsNullOrEmpty(headsetId) ? _activeHeadsetId : headsetId)
+                          ?? HeadsetProfiles.Effective(_config)[0];
+            _activeHeadsetId = profile.Id;
+            if (profile.SessionKind == HeadsetSessionKind.SteamLink)
+            {
+                await RunSteamLinkFlowAsync(profile).ConfigureAwait(false);
+                return;   // finally{} still releases the gate
+            }
+
             await FireAsync(SessionTrigger.StartSession);   // -> HeadsetDetected
             Log.Info("Orchestrator", "=== Headset online — beginning session-start flow ===");
 
             await FireAsync(SessionTrigger.BeginPreflight); // -> PreflightChecks
-            await (_preflightOverride?.Invoke() ?? RunPreflightChecksAsync()).ConfigureAwait(false);
+            await (_preflightOverride?.Invoke() ?? RunPreflightChecksAsync(profile.Part(HeadsetPartNames.Adb, defaultValue: true))).ConfigureAwait(false);
 
             await FireAsync(SessionTrigger.PreflightDone);  // -> LaunchingApps
             await LaunchVdStreamerAsync().ConfigureAwait(false);
@@ -291,7 +318,7 @@ public sealed class SessionOrchestrator
         }
     }
 
-    private async Task RunPreflightChecksAsync()
+    private async Task RunPreflightChecksAsync(bool includeAdb)
     {
         Log.Info("Orchestrator", "Pre-flight: checking SlimeVR trackers (before server is even running)...");
         await _trackers.CheckAllAsync().ConfigureAwait(false);
@@ -308,6 +335,8 @@ public sealed class SessionOrchestrator
             Log.Warn("Orchestrator", $"Update check phase threw, continuing anyway: {ex.Message}");
         }
 
+        if (!includeAdb) return;
+
         Log.Info("Orchestrator", "Pre-flight: attempting best-effort ADB connection to headset...");
         try
         {
@@ -321,6 +350,69 @@ public sealed class SessionOrchestrator
         catch (Exception ex)
         {
             Log.Warn("Orchestrator", $"ADB phase threw, continuing anyway (non-fatal by design): {ex.Message}");
+        }
+    }
+
+    /// <summary>Steam Frame: Steam Link replaces Virtual Desktop and the user picks the game in the
+    /// headset, so: keeper → SteamVR (only if not already up — "connect to PC" in the headset starts
+    /// it itself) → SlimeVR → overlay → headset-side commands. Never launches VRChat.</summary>
+    private async Task RunSteamLinkFlowAsync(HeadsetProfile profile)
+    {
+        await FireAsync(SessionTrigger.StartSession);
+        Log.Info("Orchestrator", $"=== {profile.DisplayName} online — SteamLink session flow ===");
+        await FireAsync(SessionTrigger.BeginPreflight);
+        await (_preflightOverride?.Invoke() ?? RunPreflightChecksAsync(includeAdb: false)).ConfigureAwait(false);
+        await FireAsync(SessionTrigger.PreflightDone);                 // -> LaunchingApps
+
+        var vrserverPid = _launcher.GetProcessId("vrserver");
+        var offline = _headsetWentOfflineAtUtc.HasValue ? _clock() - _headsetWentOfflineAtUtc.Value : (TimeSpan?)null;
+        var briefFlap = offline.HasValue && offline.Value.TotalMilliseconds < _config.SessionFlow.MinHeadsetOfflineDurationForNewSessionMs;
+        if (vrserverPid.HasValue && vrserverPid == _steamLinkCompletedForVrServerPid && briefFlap)
+        {
+            Log.Info("Orchestrator", $"SteamLink flow already done for this SteamVR (vrserver PID {vrserverPid}); headset offline only {offline!.Value.TotalSeconds:F0}s — ping flap, not re-running.");
+            await FireAsync(SessionTrigger.PingFlapDetected);        // -> Complete
+            return;
+        }
+
+        if (profile.Part(HeadsetPartNames.HotspotKeeper) && !string.IsNullOrWhiteSpace(profile.HotspotKeeperTask))
+        {
+            try
+            {
+                await _hotspotKeeper.TriggerAndWaitAsync(profile.HotspotKeeperTask, TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(profile.HotspotKeeperLog))
+                    Log.Info("Orchestrator", $"Hotspot keeper: {_hotspotKeeper.ReadStatus(profile.HotspotKeeperLog)}");
+            }
+            catch (Exception ex) { Log.Warn("Orchestrator", $"Hotspot keeper step failed, continuing: {ex.Message}"); }
+        }
+
+        if (!_launcher.IsRunning("vrserver"))
+        {
+            Log.Info("Orchestrator", $"Starting SteamVR via steam://rungameid/{SteamVrAppId}.");
+            try { _launchUri($"steam://rungameid/{SteamVrAppId}"); }
+            catch (Exception ex) { Log.Error("Orchestrator", "Failed to start SteamVR", ex); }
+        }
+        else Log.Info("Orchestrator", "SteamVR already running (headset connected itself) — not launching it.");
+
+        await FireAsync(SessionTrigger.SlimeVrPhase);                  // -> LaunchingSlimeVr
+        await LaunchSlimeVrAsync().ConfigureAwait(false);
+        await FireAsync(SessionTrigger.VrOverlayPhase);                // -> LaunchingVrOverlay
+        await LaunchVrOverlayAsync().ConfigureAwait(false);
+
+        await RunHeadsetCommandsAsync(profile).ConfigureAwait(false);
+
+        _steamLinkCompletedForVrServerPid = _launcher.GetProcessId("vrserver");
+        await FireAsync(SessionTrigger.ChainComplete);                 // -> Complete
+        Log.Info("Orchestrator", "=== SteamLink session flow complete (no game launched — pick one in the headset) ===");
+    }
+
+    private async Task RunHeadsetCommandsAsync(HeadsetProfile profile)
+    {
+        if (string.IsNullOrWhiteSpace(profile.SshHost)) return;
+        foreach (var cmd in profile.HeadsetCommands.Where(c => c.Enabled && !string.IsNullOrWhiteSpace(c.Command)))
+        {
+            var r = await _ssh.RunAsync(profile.SshHost, cmd.Command, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            if (r.ExitCode == 0) Log.Info("Orchestrator", $"Headset command '{cmd.Name}' OK.");
+            else Log.Warn("Orchestrator", $"Headset command '{cmd.Name}' failed (exit {r.ExitCode}{(r.TimedOut ? ", timed out" : "")}): {r.StdErr.Trim()}");
         }
     }
 
