@@ -222,7 +222,8 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _headset = new HeadsetMonitor(_config);
         _frameLink = new FrameLinkMonitor(_config, _headset, new SshRunner(), new HotspotKeeperClient(),
-            msg => SteamVrNotifier.TryNotify(_config, msg));
+            msg => SteamVrNotifier.TryNotify(_config, msg),
+            steamVrRunning: () => _steamVr.Current.VrServerRunning);
         _trackers = new SlimeVrTrackerMonitor(_config);
         _steamVr = new SteamVrMonitor(_config);
         _vrChat = new VrChatMonitor(_config);

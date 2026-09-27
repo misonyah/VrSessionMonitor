@@ -15,6 +15,7 @@ public sealed class FrameLinkMonitor : IDisposable
     private readonly IHotspotKeeper _keeper;
     private readonly Func<string, bool> _notify;
     private readonly Func<DateTime> _clock;
+    private readonly Func<bool> _steamVrRunning;
     private FrameLinkWarnings _warnings = new();
     private int _inFlight;
     private CancellationTokenSource? _cts;
@@ -24,10 +25,11 @@ public sealed class FrameLinkMonitor : IDisposable
     public FrameLinkStatus? Last { get; private set; }
 
     public FrameLinkMonitor(MonitorConfig config, IHeadsetMonitor headset, ISshRunner ssh, IHotspotKeeper keeper,
-                            Func<string, bool> notify, Func<DateTime>? clock = null)
+                            Func<string, bool> notify, Func<DateTime>? clock = null, Func<bool>? steamVrRunning = null)
     {
         _config = config; _headset = headset; _ssh = ssh; _keeper = keeper; _notify = notify;
         _clock = clock ?? (() => DateTime.UtcNow);
+        _steamVrRunning = steamVrRunning ?? (() => true);
     }
 
     public void Start()
@@ -71,10 +73,21 @@ public sealed class FrameLinkMonitor : IDisposable
             Last = link;
             StatusText = link.Summary() + (keeper is null ? "" : $" · hotspot: {keeper}");
             Healthy = link.StreamUp && link.InternetConnected && (keeper is null || HotspotKeeperClient.IsOk(keeper));
-            foreach (var w in _warnings.Evaluate(link, keeper, _clock(), _notify))
+            foreach (var w in _warnings.Evaluate(link, keeper, _clock(), Deliver))
                 Log.Warn("FrameLink", w);
         }
         finally { Interlocked.Exchange(ref _inFlight, 0); }
+    }
+
+    /// <summary>A warning waits (unattempted) until SteamVR runs; once SteamVR is up, one attempt
+    /// counts as delivered even if the notifier reports failure. Retrying failures every poll made
+    /// VrSessionMonitor connect/disconnect to SteamVR every ~30 s while the notifier kept failing
+    /// with OpenVR error 102 (live 2026-09-27, around two SteamVR crashes).</summary>
+    private bool Deliver(string message)
+    {
+        if (!_steamVrRunning()) return false;
+        _notify(message);
+        return true;
     }
 
     public void Dispose() { _cts?.Cancel(); _cts?.Dispose(); }

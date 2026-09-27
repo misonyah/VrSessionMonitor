@@ -54,6 +54,44 @@ public class FrameLinkMonitorTests
         Assert.Equal(2, sent.FindAll(m => m.Contains("hotspot down")).Count);
     }
 
+    [Fact]
+    public async Task Failed_notification_while_steamvr_runs_is_not_retried_every_poll()
+    {
+        // The real notifier can fail with SteamVR up (OpenVR error 102); retrying each poll made
+        // VrSessionMonitor connect/disconnect to SteamVR every ~30 s (live 2026-09-27).
+        var config = new MonitorConfig();
+        HeadsetProfiles.SeedDefaults(config);
+        HeadsetProfiles.Find(config, "frame")!.HotspotKeeperLog = "keeper.log";
+        var headset = new FakeHeadsetMonitor { ActiveHeadsetId = "frame" };
+        headset.SetOnline(true);
+        var attempts = 0;
+        var mon = new FrameLinkMonitor(config, headset, new FakeSshRunner(), new DownKeeper(),
+            _ => { attempts++; return false; }, steamVrRunning: () => true);
+        await mon.PollOnceAsync();
+        await mon.PollOnceAsync();
+        await mon.PollOnceAsync();
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task Warning_waits_for_steamvr_without_attempting()
+    {
+        var config = new MonitorConfig();
+        HeadsetProfiles.SeedDefaults(config);
+        HeadsetProfiles.Find(config, "frame")!.HotspotKeeperLog = "keeper.log";
+        var headset = new FakeHeadsetMonitor { ActiveHeadsetId = "frame" };
+        headset.SetOnline(true);
+        var running = false;
+        var attempts = 0;
+        var mon = new FrameLinkMonitor(config, headset, new FakeSshRunner(), new DownKeeper(),
+            _ => { attempts++; return true; }, steamVrRunning: () => running);
+        await mon.PollOnceAsync();
+        Assert.Equal(0, attempts);
+        running = true;
+        await mon.PollOnceAsync();
+        Assert.Equal(1, attempts);
+    }
+
     private sealed class DownKeeper : IHotspotKeeper
     {
         public Task TriggerAndWaitAsync(string taskName, TimeSpan timeout) => Task.CompletedTask;
