@@ -43,6 +43,55 @@ public static class AutomationSuggestionSources
         return list;
     }
 
+    /// <summary>Settable (input) parameter names of every type — bool, int, float — from the most
+    /// recently written avatar OSC config, i.e. the avatar you wore last (VRChat rewrites that file
+    /// when the avatar loads). Group automation can send any of those types.</summary>
+    public static IReadOnlyList<string> ScanLastWornAvatarParams(string oscRootDir)
+    {
+        try
+        {
+            if (!Directory.Exists(oscRootDir)) return Array.Empty<string>();
+            var newest = Directory.EnumerateFiles(oscRootDir, "*.json", SearchOption.AllDirectories)
+                .Where(f => f.Contains($"{Path.DirectorySeparatorChar}Avatars{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .FirstOrDefault();
+            return newest is null ? Array.Empty<string>() : ReadSettableParams(newest);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("AutomationSuggestions", $"ScanLastWornAvatarParams failed: {ex.Message}");
+            return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>Settable parameters of one specific avatar (the one being worn, from AvatarTracker).</summary>
+    public static IReadOnlyList<string> ScanAvatarParams(string oscRootDir, string avatarId)
+    {
+        var file = AvatarTracker.FindConfigFile(oscRootDir, avatarId);
+        return file is null ? Array.Empty<string>() : ReadSettableParams(file);
+    }
+
+    private static IReadOnlyList<string> ReadSettableParams(string file)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(file));
+            if (!doc.RootElement.TryGetProperty("parameters", out var pars) || pars.ValueKind != JsonValueKind.Array)
+                return Array.Empty<string>();
+            var names = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var p in pars.EnumerateArray())
+                if (p.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String
+                    && p.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object)
+                    names.Add(n.GetString()!);
+            return names.ToList();
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("AutomationSuggestions", $"Reading {file} failed: {ex.Message}");
+            return Array.Empty<string>();
+        }
+    }
+
     public static IReadOnlyList<string> ScanOscBoolParams(string oscRootDir)
     {
         var found = new HashSet<string>(StringComparer.Ordinal);

@@ -66,6 +66,34 @@ public class AutomationSuggestionSourcesTests
     }
 
     [Fact]
+    public void Last_worn_avatar_params_of_every_type_are_suggested()
+    {
+        var dir = TempDir();
+        var avatars = Path.Combine(dir, "usr_1", "Avatars");
+        Directory.CreateDirectory(avatars);
+        var old = Path.Combine(avatars, "avtr_old.json");
+        File.WriteAllText(old, """{ "parameters": [ { "name": "OldToggle", "input": {"type":"Bool"} } ] }""");
+        File.SetLastWriteTimeUtc(old, System.DateTime.UtcNow.AddDays(-2));
+        File.WriteAllText(Path.Combine(avatars, "avtr_new.json"), """
+        { "parameters": [
+            { "name": "PartyMode", "input": {"type":"Bool"} },
+            { "name": "Outfit", "input": {"type":"Int"} },
+            { "name": "Hue", "input": {"type":"Float"} },
+            { "name": "VelocityX", "output": {"type":"Float"} }
+        ] }
+        """);
+
+        var names = AutomationSuggestionSources.ScanLastWornAvatarParams(dir);
+
+        Assert.Equal(new[] { "Hue", "Outfit", "PartyMode" }, names);   // settable (input) params, all types
+        Assert.DoesNotContain("OldToggle", names);
+    }
+
+    [Fact]
+    public void Last_worn_scan_of_missing_dir_is_empty()
+        => Assert.Empty(AutomationSuggestionSources.ScanLastWornAvatarParams(Path.Combine(Path.GetTempPath(), "nope_" + Path.GetRandomFileName())));
+
+    [Fact]
     public void ScanOscBoolParams_missing_dir_returns_empty()
     {
         Assert.Empty(AutomationSuggestionSources.ScanOscBoolParams(Path.Combine(Path.GetTempPath(), "nope_" + Path.GetRandomFileName())));

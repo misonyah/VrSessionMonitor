@@ -182,7 +182,8 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
         if (_activeGroupId is not null)
         {
             var previous = _config.VrChatGroupAutomation.Groups.FirstOrDefault(g => g.GroupId == _activeGroupId);
-            if (previous is not null) SendParam(previous.ParamName, false);
+            if (previous is not null && GroupAutomationValue.Parse(previous.Value) is { } prevOn)
+                SendParam(previous.ParamName, GroupAutomationValue.OffValue(prevOn));
         }
 
         _activeGroupId = groupId;
@@ -192,8 +193,13 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
             var entry = _config.VrChatGroupAutomation.Groups.FirstOrDefault(g => g.GroupId == groupId);
             if (entry is not null)
             {
-                Log.Info("VrChatGroupAutomation", $"Entered watched group '{entry.DisplayName}' ({groupId}) — setting {entry.ParamName} = true.");
-                SendParam(entry.ParamName, true);
+                if (GroupAutomationValue.Parse(entry.Value) is { } on)
+                {
+                    Log.Info("VrChatGroupAutomation", $"Entered watched group '{entry.DisplayName}' ({groupId}) — setting {entry.ParamName} = {on}.");
+                    SendParam(entry.ParamName, on);
+                }
+                else
+                    Log.Warn("VrChatGroupAutomation", $"Group '{entry.DisplayName}': value '{entry.Value}' is not true/false, a whole number or a decimal — not sent.");
             }
         }
 
@@ -250,7 +256,19 @@ public sealed class VrChatGroupAutomationMonitor : IDisposable
         }
     }
 
-    private async void SendParam(string paramName, bool value)
+    /// <summary>A freshly loaded avatar starts every parameter at its default, so the active group's
+    /// value is re-sent — after a short delay, since VRChat announces the avatar slightly before its
+    /// parameters accept input.</summary>
+    public async void OnAvatarChanged()
+    {
+        if (_osc is null || GroupAutomationResend.For(_config, _activeGroupId) is not { } resend) return;
+        await Task.Delay(1500).ConfigureAwait(false);
+        if (GroupAutomationResend.For(_config, _activeGroupId) is not { } still) return;   // left meanwhile
+        Log.Info("VrChatGroupAutomation", $"Avatar changed inside a watched group — re-sending {still.Param} = {still.Value}.");
+        SendParam(still.Param, still.Value);
+    }
+
+    private async void SendParam(string paramName, object value)
     {
         if (string.IsNullOrWhiteSpace(paramName) || _osc is null) return;
         try

@@ -72,6 +72,40 @@ public static class VrChatOscQueryClient
     /// overhead doesn't matter, matching this codebase's existing preference for shelling out to a
     /// well-known OS utility over hand-rolled native interop when one already does the job (see
     /// SRanipalServicePermissions' use of sc.exe for the same reason).</summary>
+    /// <summary>The avatar VRChat has loaded right now (OSCQuery GET /avatar/change), or null if
+    /// VRChat isn't running / reachable. Used once at startup — after that the live "/avatar/change"
+    /// OSC message keeps AvatarTracker current.</summary>
+    public static async Task<string?> FetchCurrentAvatarIdAsync()
+    {
+        var vrChatPid = Process.GetProcessesByName("VRChat").FirstOrDefault()?.Id;
+        if (vrChatPid is null) return null;
+        var port = FindListeningTcpPort(vrChatPid.Value);
+        if (port is null) return null;
+        try
+        {
+            return ParseAvatarChangeValue(await HttpClient.GetStringAsync($"http://127.0.0.1:{port}/avatar/change").ConfigureAwait(false));
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("VrChatOscQuery", $"Fetching /avatar/change (port {port}) threw: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Pure: OSCQuery node JSON ({"VALUE":["avtr_..."]}) → the avatar id, or null.</summary>
+    public static string? ParseAvatarChangeValue(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("VALUE", out var v) && v.ValueKind == JsonValueKind.Array
+                && v.GetArrayLength() > 0 && v[0].ValueKind == JsonValueKind.String)
+                return v[0].GetString() is { Length: > 0 } id ? id : null;
+        }
+        catch (JsonException) { }
+        return null;
+    }
+
     private static int? FindListeningTcpPort(int pid)
     {
         try

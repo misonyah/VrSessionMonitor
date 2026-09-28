@@ -596,8 +596,12 @@ public sealed class GroupAutomationEntry
     public string GroupId { get; set; } = "";
     /// <summary>Just a label for the Settings UI - not sent anywhere.</summary>
     public string DisplayName { get; set; } = "";
-    /// <summary>Avatar OSC parameter name (sent as /avatar/parameters/&lt;ParamName&gt;, bool).</summary>
+    /// <summary>Avatar OSC parameter name (sent as /avatar/parameters/&lt;ParamName&gt;).</summary>
     public string ParamName { get; set; } = "";
+    /// <summary>Value sent while in the group: "true"/"false", an int ("3") or a float ("0.5").
+    /// Empty = true (the only behaviour before this field existed). Leaving the group sends the
+    /// type's default — see Modules/GroupAutomationValue.</summary>
+    public string Value { get; set; } = "";
     /// <summary>When true, set THIS group as your VRChat represented group (nameplate) while you're
     /// in its instance. Only listed groups with this on are ever auto-represented; leaving one falls
     /// back to VrChatGroupAutomationConfig.FallbackRepresentGroupId (or clears representation).</summary>
@@ -1082,10 +1086,23 @@ public sealed class MonitorConfig
             var tempPath = path + ".tmp";
             File.WriteAllText(tempPath, JsonSerializer.Serialize(this, JsonOptions));
 
-            if (File.Exists(path))
-                File.Replace(tempPath, path, null);
-            else
-                File.Move(tempPath, path);
+            // Antivirus / the search indexer briefly open a just-written file; File.Replace then
+            // fails with "Unable to remove the file to be replaced". Retry a few times before giving up.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    if (File.Exists(path))
+                        File.Replace(tempPath, path, null);
+                    else
+                        File.Move(tempPath, path);
+                    return;
+                }
+                catch (IOException) when (attempt < 8)
+                {
+                    Thread.Sleep(25 * attempt);
+                }
+            }
         }
     }
 

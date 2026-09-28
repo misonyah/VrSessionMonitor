@@ -40,6 +40,12 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly Modules.Battery.BatteryReminderService _batteryReminder;
 #if INCLUDE_OSC
     private VrChatOscListener? _oscListener;
+    private readonly AvatarTracker _avatar = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "Low", "VRChat", "VRChat", "OSC"));
+    private DateTime _lastAvatarQueryUtc = DateTime.MinValue;
+
+    /// <summary>The avatar currently worn in VRChat (id + name), for the Status tab and autocomplete.</summary>
+    public AvatarTracker Avatar => _avatar;
 #endif
     private readonly Modules.Bluetooth.BluetoothPresenceMonitor _bluetooth;
     private readonly Modules.Bluetooth.BluetoothTriggeredLauncher _bluetoothLauncher;
@@ -286,9 +292,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         wantAfk |= _config.HomeAssistant.Enabled;
 #endif
         if (wantAfk) oscParameters.Add(VrChatOscParameters.Afk);
-        if (oscParameters.Count > 0)
+        // Avatar tracking rides on the same listener: group automation re-sends its value after an
+        // avatar change, and the Status tab / parameter autocomplete follow the worn avatar.
+        var wantAvatar = _config.VrChatGroupAutomation.Enabled;
+        if (oscParameters.Count > 0 || wantAvatar)
         {
-            _oscListener = new VrChatOscListener(_config, oscParameters);
+            _oscListener = new VrChatOscListener(_config, oscParameters, _avatar);
             if (_config.Heartrate.Enabled) _oscListener.ParameterReceived += _heartrate.OnParameter;
 
             // Audio follows the headset coming off, with its own short hold — see
@@ -412,12 +421,13 @@ public sealed class TrayApplicationContext : ApplicationContext
                     _homeAssistantManager!.OnOscAfkChanged(value is true);
             };
         _groupAutomation.Start();
+        _avatar.Changed += (_, _) => _groupAutomation.OnAvatarChanged();
         if (_config.HomeAssistant.Enabled)
             _ = WaitForHomeAssistantConnectionThenRefreshAsync(notifyOnFailure: false);
 #endif
 
         var statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
-        statusTimer.Tick += (_, _) => { _settingsForm.RefreshStatus(); _ = _settingsForm.RefreshOptimizationsTabAsync(); _settingsForm.RefreshAppsTab(); _settingsForm.RefreshBluetoothPresence(); UpdateTrayTooltip(); };
+        statusTimer.Tick += (_, _) => { _ = RefreshAvatarIfUnknownAsync(); _settingsForm.RefreshStatus(); _ = _settingsForm.RefreshOptimizationsTabAsync(); _settingsForm.RefreshAppsTab(); _settingsForm.RefreshBluetoothPresence(); UpdateTrayTooltip(); };
         statusTimer.Start();
 
         Log.Info("Tray", "VR Session Monitor started and all background monitors running.");
@@ -444,10 +454,21 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// <summary>Single owner of the tray tooltip text. Both the headset-state handler and the
     /// periodic refresh route through here — two independent writers would overwrite each other,
     /// making the tooltip flip between whichever fired last.</summary>
+    /// <summary>Until the first live "/avatar/change" arrives (e.g. VRChat was already running when
+    /// this app started), ask VRChat's OSCQuery which avatar is loaded — at most every 30 s.</summary>
+    private async Task RefreshAvatarIfUnknownAsync()
+    {
+        if (_avatar.CurrentAvatarId is not null || DateTime.UtcNow - _lastAvatarQueryUtc < TimeSpan.FromSeconds(30)) return;
+        _lastAvatarQueryUtc = DateTime.UtcNow;
+        if (await VrChatOscQueryClient.FetchCurrentAvatarIdAsync().ConfigureAwait(false) is { } id)
+            _avatar.OnAvatarChange(id);
+    }
+
     private void UpdateTrayTooltip()
     {
         var name = HeadsetProfiles.Find(_config, _headset.ActiveHeadsetId)?.DisplayName ?? "headset";
         var text = $"VR Session Monitor — {(_headset.IsOnline ? $"{name} online" : "headset offline")}";
+        if (_avatar.CurrentAvatarName is { Length: > 0 } avatar) text += $" — {avatar}";
 
         // Snapshot: this runs on HeadsetMonitor's polling thread, while the UI thread can be
         // adding/removing entries. Enumerating the live List<ManagedApp> here can throw

@@ -29,6 +29,7 @@ public sealed class VrChatOscListener : IDisposable
 
     private readonly MonitorConfig _config;
     private readonly HashSet<string> _addresses;
+    private readonly AvatarTracker? _avatar;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private OSCQueryService? _oscQuery;
@@ -40,9 +41,10 @@ public sealed class VrChatOscListener : IDisposable
 
     /// <param name="parameterNames">Bare VRChat parameter names, without the
     /// /avatar/parameters/ prefix — the same strings a user sees in VRCOSC's settings.</param>
-    public VrChatOscListener(MonitorConfig config, IEnumerable<string> parameterNames)
+    public VrChatOscListener(MonitorConfig config, IEnumerable<string> parameterNames, AvatarTracker? avatar = null)
     {
         _config = config;
+        _avatar = avatar;
         _addresses = parameterNames
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Select(n => $"/avatar/parameters/{n.Trim()}")
@@ -51,7 +53,7 @@ public sealed class VrChatOscListener : IDisposable
 
     public void Start()
     {
-        if (_addresses.Count == 0)
+        if (_addresses.Count == 0 && _avatar is null)
         {
             Log.Info("VrChatOsc", "No OSC parameters are configured — not advertising a service.");
             return;
@@ -81,6 +83,8 @@ public sealed class VrChatOscListener : IDisposable
             _oscQuery.AddEndpoint("/avatar", "N", Attributes.AccessValues.WriteOnly);
             foreach (var address in _addresses)
                 _oscQuery.AddEndpoint(address, "T", Attributes.AccessValues.WriteOnly);
+            if (_avatar is not null)
+                _oscQuery.AddEndpoint("/avatar/change", "s", Attributes.AccessValues.WriteOnly);
 
             // The send endpoint is never used — SendAsync is never called — but OscDuplex's
             // constructor demands one, so it points at VRChat's conventional receive port.
@@ -100,9 +104,16 @@ public sealed class VrChatOscListener : IDisposable
                     continue;
                 }
 
-                if (!_addresses.Contains(received.Address)) continue;
-
                 var value = received.Arguments.ElementAtOrDefault(0);
+
+                if (_avatar is not null && AvatarTracker.TryParseAvatarChange(received.Address, value, out var avatarId))
+                {
+                    try { _avatar.OnAvatarChange(avatarId); }
+                    catch (Exception ex) { Log.Debug("VrChatOsc", $"Avatar-change handler threw: {ex.Message}"); }
+                    continue;
+                }
+
+                if (!_addresses.Contains(received.Address)) continue;
                 try
                 {
                     ParameterReceived?.Invoke(received.Address, value);
