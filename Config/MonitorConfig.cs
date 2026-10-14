@@ -920,6 +920,10 @@ public sealed class MonitorConfig
     /// Not user-facing; delete an entry by hand to be offered that app again.</summary>
     public List<string> SeededAppIds { get; set; } = new();
 
+    /// <summary>App ids whose default "Start when SteamVR starts" has already been applied once, so a
+    /// user who unticks it isn't overridden on the next start. Not user-facing.</summary>
+    public List<string> StartWithSteamVrDefaultsApplied { get; set; } = new();
+
     /// <summary>Headset profiles (see Config/HeadsetProfile.cs). Seeded once with Quest 2 (from
     /// Network.*) and Steam Frame.</summary>
     public List<HeadsetProfile> Headsets { get; set; } = new();
@@ -1041,7 +1045,7 @@ public sealed class MonitorConfig
                     // seed it from the older per-app toggles. Deliberately not written back here —
                     // the first Save() persists it, so a read-only run doesn't rewrite the file.
                     if (loaded.ManagedApps.Count == 0)
-                        loaded.ManagedApps = ManagedAppDefaults.SeedFrom(loaded);
+                        loaded.ManagedApps = ManagedAppDefaults.SeedInitial(loaded);
                     else
                         ManagedAppDefaults.AddNewlyIntroducedApps(loaded);
                     HeadsetProfiles.SeedDefaults(loaded);
@@ -1121,7 +1125,7 @@ public sealed class MonitorConfig
             Trackers = new List<TrackerConfig>(),
             EyeCameras = new List<EyeCameraConfig>(),
         };
-        config.ManagedApps = ManagedAppDefaults.SeedFrom(config);
+        config.ManagedApps = ManagedAppDefaults.SeedInitial(config);
         HeadsetProfiles.SeedDefaults(config);
         return config;
     }

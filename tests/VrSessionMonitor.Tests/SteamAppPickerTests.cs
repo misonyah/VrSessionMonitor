@@ -78,6 +78,39 @@ public class SteamAppPickerTests
         Assert.False(missing.Enabled);
     }
 
+    [Theory]
+    [InlineData("slimevr")]
+    [InlineData("ovrtoolkit")]
+    [InlineData("xsoverlay")]
+    public void SteamVr_dependent_apps_start_with_steamvr_by_default(string id)
+        => Assert.True(ManagedAppDefaults.SeedFrom(new MonitorConfig(), steamAppInstalled: _ => false).Single(a => a.Id == id).StartWithSteamVr);
+
+    [Fact]
+    public void Existing_config_gets_the_default_once_and_a_later_untick_sticks()
+    {
+        var c = new MonitorConfig();
+        c.ManagedApps = ManagedAppDefaults.SeedFrom(c, steamAppInstalled: _ => false);
+        foreach (var a in c.ManagedApps) a.StartWithSteamVr = false;          // written before the field existed
+        c.StartWithSteamVrDefaultsApplied.Clear();
+
+        ManagedAppDefaults.AddNewlyIntroducedApps(c, steamAppInstalled: _ => false);
+        Assert.True(c.GetApp("slimevr")!.StartWithSteamVr);
+
+        c.GetApp("slimevr")!.StartWithSteamVr = false;                         // user unticks it
+        ManagedAppDefaults.AddNewlyIntroducedApps(c, steamAppInstalled: _ => false);
+        Assert.False(c.GetApp("slimevr")!.StartWithSteamVr);
+    }
+
+    [Fact]
+    public void Fresh_install_untick_sticks_on_next_start()
+    {
+        var c = new MonitorConfig();
+        c.ManagedApps = ManagedAppDefaults.SeedInitial(c, steamAppInstalled: _ => false);   // first run
+        c.GetApp("ovrtoolkit")!.StartWithSteamVr = false;                              // user unticks
+        ManagedAppDefaults.AddNewlyIntroducedApps(c, steamAppInstalled: _ => false);  // next start
+        Assert.False(c.GetApp("ovrtoolkit")!.StartWithSteamVr);
+    }
+
     [Fact]
     public void Apps_to_start_with_steamvr_are_enabled_ticked_and_not_running()
     {

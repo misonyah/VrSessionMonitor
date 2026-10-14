@@ -48,6 +48,35 @@ public static class ManagedAppDefaults
 
         config.SeededAppIds = known.ToList();
         ApplyDefaultSteamVrAppKeys(config.ManagedApps);
+        ApplyStartWithSteamVrDefaults(config);
+    }
+
+    /// <summary>First-run seeding: the default app list, with the one-time defaults recorded as
+    /// applied, so a later untick sticks. SeedFrom itself stays side-effect-free (AddNewlyIntroducedApps
+    /// also calls it, only to discover new candidates).</summary>
+    public static List<ManagedApp> SeedInitial(MonitorConfig config, Func<string, bool>? steamAppInstalled = null)
+    {
+        var apps = SeedFrom(config, steamAppInstalled);
+        foreach (var id in StartWithSteamVrByDefault)
+            if (!config.StartWithSteamVrDefaultsApplied.Contains(id, StringComparer.OrdinalIgnoreCase))
+                config.StartWithSteamVrDefaultsApplied.Add(id);
+        return apps;
+    }
+
+    /// <summary>Apps that need SteamVR up and used to be started by SteamVR's own startup list. They
+    /// start with SteamVR by default, so they come up however SteamVR was started.</summary>
+    private static readonly string[] StartWithSteamVrByDefault = { "slimevr", "ovrtoolkit", "xsoverlay", "ovradvancedsettings" };
+
+    /// <summary>Turns the default on once per app for configs written before the option existed;
+    /// recorded in StartWithSteamVrDefaultsApplied so a later untick sticks.</summary>
+    private static void ApplyStartWithSteamVrDefaults(MonitorConfig config)
+    {
+        foreach (var id in StartWithSteamVrByDefault)
+        {
+            if (config.StartWithSteamVrDefaultsApplied.Contains(id, StringComparer.OrdinalIgnoreCase)) continue;
+            if (config.GetApp(id) is { } app) app.StartWithSteamVr = true;
+            config.StartWithSteamVrDefaultsApplied.Add(id);
+        }
     }
 
     /// <summary>SteamVR app keys known to start the same app as a managed entry. Keys are the
@@ -256,6 +285,11 @@ public static class ManagedAppDefaults
         };
 
         ApplyDefaultSteamVrAppKeys(apps);
+        foreach (var app in apps)
+        {
+            if (!StartWithSteamVrByDefault.Contains(app.Id, StringComparer.OrdinalIgnoreCase)) continue;
+            app.StartWithSteamVr = true;
+        }
         return apps;
     }
 }
