@@ -372,6 +372,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         _orchestrator.UpdateFindingsAvailable += OnUpdateFindingsAvailable;
         _firmwareNotify.NotificationReceived += (_, _) => _settingsForm.RefreshFirmwareLabel();
         _steamVr.FullyRunningChanged += running => _ = _optimizations.HandleSteamVrRunningChangedAsync(running);
+        // Apps ticked "Start when SteamVR starts" (e.g. OVR Advanced Settings) — what SteamVR's own
+        // startup-overlay list used to do, now following this app's settings.
+        _steamVr.FullyRunningChanged += running =>
+        {
+            if (running)
+                _ = SteamVrStartLauncher.LaunchDueAppsAsync(_config, new ProcessLauncher(),
+                    uri => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri) { UseShellExecute = true }));
+        };
         // Same session boundary drives per-app CPU priority: lower a background app while the
         // session runs, put it back afterwards.
         _steamVr.FullyRunningChanged += running => _sessionPriority.HandleSteamVrRunningChanged(running);

@@ -1039,6 +1039,58 @@ public sealed class SettingsForm : Form
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
+    /// <summary>Searchable list of the Steam apps installed on this PC (read from Steam's library
+    /// files, no network). Returns the chosen app, or null if cancelled / Steam not found.</summary>
+    private SteamAppInfo? PickSteamApp()
+    {
+        var root = SteamLibrary.DefaultSteamRoot();
+        var apps = root is null ? new List<SteamAppInfo>() : SteamLibrary.LoadInstalled(root).ToList();
+        if (apps.Count == 0)
+        {
+            MessageBox.Show(this, "No installed Steam apps were found.", "Pick Steam app", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return null;
+        }
+
+        using var dlg = new Form
+        {
+            Text = "Pick Steam app", Width = 460, Height = 520, StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false,
+        };
+        var search = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Type to search..." };
+        var list = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false };
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
+        var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
+        buttons.Controls.Add(cancel); buttons.Controls.Add(ok);
+        dlg.AcceptButton = ok; dlg.CancelButton = cancel;
+
+        void Fill()
+        {
+            var q = search.Text.Trim();
+            list.BeginUpdate();
+            list.Items.Clear();
+            foreach (var a in apps.Where(a => q.Length == 0 || a.Name.Contains(q, StringComparison.CurrentCultureIgnoreCase) || a.AppId == q))
+                list.Items.Add(new SteamListItem(a));
+            list.EndUpdate();
+            if (list.Items.Count > 0) list.SelectedIndex = 0;
+        }
+        search.TextChanged += (_, _) => Fill();
+        search.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Down && list.Items.Count > 0) { list.Focus(); e.Handled = true; }
+        };
+        list.DoubleClick += (_, _) => { if (list.SelectedItem is not null) dlg.DialogResult = DialogResult.OK; };
+
+        dlg.Controls.Add(list); dlg.Controls.Add(search); dlg.Controls.Add(buttons);
+        Fill();
+        return dlg.ShowDialog(this) == DialogResult.OK && list.SelectedItem is SteamListItem item ? item.App : null;
+    }
+
+    private sealed record SteamListItem(SteamAppInfo App)
+    {
+        public override string ToString() => $"{App.Name}  ({App.AppId})";
+    }
+
     private string HeadsetStatusText()
     {
         var active = HeadsetProfiles.Find(_config, _headset.ActiveHeadsetId);
@@ -1729,8 +1781,27 @@ public sealed class SettingsForm : Form
             Log.Info("SettingsForm", $"Managed app '{app.Id}' set from executable '{dialog.FileName}'.");
         };
 
+        var pickSteam = new Button { Text = "Pick Steam app...", AutoSize = true };
+        pickSteam.Click += (_, _) =>
+        {
+            var picked = PickSteamApp();
+            if (picked is null) return;
+
+            app.LaunchMethod = AppLaunchMethod.SteamAppId;
+            app.Target = picked.AppId;
+            if (picked.GuessProcessName() is { } proc && (string.IsNullOrWhiteSpace(app.ProcessName) || app.DisplayName == "New app"))
+                app.ProcessName = proc;
+            if (string.IsNullOrWhiteSpace(app.DisplayName) || app.DisplayName == "New app")
+                app.DisplayName = picked.Name;
+
+            Save();
+            RebuildAppDetailPanel();
+            Log.Info("SettingsForm", $"Managed app '{app.Id}' set to Steam app {picked.AppId} ({picked.Name}).");
+        };
+
         pickerRow.Controls.Add(pickRunning);
         pickerRow.Controls.Add(browseExe);
+        pickerRow.Controls.Add(pickSteam);
         launchLayout.Controls.Add(pickerRow);
 
         var methodRow = new FlowLayoutPanel { AutoSize = true };
@@ -1747,6 +1818,8 @@ public sealed class SettingsForm : Form
 
         launchLayout.Controls.Add(BuildTextRow("Target (exe path or Steam app id)", app.Target, v => { app.Target = v.Trim(); Save(); }));
         launchLayout.Controls.Add(BuildTextRow("Process name (no .exe)", app.ProcessName, v => { app.ProcessName = v.Trim(); Save(); }));
+        launchLayout.Controls.Add(BuildCheckbox("Start when SteamVR starts (any headset)", app.StartWithSteamVr,
+            v => { app.StartWithSteamVr = v; Save(); }));
         launchGroup.Controls.Add(launchLayout);
         layout.Controls.Add(launchGroup);
 

@@ -1,3 +1,5 @@
+using VrSessionMonitor.Modules;
+
 namespace VrSessionMonitor.Config;
 
 /// <summary>
@@ -13,6 +15,8 @@ namespace VrSessionMonitor.Config;
 /// </summary>
 public static class ManagedAppDefaults
 {
+    public const string OvrAdvancedSettingsSteamAppId = "1009850";
+
     /// <summary>
     /// Adds apps introduced by a newer build to a config that already has a managed-app list,
     /// which plain seeding skips because it only runs when the list is empty.
@@ -22,7 +26,7 @@ public static class ManagedAppDefaults
     /// would be indistinguishable from "restore anything missing", and a removed entry would come
     /// back every single start.
     /// </summary>
-    public static void AddNewlyIntroducedApps(MonitorConfig config)
+    public static void AddNewlyIntroducedApps(MonitorConfig config, Func<string, bool>? steamAppInstalled = null)
     {
         var known = new HashSet<string>(config.SeededAppIds, StringComparer.OrdinalIgnoreCase);
         var present = new HashSet<string>(config.ManagedApps.Select(a => a.Id), StringComparer.OrdinalIgnoreCase);
@@ -33,7 +37,7 @@ public static class ManagedAppDefaults
 
         var nextOrder = config.ManagedApps.Count == 0 ? 0 : config.ManagedApps.Max(a => a.Order) + 1;
 
-        foreach (var candidate in SeedFrom(config))
+        foreach (var candidate in SeedFrom(config, steamAppInstalled))
         {
             if (known.Contains(candidate.Id)) continue;
 
@@ -60,6 +64,7 @@ public static class ManagedAppDefaults
         ["baballonia"] = new[] { "projectbabble.baballonia", "steam.overlay.4091970" },
         ["slimevr"] = new[] { "steam.overlay.3245490", "slimevr.steamvr.feeder" },
         ["sranipal"] = new[] { "vive.pro.eye.calibration.dashboard" },
+        ["ovradvancedsettings"] = new[] { "steam.overlay.1009850" },
     };
 
     /// <summary>Fills SteamVrAppKeys for known apps that have none yet (new seeds, and configs written
@@ -71,8 +76,12 @@ public static class ManagedAppDefaults
                 app.SteamVrAppKeys = keys.ToList();
     }
 
-    public static List<ManagedApp> SeedFrom(MonitorConfig config)
+    /// <param name="steamAppInstalled">Whether a Steam app id is installed here (default: read the
+    /// Steam libraries). Optional apps are added for everyone but only enabled where installed, so a
+    /// fresh install on someone else's PC stays inert.</param>
+    public static List<ManagedApp> SeedFrom(MonitorConfig config, Func<string, bool>? steamAppInstalled = null)
     {
+        steamAppInstalled ??= SteamLibrary.IsInstalledHere;
         var order = 0;
         var apps = new List<ManagedApp>
         {
@@ -230,6 +239,19 @@ public static class ManagedAppDefaults
                 LaunchMethod = AppLaunchMethod.SteamAppId,
                 Target = config.Paths.XSOverlaySteamAppId,
                 ProcessName = "XSOverlay",
+            },
+            new()
+            {
+                // A SteamVR dashboard overlay (playspace, offsets, audio switching). Needs SteamVR up
+                // first, so it starts with SteamVR rather than with the headset.
+                Id = "ovradvancedsettings",
+                DisplayName = "OVR Advanced Settings",
+                Enabled = steamAppInstalled(OvrAdvancedSettingsSteamAppId),
+                Order = order++,
+                LaunchMethod = AppLaunchMethod.SteamAppId,
+                Target = OvrAdvancedSettingsSteamAppId,
+                ProcessName = "AdvancedSettings",
+                StartWithSteamVr = true,
             },
         };
 

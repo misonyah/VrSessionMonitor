@@ -122,4 +122,8 @@ public sealed class ManagedApp
     /// "startup overlay apps" list. Used to flag and switch off SteamVR auto-starts that would bypass
     /// VrSessionMonitor's per-headset decisions.</summary>
     public List<string> SteamVrAppKeys { get; set; } = new();
+
+    /// <summary>Start this app once SteamVR is fully running (any headset), unless it already runs.
+    /// Replaces SteamVR's own "startup overlay apps" for apps that need SteamVR to be up first.</summary>
+    public bool StartWithSteamVr { get; set; }
 }
