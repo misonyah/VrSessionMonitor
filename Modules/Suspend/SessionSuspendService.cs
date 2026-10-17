@@ -55,6 +55,15 @@ public sealed class SessionSuspendService : IDisposable
     private DateTime? _sessionStartedAt;
     private int _consecutivePressureChecks;
 
+    /// <summary>Set when SteamVR stops, cleared when a session starts. A freeze pass still running
+    /// when SteamVR stops must not leave anything frozen: the session-end resume has already run by
+    /// then (2026-10-17: 44 processes stayed frozen after SteamVR closed mid-pass).</summary>
+    private bool _sessionEnded;
+
+    /// <summary>1 while a pressure-triggered freeze pass runs. A pass can outlast the check
+    /// interval, and an overlapping second pass suspended one process twice.</summary>
+    private int _freezePassRunning;
+
     /// <param name="freeMemoryGb">Available physical RAM in GB, or negative when unreadable.</param>
     /// <param name="hardFaultsPerSecond">Pages read from disk per second, or negative when
     /// unavailable. Both are injectable so the pressure logic is testable without consuming real
@@ -84,6 +93,7 @@ public sealed class SessionSuspendService : IDisposable
         if (isRunning) StartWatching();
         else
         {
+            lock (_lock) _sessionEnded = true;   // before ResumeAll, so an in-flight pass undoes itself
             StopWatching();
             ResumeAll();
         }
@@ -106,6 +116,7 @@ public sealed class SessionSuspendService : IDisposable
             _sessionStartedAt = DateTime.UtcNow;
             _consecutivePressureChecks = 0;
             _userThawed.Clear();
+            _sessionEnded = false;
         }
 
         // A rate computed against a sample from hours ago is meaningless.
@@ -179,8 +190,13 @@ public sealed class SessionSuspendService : IDisposable
             return;
         }
 
-        Log.Info("Suspend", $"Sustained memory pressure: {freeGb:0.#} GB available with {(faults < 0 ? "an unknown fault rate" : $"{faults:0} hard faults/sec")}, over {consecutive} consecutive checks — freezing opted-in apps until there is enough free.");
-        SuspendUntilEnoughFree();
+        if (Interlocked.Exchange(ref _freezePassRunning, 1) == 1) return;   // a pass is already running
+        try
+        {
+            Log.Info("Suspend", $"Sustained memory pressure: {freeGb:0.#} GB available with {(faults < 0 ? "an unknown fault rate" : $"{faults:0} hard faults/sec")}, over {consecutive} consecutive checks — freezing opted-in apps until there is enough free.");
+            SuspendUntilEnoughFree();
+        }
+        finally { Interlocked.Exchange(ref _freezePassRunning, 0); }
     }
 
     /// <summary>
@@ -223,6 +239,7 @@ public sealed class SessionSuspendService : IDisposable
 
         foreach (var (app, bytes) in candidates)
         {
+            lock (_lock) if (_sessionEnded) return;   // SteamVR stopped mid-pass: freeze nothing more
             SuspendConfiguredApps(onlyDisplayName: app.DisplayName);
             frozenApps++;
 
@@ -263,15 +280,19 @@ public sealed class SessionSuspendService : IDisposable
 
             foreach (var pid in _suspender.GetProcessIds(app.ProcessName))
             {
-                lock (_lock)
-                {
-                    if (_suspended.ContainsKey(pid)) continue; // already frozen this session
-                }
-
                 if (SuspendSafety.RefusalReason(app.ProcessName, pid, _currentProcessId) is string refusal)
                 {
                     Log.Warn("Suspend", $"Refusing to freeze {app.DisplayName} (PID {pid}): {refusal}.");
                     continue;
+                }
+
+                // Claim the PID before suspending it: checking "already frozen?" and suspending as
+                // two separate steps let an overlapping pass suspend the same process twice.
+                lock (_lock)
+                {
+                    if (_sessionEnded) goto done;              // SteamVR stopped: freeze nothing more
+                    if (_suspended.ContainsKey(pid)) continue; // already frozen this session
+                    _suspended[pid] = app.DisplayName;
                 }
 
                 // Read before suspending: once trimmed, the working set no longer reflects what
@@ -280,14 +301,25 @@ public sealed class SessionSuspendService : IDisposable
 
                 if (!_suspender.Suspend(pid))
                 {
+                    lock (_lock) _suspended.Remove(pid);
                     Log.Debug("Suspend", $"Could not freeze {app.DisplayName} (PID {pid}) — probably elevated above this app.");
                     continue;
                 }
 
+                bool endedMeanwhile;
                 lock (_lock)
                 {
-                    _suspended[pid] = app.DisplayName;
-                    _frozenBytes += heldBytes;
+                    endedMeanwhile = _sessionEnded;
+                    if (endedMeanwhile) _suspended.Remove(pid);
+                    else _frozenBytes += heldBytes;
+                }
+                if (endedMeanwhile)
+                {
+                    // The session-end resume ran while this suspend was in flight - undo it here,
+                    // since nothing else will.
+                    _suspender.Resume(pid);
+                    Log.Info("Suspend", $"SteamVR stopped mid-freeze — resumed {app.DisplayName} (PID {pid}) straight away.");
+                    goto done;
                 }
                 frozen++;
 
@@ -297,6 +329,7 @@ public sealed class SessionSuspendService : IDisposable
             }
         }
 
+        done:
         if (frozen > 0)
             Log.Info("Suspend", $"Froze {frozen} process(es) for the session and released their memory. All will be resumed when SteamVR stops.");
     }
