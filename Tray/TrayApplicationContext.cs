@@ -377,8 +377,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         _steamVr.FullyRunningChanged += running =>
         {
             if (running)
-                _ = SteamVrStartLauncher.LaunchDueAppsAsync(_config, new ProcessLauncher(),
-                    uri => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri) { UseShellExecute = true }));
+            {
+                var launcher = new ProcessLauncher();
+                _ = SteamVrStartLauncher.LaunchDueAppsAsync(_config, launcher, SteamUriLauncher.CreateDefault(ProcessLauncher.IsRunning));
+            }
         };
         // Same session boundary drives per-app CPU priority: lower a background app while the
         // session runs, put it back afterwards.

@@ -8,8 +8,11 @@ namespace VrSessionMonitor.Modules;
 /// elevation-safe path the overlays use; executables through the normal launcher.</summary>
 public static class SteamVrStartLauncher
 {
-    public static async Task LaunchDueAppsAsync(MonitorConfig config, IProcessLauncher launcher, Action<string> launchUri)
+    public static async Task LaunchDueAppsAsync(MonitorConfig config, IProcessLauncher launcher, SteamUriLauncher steamUri)
     {
+        // Steam apps run side by side: each waits for Steam and then ~30 s to verify, and doing them
+        // one after another would hold every later app up by that much.
+        var steamLaunches = new List<Task>();
         foreach (var app in SteamVrStartApps.Select(config.ManagedApps.ToArray(), launcher.IsRunning))
         {
             try
@@ -17,7 +20,7 @@ public static class SteamVrStartLauncher
                 if (app.LaunchMethod == AppLaunchMethod.SteamAppId)
                 {
                     Log.Info("SteamVrStart", $"SteamVR is up — starting {app.DisplayName} via steam://rungameid/{app.Target}.");
-                    launchUri($"steam://rungameid/{app.Target}");
+                    steamLaunches.Add(steamUri.LaunchAsync(app.Target, app.ProcessName, app.DisplayName));
                 }
                 else
                 {
@@ -32,5 +35,6 @@ public static class SteamVrStartLauncher
                 Log.Warn("SteamVrStart", $"Starting {app.DisplayName} failed: {ex.Message}");
             }
         }
+        await Task.WhenAll(steamLaunches).ConfigureAwait(false);
     }
 }

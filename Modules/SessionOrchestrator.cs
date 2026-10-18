@@ -42,6 +42,7 @@ public sealed class SessionOrchestrator
     private readonly Func<TimeSpan, Task<bool>>? _streamWaiterOverride;
     private readonly Func<Task>? _preflightOverride;
     private readonly Action<string> _launchUri;
+    private readonly SteamUriLauncher _steamUri;
 
     private readonly SemaphoreSlim _runGate = new(1, 1);
 
@@ -87,7 +88,8 @@ public sealed class SessionOrchestrator
         IProcessLauncher? launcher = null, Func<DateTime>? clock = null,
         Func<TimeSpan, Task<bool>>? streamWaiter = null, Func<Task>? preflightOverride = null,
         Action<string>? launchUri = null,
-        ISshRunner? ssh = null, IHotspotKeeper? hotspotKeeper = null)
+        ISshRunner? ssh = null, IHotspotKeeper? hotspotKeeper = null,
+        SteamUriLauncher? steamUri = null)
     {
         _config = config;
         _trackers = trackers;
@@ -98,6 +100,10 @@ public sealed class SessionOrchestrator
         _streamWaiterOverride = streamWaiter;
         _preflightOverride = preflightOverride;
         _launchUri = launchUri ?? (uri => Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }));
+        // An injected launchUri means a test driving the flow: treat Steam as ready rather than
+        // reading this machine's real Steam login state.
+        _steamUri = steamUri ?? new SteamUriLauncher(
+            launchUri is null ? SteamClient.IsLoggedIn : () => true, _launchUri, _launcher.IsRunning);
         _ssh = ssh ?? new SshRunner();
         _hotspotKeeper = hotspotKeeper ?? new HotspotKeeperClient();
 
@@ -551,6 +557,7 @@ public sealed class SessionOrchestrator
         // Resolved once: the logged id and the launched id must be the same value, and reading the
         // config twice leaves room for them to disagree if it changes between the two reads.
         var vrChatAppId = _config.LaunchTargetFor("vrchat", _config.Paths.VrChatSteamAppId);
+        if (!await _steamUri.WaitUntilReadyAsync("VRChat").ConfigureAwait(false)) return;   // Steam drops early requests
         Log.Info("Orchestrator", $"Launching VRChat via steam://rungameid/{vrChatAppId}.");
         try
         {
@@ -646,15 +653,9 @@ public sealed class SessionOrchestrator
         }
 
         Log.Info("Orchestrator", $"Launching {label} via steam://rungameid/{appId}.");
-        try
-        {
-            _launchUri($"steam://rungameid/{appId}");
-        }
-        catch (Exception ex)
-        {
-            Log.Error("Orchestrator", $"Failed to launch {label} via the steam:// protocol", ex);
-        }
-
+        // Not awaited: waiting for Steam's login and verifying the overlay appeared must not hold up
+        // the rest of the session flow.
+        _ = _steamUri.LaunchAsync(appId!, processName, label);
         return Task.CompletedTask;
     }
 }
