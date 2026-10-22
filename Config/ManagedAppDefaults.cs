@@ -233,8 +233,9 @@ public static class ManagedAppDefaults
             // Freeze candidates. Disabled, no window rules, no launching — they exist only so
             // SuspendDuringSession is one click away for the applications that actually caused
             // memory exhaustion here on 2026-09-02 (67 VS Code processes, Unity and Chrome between
-            // them held over 15 GB while VRChat stuttered from paging). Nothing happens to any of
-            // them unless the user ticks it.
+            // them held over 15 GB while VRChat stuttered from paging), plus Blender, the other
+            // editor that tends to sit open alongside them. Nothing happens to any of them unless
+            // the user ticks it.
             new()
             {
                 Id = "vscode",
@@ -258,6 +259,14 @@ public static class ManagedAppDefaults
                 Enabled = false,
                 Order = order++,
                 ProcessName = "chrome",
+            },
+            new()
+            {
+                Id = "blender",
+                DisplayName = "Blender",
+                Enabled = false,
+                Order = order++,
+                ProcessName = "blender",
             },
             new()
             {

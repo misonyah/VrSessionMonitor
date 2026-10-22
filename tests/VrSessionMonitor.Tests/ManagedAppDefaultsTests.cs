@@ -28,6 +28,18 @@ public class ManagedAppDefaultsTests
         Assert.Equal(apps.Count, apps.Select(a => a.Order).Distinct().Count());
     }
 
+    [Fact]
+    public void Blender_is_an_inert_freeze_candidate()
+    {
+        var blender = ManagedAppDefaults.SeedFrom(BaseConfig()).Single(a => a.Id == "blender");
+
+        Assert.Equal("blender", blender.ProcessName);
+        Assert.False(blender.Enabled);
+        Assert.Equal("", blender.Target);          // never launched
+        Assert.Null(blender.SessionPriority);      // nothing touched until the user opts in
+        Assert.False(blender.SuspendDuringSession);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
