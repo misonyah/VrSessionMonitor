@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using VrSessionMonitor.Logging;
 
@@ -36,6 +37,18 @@ public sealed class ProcessLauncher : IProcessLauncher
     private static readonly LaunchProvenance SharedProvenance = new();
 
     public LaunchProvenance Provenance => SharedProvenance;
+
+    private readonly Func<ProcessStartInfo, Process?> _start;
+    private readonly TimeSpan _startCallTimeout;
+
+    public ProcessLauncher() : this(Process.Start, TimeSpan.FromSeconds(10)) { }
+
+    /// <summary>Test seam: replaces Process.Start and the start-call time limit.</summary>
+    internal ProcessLauncher(Func<ProcessStartInfo, Process?> start, TimeSpan startCallTimeout)
+    {
+        _start = start;
+        _startCallTimeout = startCallTimeout;
+    }
 
     /// <summary>This app's own Windows session (the interactive user session for a tray app).
     /// -1 means "couldn't determine" — in which case session-scoping is disabled and matching
@@ -106,10 +119,14 @@ public sealed class ProcessLauncher : IProcessLauncher
                 {
                     FileName = exePath,
                     Arguments = args ?? "",
-                    // UseShellExecute=true silently ignores custom EnvironmentVariables (a real
-                    // .NET behavior, not a bug) — suppressUacPrompt needs false here so the
-                    // __COMPAT_LAYER override below actually reaches the child process.
-                    UseShellExecute = !suppressUacPrompt,
+                    // An .exe is started directly (CreateProcess), never through the shell: on
+                    // 2026-11-01 ShellExecuteEx started VRCFaceTracking and then never returned,
+                    // which held this name's launch lock for the rest of the run. The shell is
+                    // only used for targets CreateProcess can't run (shortcuts and the like) and
+                    // as the elevation fallback in StartDirectOrElevated. Direct also matters for
+                    // suppressUacPrompt: UseShellExecute=true silently ignores custom
+                    // EnvironmentVariables, so __COMPAT_LAYER below would never reach the child.
+                    UseShellExecute = !suppressUacPrompt && !IsExecutable(exePath),
                     WorkingDirectory = workingDirectory ?? Path.GetDirectoryName(exePath) ?? "",
                     WindowStyle = ProcessWindowStyle.Minimized,
                 };
@@ -129,7 +146,23 @@ public sealed class ProcessLauncher : IProcessLauncher
                     psi.EnvironmentVariables["__COMPAT_LAYER"] = "RunAsInvoker";
                 }
 
-                Process.Start(psi);
+                // Bounded, because the start call itself can hang (see UseShellExecute above) and
+                // nothing can cancel it. If it outlives the limit, stop waiting on it, release the
+                // lock when this method returns and let the poll below decide: on 2026-11-01 the
+                // process had in fact started.
+                var start = Task.Run(() => StartDirectOrElevated(psi, processName, allowElevation: !suppressUacPrompt));
+                if (await Task.WhenAny(start, Task.Delay(_startCallTimeout)).ConfigureAwait(false) == start)
+                {
+                    await start.ConfigureAwait(false); // surfaces a start failure to the catch below
+                }
+                else
+                {
+                    _ = start.ContinueWith(t => Log.Debug("ProcessLauncher",
+                            $"The abandoned start call for '{processName}' eventually failed: {t.Exception?.GetBaseException().Message}"),
+                        TaskContinuationOptions.OnlyOnFaulted);
+                    Log.Warn("ProcessLauncher",
+                        $"Starting '{processName}' hasn't returned after {_startCallTimeout.TotalSeconds:F0}s — no longer waiting on that call; checking whether the process appeared anyway.");
+                }
             }
             catch (Exception ex)
             {
@@ -161,6 +194,29 @@ public sealed class ProcessLauncher : IProcessLauncher
         finally
         {
             lockObj.Release();
+        }
+    }
+
+    private const int ErrorElevationRequired = 740;
+
+    private static bool IsExecutable(string path) =>
+        string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>CreateProcess refuses an exe whose manifest asks for elevation (ERROR_ELEVATION_REQUIRED),
+    /// which only the shell can satisfy, so retry those through the shell, accepting the UAC prompt,
+    /// as every launch did before 2026-11-01. Not when the caller asked to suppress UAC: a prompt
+    /// is exactly what that caller can't have.</summary>
+    private void StartDirectOrElevated(ProcessStartInfo psi, string processName, bool allowElevation)
+    {
+        try
+        {
+            _start(psi)?.Dispose();
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorElevationRequired && !psi.UseShellExecute && allowElevation)
+        {
+            Log.Info("ProcessLauncher", $"'{processName}' needs elevation — launching it through the shell instead (Windows may ask for UAC consent).");
+            psi.UseShellExecute = true;
+            _start(psi)?.Dispose();
         }
     }
 
