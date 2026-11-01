@@ -47,10 +47,16 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
 
         _machine = new PresenceLifecycleMachine(
             presenceSignal: () => HeadsetWantsVirtualHere(_config, _headset) || _viveTrackerPresent(),
-            isRunning: () => _launcher.IsRunning("vhui64") || _launcher.IsRunning("sr_runtime"),
+            isRunning: () => _launcher.IsRunning("vhui64") || SrRuntimeIsOursToStop(),
             ensureRunning: EnsureBothRunningAsync,
             shutdown: () =>
             {
+                if (_launcher.IsRunning("VRCFaceTracking"))
+                {
+                    Log.Warn("VhSranipalLifecycle", "Idle with no headset/Vive tracker — shutting down vhui64.exe. Leaving sr_runtime.exe to VRCFaceTracking, which is still running and would only start it again.");
+                    _launcher.Kill("vhui64");
+                    return;
+                }
                 Log.Warn("VhSranipalLifecycle", "Idle with no headset/Vive tracker — shutting down vhui64.exe/sr_runtime.exe.");
                 _launcher.Kill("vhui64");
                 _launcher.Kill("sr_runtime");
@@ -71,6 +77,14 @@ public sealed class VirtualHereSRanipalLifecycleManager : IDisposable
     internal static bool HeadsetWantsVirtualHere(MonitorConfig config, IHeadsetMonitor headset) =>
         headset.IsOnline &&
         (HeadsetProfiles.Find(config, headset.ActiveHeadsetId)?.Part(HeadsetPartNames.VirtualHere) ?? true);
+
+    /// <summary>While VRCFaceTracking runs (its own lifecycle keeps it up for the eye cameras too), its
+    /// SRanipal module starts sr_runtime again within seconds of a kill. Stopping it then only restarts
+    /// this manager's shutdown countdown: on 2026-11-01, with the headset off and the eye cameras on,
+    /// that killed sr_runtime every ~5.5 minutes. So sr_runtime only counts as something to stop once
+    /// VRCFaceTracking is gone.</summary>
+    private bool SrRuntimeIsOursToStop() =>
+        _launcher.IsRunning("sr_runtime") && !_launcher.IsRunning("VRCFaceTracking");
 
     /// <summary>Current presence-machine state. Internal, for test observability only.</summary>
     internal PresenceState State => _machine.State;

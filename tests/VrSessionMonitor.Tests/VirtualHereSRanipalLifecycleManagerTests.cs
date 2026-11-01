@@ -52,6 +52,70 @@ public class VirtualHereSRanipalLifecycleManagerTests
         Assert.Contains("sr_runtime", c.Launcher.KillCalls);
     }
 
+    // Regression from 2026-11-01: headset off, eye cameras still powered, so VRCFaceTracking stayed
+    // up for eye tracking. Every shutdown killed sr_runtime, VRCFaceTracking's SRanipal module started
+    // it again ~30s later, and that restarted the countdown — a kill every ~5.5 minutes for as long
+    // as the cameras stayed on.
+    [Fact]
+    public async Task Leaves_sr_runtime_alone_while_vrcfacetracking_runs()
+    {
+        var c = new Ctx(); c.Build();
+        c.Headset.SetOnline(true);
+        await c.Mgr.TickForTestAsync();              // Running, launched
+        c.Launcher.Running.Add("VRCFaceTracking");   // kept up by its own lifecycle (eye cameras)
+        c.Headset.SetOnline(false);
+        await c.Mgr.TickForTestAsync();              // ShuttingDown
+        c.Now = c.Now.AddMilliseconds(300001);
+        await c.Mgr.TickForTestAsync();              // shutdown
+
+        Assert.Contains("vhui64", c.Launcher.KillCalls);
+        Assert.DoesNotContain("sr_runtime", c.Launcher.KillCalls);
+    }
+
+    [Fact]
+    public async Task Sr_runtime_left_for_vrcfacetracking_does_not_restart_the_countdown()
+    {
+        var c = new Ctx(); c.Build();
+        c.Headset.SetOnline(true);
+        await c.Mgr.TickForTestAsync();
+        c.Launcher.Running.Add("VRCFaceTracking");
+        c.Headset.SetOnline(false);
+        await c.Mgr.TickForTestAsync();
+        // VRCFaceTracking's SRanipal module starts sr_runtime again whenever it is missing.
+        void ModuleRespawnsSrRuntime() => c.Launcher.Running.Add("sr_runtime");
+
+        for (var i = 0; i < 4; i++)
+        {
+            c.Now = c.Now.AddMilliseconds(300001);
+            await c.Mgr.TickForTestAsync();
+            ModuleRespawnsSrRuntime();
+        }
+
+        Assert.Equal(PresenceState.Idle, c.Mgr.State);
+        Assert.Equal(new[] { "vhui64" }, c.Launcher.KillCalls);
+        Assert.Null(c.Mgr.DescribePendingAction());
+    }
+
+    [Fact]
+    public async Task Stops_sr_runtime_once_vrcfacetracking_is_gone()
+    {
+        var c = new Ctx(); c.Build();
+        c.Headset.SetOnline(true);
+        await c.Mgr.TickForTestAsync();
+        c.Launcher.Running.Add("VRCFaceTracking");
+        c.Headset.SetOnline(false);
+        await c.Mgr.TickForTestAsync();
+        c.Now = c.Now.AddMilliseconds(300001);
+        await c.Mgr.TickForTestAsync();              // vhui64 stopped, sr_runtime left running
+
+        c.Launcher.Running.Remove("VRCFaceTracking"); // its own lifecycle shut it down later
+        await c.Mgr.TickForTestAsync();              // ShuttingDown again
+        c.Now = c.Now.AddMilliseconds(300001);
+        await c.Mgr.TickForTestAsync();
+
+        Assert.Contains("sr_runtime", c.Launcher.KillCalls);
+    }
+
     [Fact]
     public async Task Vive_tracker_alone_keeps_it_running()
     {
