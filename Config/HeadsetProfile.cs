@@ -112,6 +112,15 @@ public static class HeadsetProfiles
         },
     };
 
+    /// <summary>Built-in Frame session-start command: forces the on-device Babble runtime to eye-only
+    /// tracking, because the Steam Frame has no mouth camera. It writes the Babble driver's
+    /// default.vrsettings (which SteamVR never rewrites, unlike the user steamvr.vrsettings), so it
+    /// sticks and takes effect on the next SteamVR start. Idempotent, and a no-op that still exits 0
+    /// when the Babble runtime isn't installed, so it is harmless on any Frame. Runs over the profile's
+    /// SshHost like any other HeadsetCommand; a user can edit or remove it.</summary>
+    internal const string BabbleEyeOnlyCommand =
+        """python3 -c 'import json,os,sys; p=os.path.expanduser("~/.local/share/babble-frame-runtime/babble/resources/settings/default.vrsettings"); os.path.exists(p) or sys.exit(print("babble-runtime not installed; skip")); d=json.load(open(p)); b=d.setdefault("driver_babble",{}); b["mouthTracking"]=False; b["eyeTracking"]=True; json.dump(d,open(p,"w"),indent=2); print("eye-only enforced")'""";
+
     private static HeadsetProfile FrameDefault() => new()
     {
         Id = FrameId,
@@ -123,5 +132,6 @@ public static class HeadsetProfiles
         {
             [HeadsetPartNames.HotspotKeeper] = true, [HeadsetPartNames.LinkStatus] = true,
         },
+        HeadsetCommands = new() { new HeadsetCommand { Name = "Babble eye-only (mouth off)", Command = BabbleEyeOnlyCommand } },
     };
 }

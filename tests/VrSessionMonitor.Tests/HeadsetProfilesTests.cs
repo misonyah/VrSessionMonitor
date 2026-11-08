@@ -40,6 +40,19 @@ public class HeadsetProfilesTests
     }
 
     [Fact]
+    public void FrameDefault_seeds_babble_eye_only_command()
+    {
+        var c = new MonitorConfig();
+        HeadsetProfiles.SeedDefaults(c);
+        var frame = HeadsetProfiles.Find(c, "frame")!;
+        var cmd = Assert.Single(frame.HeadsetCommands);
+        Assert.True(cmd.Enabled);
+        Assert.Contains("mouthTracking", cmd.Command);       // sets the Babble mouth toggle off
+        Assert.Contains("default.vrsettings", cmd.Command);  // in the clobber-proof driver default
+        Assert.Empty(HeadsetProfiles.Find(c, "quest2")!.HeadsetCommands);  // Quest stays command-free
+    }
+
+    [Fact]
     public void SyncQuestFromNetwork_follows_edited_legacy_ip_fields()
     {
         var c = new MonitorConfig();
@@ -78,6 +91,7 @@ public class HeadsetProfilesTests
         {
             var c = MonitorConfig.CreateDefault();
             c.PinnedHeadset = "frame";
+            c.Headsets[1].HeadsetCommands.Clear();   // drop the seeded Babble eye-only command for this round-trip check
             c.Headsets[1].HeadsetCommands.Add(new HeadsetCommand { Name = "t", Command = "true" });
             c.Save(path);
             var l = MonitorConfig.LoadOrCreateDefault(path);

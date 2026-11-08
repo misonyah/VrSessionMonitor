@@ -84,6 +84,7 @@ public class SessionOrchestratorSteamLinkTests
         var c = new Ctx();
         var o = c.Build();
         var f = HeadsetProfiles.Find(c.Config, "frame")!;
+        f.HeadsetCommands.Clear();   // drop the seeded Babble eye-only command; assert only these three
         f.HeadsetCommands.Add(new HeadsetCommand { Name = "a", Command = "cmd-a" });
         f.HeadsetCommands.Add(new HeadsetCommand { Name = "off", Command = "cmd-off", Enabled = false });
         f.HeadsetCommands.Add(new HeadsetCommand { Name = "b", Command = "cmd-b" });

@@ -360,8 +360,10 @@ public sealed class SessionOrchestrator
     }
 
     /// <summary>Steam Frame: Steam Link replaces Virtual Desktop and the user picks the game in the
-    /// headset, so: keeper → SteamVR (only if not already up — "connect to PC" in the headset starts
-    /// it itself) → SlimeVR → overlay → headset-side commands. Never launches VRChat.</summary>
+    /// headset, so: headset-side commands → keeper → SteamVR (only if not already up — "connect to PC"
+    /// in the headset starts it itself) → SlimeVR → overlay. Headset commands run first so settings
+    /// they push (e.g. the Babble eye-only enforcement) are in place before SteamVR loads its drivers.
+    /// Never launches VRChat.</summary>
     private async Task RunSteamLinkFlowAsync(HeadsetProfile profile)
     {
         await FireAsync(SessionTrigger.StartSession);
@@ -379,6 +381,10 @@ public sealed class SessionOrchestrator
             await FireAsync(SessionTrigger.PingFlapDetected);        // -> Complete
             return;
         }
+
+        // Headset-side commands run first — before SteamVR/overlay — so settings they push (e.g. the
+        // Babble eye-only enforcement) are already on the headset before its SteamVR loads drivers.
+        await RunHeadsetCommandsAsync(profile).ConfigureAwait(false);
 
         if (profile.Part(HeadsetPartNames.HotspotKeeper) && !string.IsNullOrWhiteSpace(profile.HotspotKeeperTask))
         {
@@ -403,8 +409,6 @@ public sealed class SessionOrchestrator
         await LaunchSlimeVrAsync().ConfigureAwait(false);
         await FireAsync(SessionTrigger.VrOverlayPhase);                // -> LaunchingVrOverlay
         await LaunchVrOverlayAsync().ConfigureAwait(false);
-
-        await RunHeadsetCommandsAsync(profile).ConfigureAwait(false);
 
         _steamLinkCompletedForVrServerPid = _launcher.GetProcessId("vrserver");
         await FireAsync(SessionTrigger.ChainComplete);                 // -> Complete
