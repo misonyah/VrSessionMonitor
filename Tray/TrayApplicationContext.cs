@@ -62,15 +62,21 @@ public sealed class TrayApplicationContext : ApplicationContext
     public IReadOnlyList<string> FreezableAppNames =>
         _config.ManagedApps.Where(a => a.SuspendDuringSession).Select(a => a.DisplayName).ToList();
 
-    public bool IsAppFrozen(string displayName) => _sessionSuspend.IsFrozen(displayName);
+    /// <summary>One row per running process of every opted-in app. Enumerates processes, so call
+    /// it off the UI thread.</summary>
+    public IReadOnlyList<Modules.Suspend.FreezeProcessRow> GetFreezeProcessRows() => _sessionSuspend.GetProcessRows();
 
-    public bool IsAppThawedByUser(string displayName) => _sessionSuspend.IsThawedByUser(displayName);
-
-    /// <summary>Thaw for the rest of the session (the toggle going off).</summary>
+    /// <summary>Thaw a whole app for the rest of the session ("Thaw all").</summary>
     public void ThawApp(string displayName) => _sessionSuspend.ThawApp(displayName);
 
-    /// <summary>Hand back to the pressure logic and freeze now if opted in (the toggle going on).</summary>
+    /// <summary>Hand a whole app back to the pressure logic and freeze it now ("Freeze all").</summary>
     public void RefreezeApp(string displayName) => _sessionSuspend.RefreezeApp(displayName);
+
+    /// <summary>Thaw one process for the rest of the session.</summary>
+    public void ThawProcess(int processId) => _sessionSuspend.ThawProcess(processId);
+
+    /// <summary>Freeze one process now.</summary>
+    public void FreezeProcess(int processId) => _sessionSuspend.FreezeProcess(processId);
 
     /// <summary>Called after the opted-in set changes so unticking takes effect immediately
     /// instead of at the end of the session.</summary>

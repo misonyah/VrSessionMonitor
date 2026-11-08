@@ -43,6 +43,16 @@ public sealed class SessionSuspendService : IDisposable
     /// made to get at an editor mid-session never silently persists into the next session.</summary>
     private readonly HashSet<string> _userThawed = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Single processes the user thawed from the Status tab's process table, with the app
+    /// each belongs to. Same session scope as _userThawed; keyed on PID so the app's other
+    /// processes can still be frozen by pressure.</summary>
+    private readonly Dictionary<int, string> _userThawedPids = new();
+
+    /// <summary>Working set of each frozen PID just before it was frozen and trimmed. The process
+    /// table shows this for frozen rows: the live figure drops to almost nothing once trimmed, and
+    /// what the user needs to know is how much thawing it will cost.</summary>
+    private readonly Dictionary<int, long> _heldBytes = new();
+
     /// <summary>Physical RAM held by the processes we froze, measured just before freezing each.
     /// This is the amount our own freezing pushed out of RAM, which is what makes the pagefile
     /// look alarming afterwards - see FrozenWorkingSetGb.</summary>
@@ -116,6 +126,7 @@ public sealed class SessionSuspendService : IDisposable
             _sessionStartedAt = DateTime.UtcNow;
             _consecutivePressureChecks = 0;
             _userThawed.Clear();
+            _userThawedPids.Clear();
             _sessionEnded = false;
         }
 
@@ -219,7 +230,7 @@ public sealed class SessionSuspendService : IDisposable
             .Where(a => !string.IsNullOrWhiteSpace(a.ProcessName))
             .Where(a => { lock (_lock) return !_userThawed.Contains(a.DisplayName); })
             .Select(a => (App: a, Bytes: _suspender.GetProcessIds(a.ProcessName)
-                .Where(pid => { lock (_lock) return !_suspended.ContainsKey(pid); })
+                .Where(pid => { lock (_lock) return !_suspended.ContainsKey(pid) && !_userThawedPids.ContainsKey(pid); })
                 .Sum(_suspender.GetWorkingSetBytes)))
             .Where(x => x.Bytes > 0)
             .OrderByDescending(x => x.Bytes)
@@ -280,52 +291,9 @@ public sealed class SessionSuspendService : IDisposable
 
             foreach (var pid in _suspender.GetProcessIds(app.ProcessName))
             {
-                if (SuspendSafety.RefusalReason(app.ProcessName, pid, _currentProcessId) is string refusal)
-                {
-                    Log.Warn("Suspend", $"Refusing to freeze {app.DisplayName} (PID {pid}): {refusal}.");
-                    continue;
-                }
-
-                // Claim the PID before suspending it: checking "already frozen?" and suspending as
-                // two separate steps let an overlapping pass suspend the same process twice.
-                lock (_lock)
-                {
-                    if (_sessionEnded) goto done;              // SteamVR stopped: freeze nothing more
-                    if (_suspended.ContainsKey(pid)) continue; // already frozen this session
-                    _suspended[pid] = app.DisplayName;
-                }
-
-                // Read before suspending: once trimmed, the working set no longer reflects what
-                // this process was holding, and that figure is what FrozenWorkingSetGb discounts.
-                var heldBytes = _suspender.GetWorkingSetBytes(pid);
-
-                if (!_suspender.Suspend(pid))
-                {
-                    lock (_lock) _suspended.Remove(pid);
-                    Log.Debug("Suspend", $"Could not freeze {app.DisplayName} (PID {pid}) — probably elevated above this app.");
-                    continue;
-                }
-
-                bool endedMeanwhile;
-                lock (_lock)
-                {
-                    endedMeanwhile = _sessionEnded;
-                    if (endedMeanwhile) _suspended.Remove(pid);
-                    else _frozenBytes += heldBytes;
-                }
-                if (endedMeanwhile)
-                {
-                    // The session-end resume ran while this suspend was in flight - undo it here,
-                    // since nothing else will.
-                    _suspender.Resume(pid);
-                    Log.Info("Suspend", $"SteamVR stopped mid-freeze — resumed {app.DisplayName} (PID {pid}) straight away.");
-                    goto done;
-                }
-                frozen++;
-
-                // Only after a successful suspend: trimming a running process just makes it fault
-                // its pages straight back in, which costs disk I/O and achieves nothing.
-                _suspender.TrimWorkingSet(pid);
+                var outcome = SuspendPid(app, pid);
+                if (outcome == PidOutcome.Frozen) frozen++;
+                else if (outcome == PidOutcome.SessionEnded) goto done;
             }
         }
 
@@ -334,12 +302,161 @@ public sealed class SessionSuspendService : IDisposable
             Log.Info("Suspend", $"Froze {frozen} process(es) for the session and released their memory. All will be resumed when SteamVR stops.");
     }
 
+    private enum PidOutcome { Skipped, Frozen, SessionEnded }
+
+    /// <summary>Freezes one process of an opted-in app: safety check, claim, suspend, trim.
+    /// Skips a PID the user thawed by hand this session.</summary>
+    private PidOutcome SuspendPid(ManagedApp app, int pid)
+    {
+        if (SuspendSafety.RefusalReason(app.ProcessName, pid, _currentProcessId) is string refusal)
+        {
+            Log.Warn("Suspend", $"Refusing to freeze {app.DisplayName} (PID {pid}): {refusal}.");
+            return PidOutcome.Skipped;
+        }
+
+        // Claim the PID before suspending it: checking "already frozen?" and suspending as
+        // two separate steps let an overlapping pass suspend the same process twice.
+        lock (_lock)
+        {
+            if (_sessionEnded) return PidOutcome.SessionEnded;               // SteamVR stopped: freeze nothing more
+            if (_suspended.ContainsKey(pid)) return PidOutcome.Skipped;      // already frozen this session
+            if (_userThawedPids.ContainsKey(pid)) return PidOutcome.Skipped; // kept running by hand
+            _suspended[pid] = app.DisplayName;
+        }
+
+        // Read before suspending: once trimmed, the working set no longer reflects what
+        // this process was holding, and that figure is what FrozenWorkingSetGb discounts.
+        var heldBytes = _suspender.GetWorkingSetBytes(pid);
+
+        if (!_suspender.Suspend(pid))
+        {
+            lock (_lock) _suspended.Remove(pid);
+            Log.Debug("Suspend", $"Could not freeze {app.DisplayName} (PID {pid}) — probably elevated above this app.");
+            return PidOutcome.Skipped;
+        }
+
+        bool endedMeanwhile;
+        lock (_lock)
+        {
+            endedMeanwhile = _sessionEnded;
+            if (endedMeanwhile) _suspended.Remove(pid);
+            else
+            {
+                _frozenBytes += heldBytes;
+                _heldBytes[pid] = heldBytes;
+            }
+        }
+        if (endedMeanwhile)
+        {
+            // The session-end resume ran while this suspend was in flight - undo it here,
+            // since nothing else will.
+            _suspender.Resume(pid);
+            Log.Info("Suspend", $"SteamVR stopped mid-freeze — resumed {app.DisplayName} (PID {pid}) straight away.");
+            return PidOutcome.SessionEnded;
+        }
+
+        // Only after a successful suspend: trimming a running process just makes it fault
+        // its pages straight back in, which costs disk I/O and achieves nothing.
+        _suspender.TrimWorkingSet(pid);
+        return PidOutcome.Frozen;
+    }
+
+    /// <summary>The opted-in app a running PID belongs to, or null when it matches no freeze rule.</summary>
+    private ManagedApp? OptedInAppOf(int pid) =>
+        _config.ManagedApps.Where(a => a.SuspendDuringSession && !string.IsNullOrWhiteSpace(a.ProcessName))
+            .FirstOrDefault(a => _suspender.GetProcessIds(a.ProcessName).Contains(pid));
+
+    /// <summary>
+    /// Thaws one process from the Status tab's process table and keeps it running for the rest of
+    /// the session, while pressure can still freeze the app's other processes. Works before
+    /// anything is frozen too, as a pre-emptive "leave this one alone".
+    /// </summary>
+    public void ThawProcess(int pid)
+    {
+        string? app;
+        bool wasFrozen;
+        lock (_lock)
+        {
+            wasFrozen = _suspended.Remove(pid, out app);
+            if (wasFrozen)
+            {
+                _heldBytes.Remove(pid);
+                if (_suspended.Count == 0) _frozenBytes = 0;
+            }
+        }
+        app ??= OptedInAppOf(pid)?.DisplayName;
+        if (app is null) return;   // matches no freeze rule; nothing to remember
+        lock (_lock) _userThawedPids[pid] = app;
+
+        if (!wasFrozen)
+        {
+            Log.Info("Suspend", $"{app} (PID {pid}) will not be frozen this session.");
+            return;
+        }
+        if (!_suspender.IsRunning(pid)) return;
+        if (_suspender.Resume(pid))
+            Log.Info("Suspend", $"Thawed {app} (PID {pid}) on request; it will not be frozen again this session.");
+        else
+            Log.Error("Suspend", $"FAILED to thaw {app} (PID {pid}). Still frozen and will look hung - resume with Process Explorer, or end and restart.");
+    }
+
+    /// <summary>Freezes one process now from the process table and drops any hand thaw on it.
+    /// Refused for a PID that matches no opted-in app, so the table can never freeze something the
+    /// config does not allow.</summary>
+    public void FreezeProcess(int pid)
+    {
+        var app = OptedInAppOf(pid);
+        if (app is null)
+        {
+            Log.Warn("Suspend", $"Not freezing PID {pid}: it matches no app set to freeze.");
+            return;
+        }
+        lock (_lock) _userThawedPids.Remove(pid);
+        if (SuspendPid(app, pid) == PidOutcome.Frozen)
+            Log.Info("Suspend", $"Froze {app.DisplayName} (PID {pid}) on request and released its memory.");
+    }
+
+    /// <summary>
+    /// One row per running process of every opted-in app, for the Status tab's process table:
+    /// apps ordered by total memory, biggest first, and processes within an app the same way.
+    /// Frozen rows report the memory held when frozen (see _heldBytes).
+    /// </summary>
+    public IReadOnlyList<FreezeProcessRow> GetProcessRows()
+    {
+        var rows = new List<FreezeProcessRow>();
+        foreach (var app in _config.ManagedApps.Where(a => a.SuspendDuringSession && !string.IsNullOrWhiteSpace(a.ProcessName)))
+        {
+            foreach (var pid in _suspender.GetProcessIds(app.ProcessName))
+            {
+                FreezeState state;
+                long? held;
+                lock (_lock)
+                {
+                    state = _suspended.ContainsKey(pid) ? FreezeState.Frozen
+                        : _userThawedPids.ContainsKey(pid) || _userThawed.Contains(app.DisplayName) ? FreezeState.KeptRunning
+                        : FreezeState.Running;
+                    held = _heldBytes.TryGetValue(pid, out var b) ? b : null;
+                }
+                var memory = state == FreezeState.Frozen && held is long h ? h : _suspender.GetWorkingSetBytes(pid);
+                rows.Add(new FreezeProcessRow(app.DisplayName, pid, app.ProcessName,
+                    _suspender.GetMainWindowTitle(pid), memory, state));
+            }
+        }
+
+        return rows.GroupBy(r => r.AppName, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Sum(r => r.MemoryBytes))
+            .SelectMany(g => g.OrderByDescending(r => r.MemoryBytes).ThenBy(r => r.ProcessId))
+            .ToList();
+    }
+
     public void ResumeAll()
     {
         List<KeyValuePair<int, string>> toResume;
         lock (_lock)
         {
             _userThawed.Clear(); // the session is over; next one starts from the config again
+            _userThawedPids.Clear();
+            _heldBytes.Clear();
             _frozenBytes = 0;
             if (_suspended.Count == 0) return;
             toResume = _suspended.ToList();
@@ -381,7 +498,7 @@ public sealed class SessionSuspendService : IDisposable
             _userThawed.Add(displayName);
             pids = _suspended.Where(kv => string.Equals(kv.Value, displayName, StringComparison.OrdinalIgnoreCase))
                 .Select(kv => kv.Key).ToList();
-            foreach (var pid in pids) _suspended.Remove(pid);
+            foreach (var pid in pids) { _suspended.Remove(pid); _heldBytes.Remove(pid); }
             // Approximate on purpose: once thawed, this app faults its own pages back in, so the
             // remaining tally should no longer speak for it. Zeroing when the last one is thawed
             // keeps it from drifting upward across a session of toggling.
@@ -414,7 +531,14 @@ public sealed class SessionSuspendService : IDisposable
     /// reading rather than "frozen the next time memory gets tight".</summary>
     public void RefreezeApp(string displayName)
     {
-        lock (_lock) _userThawed.Remove(displayName);
+        lock (_lock)
+        {
+            _userThawed.Remove(displayName);
+            foreach (var pid in _userThawedPids
+                         .Where(kv => string.Equals(kv.Value, displayName, StringComparison.OrdinalIgnoreCase))
+                         .Select(kv => kv.Key).ToList())
+                _userThawedPids.Remove(pid);
+        }
         SuspendConfiguredApps(onlyDisplayName: displayName);
     }
 
@@ -487,3 +611,18 @@ public sealed class SessionSuspendService : IDisposable
     /// it must happen whether or not this was ever disposed cleanly.</summary>
     public void Dispose() => StopWatching();
 }
+
+/// <summary>Freeze state of one process, as the Status tab's process table shows it.</summary>
+public enum FreezeState
+{
+    Running,
+    Frozen,
+    /// <summary>Thawed by hand (the process or its whole app) and kept running for the rest of
+    /// the session.</summary>
+    KeptRunning,
+}
+
+/// <summary>One row of the process table. MemoryBytes is the live working set, or for a frozen
+/// process what it held when it was frozen.</summary>
+public sealed record FreezeProcessRow(string AppName, int ProcessId, string ProcessName,
+    string WindowTitle, long MemoryBytes, FreezeState State);
