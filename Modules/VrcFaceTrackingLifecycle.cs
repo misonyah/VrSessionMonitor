@@ -23,6 +23,7 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
     private readonly MonitorConfig _config;
     private readonly Func<bool> _anyEyeCameraOnline;
     private readonly Func<bool> _viveTrackerPresent;
+    private readonly Func<bool> _remoteFaceTrackerPresent;
     private readonly IProcessLauncher _launcher;
     private readonly PresenceLifecycleMachine _machine;
     private CancellationTokenSource? _cts;
@@ -35,20 +36,25 @@ public sealed class VrcFaceTrackingLifecycleManager : IDisposable
         Func<bool> anyEyeCameraOnline,
         Func<bool> viveTrackerPresent,
         IProcessLauncher? launcher = null,
-        Func<DateTime>? clock = null)
+        Func<DateTime>? clock = null,
+        Func<bool>? remoteFaceTrackerPresent = null)
     {
         _config = config;
         _anyEyeCameraOnline = anyEyeCameraOnline;
         _viveTrackerPresent = viveTrackerPresent;
+        // True when the active headset does its own eye+face tracking on-device and streams it to
+        // VRCFaceTracking over the network (the Steam Frame's Babble runtime) — so no PC-side eye
+        // camera or Vive tracker is ever present, yet VRCFaceTracking must stay up to receive it.
+        _remoteFaceTrackerPresent = remoteFaceTrackerPresent ?? (() => false);
         _launcher = launcher ?? new ProcessLauncher();
 
         _machine = new PresenceLifecycleMachine(
-            presenceSignal: () => _anyEyeCameraOnline() || _viveTrackerPresent(),
+            presenceSignal: () => _anyEyeCameraOnline() || _viveTrackerPresent() || _remoteFaceTrackerPresent(),
             isRunning: () => _launcher.IsRunning("VRCFaceTracking"),
             ensureRunning: EnsureRunningAsync,
             shutdown: () =>
             {
-                Log.Warn("VrcFtLifecycle", "Idle with no eye camera or Vive tracker — shutting down VRCFaceTracking.exe.");
+                Log.Warn("VrcFtLifecycle", "Idle with no eye camera, Vive tracker, or remote face tracker — shutting down VRCFaceTracking.exe.");
                 _launcher.Kill("VRCFaceTracking");
             },
             shutdownDelayMs: _config.VrcFaceTrackingLifecycle.ShutdownDelayMs,

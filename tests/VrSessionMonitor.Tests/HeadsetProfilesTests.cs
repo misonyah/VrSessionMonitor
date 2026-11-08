@@ -40,14 +40,14 @@ public class HeadsetProfilesTests
     }
 
     [Fact]
-    public void FrameDefault_seeds_babble_eye_only_command()
+    public void FrameDefault_seeds_babble_both_tracking_command()
     {
         var c = new MonitorConfig();
         HeadsetProfiles.SeedDefaults(c);
         var frame = HeadsetProfiles.Find(c, "frame")!;
         var cmd = Assert.Single(frame.HeadsetCommands);
         Assert.True(cmd.Enabled);
-        Assert.Contains("mouthTracking", cmd.Command);       // sets the Babble mouth toggle off
+        Assert.Contains("\"mouthTracking\"]=True", cmd.Command);  // enables the Babble mouth toggle (VFT)
         Assert.Contains("default.vrsettings", cmd.Command);  // in the clobber-proof driver default
         Assert.Empty(HeadsetProfiles.Find(c, "quest2")!.HeadsetCommands);  // Quest stays command-free
     }

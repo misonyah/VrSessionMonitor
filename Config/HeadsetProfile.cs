@@ -23,6 +23,10 @@ public static class HeadsetPartNames
     public const string ViveFaceTracker = "ViveFaceTracker";
     public const string HotspotKeeper = "HotspotKeeper";
     public const string LinkStatus = "LinkStatus";
+    /// <summary>The headset tracks eyes+face on-device and streams it to VRCFaceTracking over the
+    /// network (Steam Frame's Babble runtime), so no PC-side eye/Vive hardware is present but
+    /// VRCFaceTracking must still be kept alive to receive it.</summary>
+    public const string RemoteFaceTracking = "RemoteFaceTracking";
 }
 
 /// <summary>One headset the user owns. The active one decides the session flow and which
@@ -112,14 +116,14 @@ public static class HeadsetProfiles
         },
     };
 
-    /// <summary>Built-in Frame session-start command: forces the on-device Babble runtime to eye-only
-    /// tracking, because the Steam Frame has no mouth camera. It writes the Babble driver's
-    /// default.vrsettings (which SteamVR never rewrites, unlike the user steamvr.vrsettings), so it
-    /// sticks and takes effect on the next SteamVR start. Idempotent, and a no-op that still exits 0
-    /// when the Babble runtime isn't installed, so it is harmless on any Frame. Runs over the profile's
-    /// SshHost like any other HeadsetCommand; a user can edit or remove it.</summary>
-    internal const string BabbleEyeOnlyCommand =
-        """python3 -c 'import json,os,sys; p=os.path.expanduser("~/.local/share/babble-frame-runtime/babble/resources/settings/default.vrsettings"); os.path.exists(p) or sys.exit(print("babble-runtime not installed; skip")); d=json.load(open(p)); b=d.setdefault("driver_babble",{}); b["mouthTracking"]=False; b["eyeTracking"]=True; json.dump(d,open(p,"w"),indent=2); print("eye-only enforced")'""";
+    /// <summary>Built-in Frame session-start command: ensures the on-device Babble runtime has both eye
+    /// and mouth tracking enabled, now that a Vive Facial Tracker is wired to the Frame as its mouth
+    /// camera. It writes the Babble driver's default.vrsettings (which SteamVR never rewrites, unlike
+    /// the user steamvr.vrsettings), so it sticks and takes effect on the next SteamVR start. Idempotent,
+    /// and a no-op that still exits 0 when the Babble runtime isn't installed, so it is harmless on any
+    /// Frame. Runs over the profile's SshHost like any other HeadsetCommand; a user can edit or remove it.</summary>
+    internal const string BabbleBothTrackingCommand =
+        """python3 -c 'import json,os,sys; p=os.path.expanduser("~/.local/share/babble-frame-runtime/babble/resources/settings/default.vrsettings"); os.path.exists(p) or sys.exit(print("babble-runtime not installed; skip")); d=json.load(open(p)); b=d.setdefault("driver_babble",{}); b["mouthTracking"]=True; b["eyeTracking"]=True; json.dump(d,open(p,"w"),indent=2); print("eye+mouth enforced")'""";
 
     private static HeadsetProfile FrameDefault() => new()
     {
@@ -131,7 +135,8 @@ public static class HeadsetProfiles
         Parts = new(StringComparer.OrdinalIgnoreCase)
         {
             [HeadsetPartNames.HotspotKeeper] = true, [HeadsetPartNames.LinkStatus] = true,
+            [HeadsetPartNames.RemoteFaceTracking] = true,
         },
-        HeadsetCommands = new() { new HeadsetCommand { Name = "Babble eye-only (mouth off)", Command = BabbleEyeOnlyCommand } },
+        HeadsetCommands = new() { new HeadsetCommand { Name = "Babble eye+mouth (VFT)", Command = BabbleBothTrackingCommand } },
     };
 }

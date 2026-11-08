@@ -15,6 +15,7 @@ public class VrcFaceTrackingLifecycleManagerTests
         public FakeProcessLauncher Launcher = new();
         public bool EyeCam;
         public bool ViveTracker;
+        public bool RemoteFace;
         public DateTime Now = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         public VrcFaceTrackingLifecycleManager Mgr = null!;
 
@@ -27,7 +28,8 @@ public class VrcFaceTrackingLifecycleManagerTests
             // MaxContinuousUptimeMs=0 / MinVrChatUptimeBeforeRestartMs=int.MaxValue workaround is no
             // longer needed for hermeticity; leaving the shipped defaults exercises the real config.
             Mgr = new VrcFaceTrackingLifecycleManager(
-                Config, () => EyeCam, () => ViveTracker, Launcher, () => Now);
+                Config, () => EyeCam, () => ViveTracker, Launcher, () => Now,
+                remoteFaceTrackerPresent: () => RemoteFace);
             return Mgr;
         }
     }
@@ -48,6 +50,25 @@ public class VrcFaceTrackingLifecycleManagerTests
         c.ViveTracker = true;
         await c.Mgr.TickForTestAsync();
         Assert.Contains("VRCFaceTracking", c.Launcher.EnsureRunningCalls);
+    }
+
+    [Fact]
+    public async Task Remote_face_tracker_present_launches_vrcfacetracking()
+    {
+        var c = new Ctx(); c.Build();
+        c.RemoteFace = true;   // Frame streams on-device tracking to VRCFaceTracking over the network
+        await c.Mgr.TickForTestAsync();
+        Assert.Contains("VRCFaceTracking", c.Launcher.EnsureRunningCalls);
+    }
+
+    [Fact]
+    public async Task Remote_face_tracker_present_keeps_vrcfacetracking_alive()
+    {
+        var c = new Ctx(); c.Build();
+        c.RemoteFace = true;
+        await c.Mgr.TickForTestAsync();   // Running
+        await c.Mgr.TickForTestAsync();   // still present -> not shut down
+        Assert.DoesNotContain("VRCFaceTracking", c.Launcher.KillCalls);
     }
 
     [Fact]

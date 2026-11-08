@@ -238,7 +238,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         _vrcFtLifecycle = new VrcFaceTrackingLifecycleManager(
             _config,
             () => _eyeTracking.Current.Any(c => c.Online),
-            () => _faceTracking.Current.ViveCameraDevicePresent);
+            () => _faceTracking.Current.ViveCameraDevicePresent,
+            // The Steam Frame tracks eyes+face on-device and streams to VRCFaceTracking over the
+            // network, so no PC-side eye/Vive hardware ever shows — keep VRCFaceTracking alive
+            // whenever the active headset is an online remote-face-tracking profile.
+            remoteFaceTrackerPresent: () =>
+                _headset.IsOnline &&
+                (HeadsetProfiles.Find(_config, _headset.ActiveHeadsetId)?.Part(HeadsetPartNames.RemoteFaceTracking) ?? false));
         _vrcOscLifecycle = new VrcOscLifecycleManager(_config, _vrChat);
         _vhSranipalLifecycle = new VirtualHereSRanipalLifecycleManager(
             _config, _headset, () => _faceTracking.Current.ViveCameraDevicePresent);
