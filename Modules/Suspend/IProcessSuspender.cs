@@ -25,6 +25,11 @@ public interface IProcessSuspender
     /// freeze the biggest holders first, so the fewest applications are disturbed to recover a
     /// given amount of memory.</summary>
     long GetWorkingSetBytes(int processId);
+
+    /// <summary>The process's main window title, or "" when it has no window or cannot be read.
+    /// Tells apart processes of one app in the Status tab's freeze table (one Unity editor per
+    /// project, for instance).</summary>
+    string GetMainWindowTitle(int processId) => "";
 }
 
 public sealed class ProcessSuspender : IProcessSuspender
@@ -97,6 +102,15 @@ public sealed class ProcessSuspender : IProcessSuspender
         // against each other, and a process exiting between enumeration and here is ordinary.
         try { using var p = System.Diagnostics.Process.GetProcessById(processId); return p.WorkingSet64; }
         catch { return 0; }
+    }
+
+    /// <summary>Process.MainWindowTitle reads the caption with GetWindowText, which for another
+    /// process's window returns the stored text without sending it a message - so it does not
+    /// block on a frozen process.</summary>
+    public string GetMainWindowTitle(int processId)
+    {
+        try { using var p = Process.GetProcessById(processId); return p.MainWindowTitle ?? ""; }
+        catch { return ""; }
     }
 
     public bool TrimWorkingSet(int processId)

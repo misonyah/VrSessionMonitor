@@ -9,6 +9,7 @@ using VrSessionMonitor.Modules;
 using VrSessionMonitor.Optimizations;
 #if INCLUDE_HOME_ASSISTANT
 using VrSessionMonitor.Modules.HomeAssistant;
+using VrSessionMonitor.Modules.Suspend;
 #endif
 
 namespace VrSessionMonitor.Tray;
@@ -93,8 +94,8 @@ public sealed class SettingsForm : Form
     private FlowLayoutPanel? _bluetoothStatusPanel;
     private FlowLayoutPanel? _frozenAppsPanel;
     private string _frozenRowSignature = "";
-    private bool _syncingFrozenToggles;
-    private readonly Dictionary<string, (Label State, CheckBox Toggle)> _frozenRows = new(StringComparer.OrdinalIgnoreCase);
+    private int _freezeRefreshRunning;
+    private readonly Dictionary<string, FreezeTableRow> _freezeRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, BluetoothStatusRow> _bluetoothRows = new(StringComparer.OrdinalIgnoreCase);
     private string _bluetoothRowSignature = "";
 
@@ -439,6 +440,7 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0, 3, 3, 3),
         };
         layout.Controls.Add(value, 2, row);
+        StableHeight.Hold(value);   // a line that wraps on one refresh must not shrink on the next
 
         if (action is not null) layout.Controls.Add(action, 3, row);
 
@@ -463,6 +465,7 @@ public sealed class SettingsForm : Form
             Visible = false,
         };
         layout.Controls.Add(label, 2, row);
+        StableHeight.Hold(label);   // once shown, hiding it again must not pull the rows below up
         return label;
     }
 
@@ -530,50 +533,87 @@ public sealed class SettingsForm : Form
     }
 
     /// <summary>
-    /// Keeps the frozen-app rows on the Status tab in step, following the same discipline as the
-    /// Bluetooth rows: rebuild only when the SET of freezable apps changes, and otherwise update
-    /// the label and toggle in place. This runs on the 5s tick, and tearing down controls that
-    /// often flickers and steals whatever the user was clicking.
+    /// Keeps the Status tab's freeze table in step: one row per running process of every app set
+    /// to freeze, grouped under its app, each with a Freeze/Thaw button in front.
+    ///
+    /// Reading the rows enumerates processes, so it runs off the UI thread and the result is applied
+    /// on it. Same discipline as the Bluetooth rows otherwise: the table is rebuilt only when the
+    /// set of processes changes and updated in place on every other 5s tick, since tearing controls
+    /// down that often flickers and steals the button the user is about to click.
     /// </summary>
     private void RefreshFrozenAppRows()
     {
         if (_frozenAppsPanel is null) return;
+        if (Interlocked.Exchange(ref _freezeRefreshRunning, 1) == 1) return;
 
-        var apps = _owner.FreezableAppNames;
-        var signature = string.Join("|", apps);
+        var anyOptedIn = _owner.FreezableAppNames.Count > 0;
+        Task.Run(() =>
+        {
+            try { return _owner.GetFreezeProcessRows(); }
+            catch (Exception ex)
+            {
+                Log.Debug("SettingsForm", $"Reading the freeze table failed: {ex.Message}");
+                return (IReadOnlyList<FreezeProcessRow>)Array.Empty<FreezeProcessRow>();
+            }
+        }).ContinueWith(t =>
+        {
+            if (IsDisposed) return;
+            UiDispatch.WhenHandleReady(this, () =>
+            {
+                try { if (!IsDisposed) ApplyFreezeRows(anyOptedIn, t.Result); }
+                finally { Interlocked.Exchange(ref _freezeRefreshRunning, 0); }
+            });
+        }, TaskScheduler.Default);
+    }
+
+    private void ApplyFreezeRows(bool anyOptedIn, IReadOnlyList<FreezeProcessRow> rows)
+    {
+        var signature = anyOptedIn + "|" + string.Join("|", rows.Select(r => $"{r.AppName}:{r.ProcessId}"));
         if (signature != _frozenRowSignature)
         {
             _frozenRowSignature = signature;
-            RebuildFrozenAppRows(apps);
+            RebuildFreezeTable(anyOptedIn, rows);
         }
 
-        foreach (var (name, row) in _frozenRows)
+        foreach (var group in rows.GroupBy(r => r.AppName, StringComparer.OrdinalIgnoreCase))
         {
-            var frozen = _owner.IsAppFrozen(name);
-            var thawed = _owner.IsAppThawedByUser(name);
-            var text = frozen ? "frozen" : thawed ? "kept running this session" : "running";
-            if (row.State.Text != text) row.State.Text = text;
-            SetRowStatus(row.State, frozen ? StatusLevel.Warning : StatusLevel.Good);
-
-            // Assigning Checked fires CheckedChanged, which would immediately re-apply the state
-            // being displayed - and fight the user mid-click. Suppress while syncing.
-            var shouldBeChecked = frozen || !thawed;
-            if (row.Toggle.Checked != shouldBeChecked)
+            var appRows = group.ToList();
+            if (_freezeRows.TryGetValue("app:" + group.Key, out var header))
             {
-                _syncingFrozenToggles = true;
-                try { row.Toggle.Checked = shouldBeChecked; }
-                finally { _syncingFrozenToggles = false; }
+                header.AnyFrozen = appRows.Any(r => r.State == FreezeState.Frozen);
+                SetText(header.Action, header.AnyFrozen ? "Thaw all" : "Freeze all");
+                SetText(header.Name, appRows.Count == 1 ? group.Key : $"{group.Key} ({appRows.Count} processes)");
+                SetText(header.Memory, FreezeTableFormat.Memory(appRows.Sum(r => r.MemoryBytes)));
+                SetText(header.State, FreezeTableFormat.AppState(appRows));
+            }
+
+            var labels = FreezeTableFormat.ProcessLabels(appRows);
+            for (var i = 0; i < appRows.Count; i++)
+            {
+                var r = appRows[i];
+                if (!_freezeRows.TryGetValue("pid:" + r.ProcessId, out var row)) continue;
+                row.ProcessState = r.State;
+                SetText(row.Action, r.State == FreezeState.Frozen ? "Thaw" : "Freeze");
+                SetText(row.Name, labels[i]);
+                SetText(row.Pid, r.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                SetText(row.Memory, FreezeTableFormat.Memory(r.MemoryBytes));
+                SetText(row.State, FreezeTableFormat.State(r.State));
+                row.State.ForeColor = r.State == FreezeState.Frozen ? Color.DarkOrange : SystemColors.ControlText;
+                var tip = string.IsNullOrWhiteSpace(r.WindowTitle) ? $"{r.ProcessName}.exe, no window" : r.WindowTitle;
+                if (_statusToolTip.GetToolTip(row.Name) != tip) _statusToolTip.SetToolTip(row.Name, tip);
             }
         }
+
+        static void SetText(Control c, string text) { if (c.Text != text) c.Text = text; }
     }
 
-    private void RebuildFrozenAppRows(IReadOnlyList<string> apps)
+    private void RebuildFreezeTable(bool anyOptedIn, IReadOnlyList<FreezeProcessRow> rows)
     {
         _frozenAppsPanel!.SuspendLayout();
         _frozenAppsPanel.Controls.Clear();
-        _frozenRows.Clear();
+        _freezeRows.Clear();
 
-        if (apps.Count == 0)
+        if (!anyOptedIn)
         {
             _frozenAppsPanel.Controls.Add(new Label
             {
@@ -587,33 +627,122 @@ public sealed class SettingsForm : Form
 
         _frozenAppsPanel.Controls.Add(new Label
         {
-            Text = "Freeze during session — untick to keep an app running for the rest of this session:",
+            Text = rows.Count == 0
+                ? "Freeze during session — none of the apps set to freeze is running."
+                : "Freeze during session — Thaw keeps a process running for the rest of this session:",
             AutoSize = true,
             Margin = new Padding(3, 6, 3, 3),
         });
-
-        foreach (var name in apps)
+        if (rows.Count == 0)
         {
-            var row = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(12, 0, 0, 0) };
-            var toggle = new CheckBox { Text = name, Checked = true, AutoSize = true, Margin = new Padding(3, 4, 6, 2) };
-            var state = new Label { Text = "running", AutoSize = true, Margin = new Padding(3, 7, 3, 2) };
-
-            var appName = name; // captured per row
-            toggle.CheckedChanged += (_, _) =>
-            {
-                if (_syncingFrozenToggles) return;
-                if (toggle.Checked) _owner.RefreezeApp(appName);
-                else _owner.ThawApp(appName);
-                RefreshFrozenAppRows();
-            };
-
-            row.Controls.Add(toggle);
-            row.Controls.Add(state);
-            _frozenAppsPanel.Controls.Add(row);
-            _frozenRows[name] = (state, toggle);
+            _frozenAppsPanel.ResumeLayout();
+            return;
         }
 
+        var table = new TableLayoutPanel
+        {
+            ColumnCount = 5,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(12, 0, 3, 3),
+        };
+        for (var c = 0; c < 5; c++) table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        var bold = new Font(Font, FontStyle.Bold);
+        var gray = SystemColors.GrayText;
+        AddRow(table, null, Cell("App / process", gray), Cell("PID", gray, right: true), Cell("Memory", gray, right: true), Cell("State", gray));
+
+        foreach (var group in rows.GroupBy(r => r.AppName, StringComparer.OrdinalIgnoreCase))
+        {
+            var appName = group.Key;
+            var header = new FreezeTableRow(ActionButton(), Cell("", font: bold), Cell(""), Cell("", font: bold, right: true), Cell("", font: bold));
+            header.Action.Click += (_, _) => RunFreezeAction(header.Action,
+                header.AnyFrozen ? () => _owner.ThawApp(appName) : () => _owner.RefreezeApp(appName));
+            AddRow(table, header.Action, header.Name, header.Pid, header.Memory, header.State);
+            _freezeRows["app:" + appName] = header;
+
+            foreach (var r in group)
+            {
+                var pid = r.ProcessId;
+                var row = new FreezeTableRow(ActionButton(), Cell("", indent: 16), Cell("", right: true), Cell("", right: true), Cell(""));
+                row.Action.Click += (_, _) => RunFreezeAction(row.Action,
+                    row.ProcessState == FreezeState.Frozen ? () => _owner.ThawProcess(pid) : () => _owner.FreezeProcess(pid));
+                AddRow(table, row.Action, row.Name, row.Pid, row.Memory, row.State);
+                _freezeRows["pid:" + pid] = row;
+            }
+        }
+
+        _frozenAppsPanel.Controls.Add(table);
         _frozenAppsPanel.ResumeLayout();
+
+        static Button ActionButton() => new()
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(76, 0),
+            Margin = new Padding(0, 1, 8, 1),
+        };
+
+        static Label Cell(string text, Color? color = null, bool right = false, Font? font = null, int indent = 0)
+        {
+            var label = new Label
+            {
+                Text = text,
+                AutoSize = true,
+                Anchor = right ? AnchorStyles.Right : AnchorStyles.Left,
+                TextAlign = right ? ContentAlignment.MiddleRight : ContentAlignment.MiddleLeft,
+                Margin = new Padding(3 + indent, 6, 10, 2),
+                MaximumSize = new Size(420, 0),
+            };
+            if (color is Color c) label.ForeColor = c;
+            if (font is not null) label.Font = font;
+            return label;
+        }
+
+        static void AddRow(TableLayoutPanel t, Control? action, Control name, Control pid, Control memory, Control state)
+        {
+            var row = t.RowCount++;
+            t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            if (action is not null) t.Controls.Add(action, 0, row);
+            t.Controls.Add(name, 1, row);
+            t.Controls.Add(pid, 2, row);
+            t.Controls.Add(memory, 3, row);
+            t.Controls.Add(state, 4, row);
+        }
+    }
+
+    /// <summary>Runs a freeze or thaw off the UI thread - freezing a whole app walks and suspends
+    /// every thread of every process - then refreshes the table.</summary>
+    private void RunFreezeAction(Button button, Action action)
+    {
+        button.Enabled = false;
+        Task.Run(() =>
+        {
+            try { action(); }
+            catch (Exception ex) { Log.Warn("SettingsForm", $"Freeze/thaw from the Status tab failed: {ex.Message}"); }
+        }).ContinueWith(_ =>
+        {
+            if (IsDisposed) return;
+            UiDispatch.WhenHandleReady(this, () =>
+            {
+                if (IsDisposed) return;
+                button.Enabled = true;
+                RefreshFrozenAppRows();
+            });
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>The controls of one freeze-table row, plus the state its button acts on, read at
+    /// click time so a click always does what the button currently says.</summary>
+    private sealed class FreezeTableRow(Button action, Label name, Label pid, Label memory, Label state)
+    {
+        public Button Action { get; } = action;
+        public Label Name { get; } = name;
+        public Label Pid { get; } = pid;
+        public Label Memory { get; } = memory;
+        public Label State { get; } = state;
+        public FreezeState? ProcessState { get; set; }
+        public bool AnyFrozen { get; set; }
     }
 
     private void RebuildBluetoothStatusRows(List<BluetoothDeviceConfig> devices)
