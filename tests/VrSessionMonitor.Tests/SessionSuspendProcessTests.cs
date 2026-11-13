@@ -24,8 +24,14 @@ public class SessionSuspendProcessTests
         public readonly Dictionary<int, long> WorkingSet = new();
         public readonly Dictionary<int, string> Titles = new();
 
+        /// <summary>null (the default) means "can't tell", so the table shows every process; a set
+        /// restricts the table to those PIDs, as the real EnumWindows pass would.</summary>
+        public HashSet<int>? WindowOwners;
+
         public IReadOnlyList<int> GetProcessIds(string processName) =>
             ByName.TryGetValue(processName, out var pids) ? pids : new List<int>();
+
+        public IReadOnlySet<int>? GetWindowOwningProcessIds() => WindowOwners;
 
         public bool Suspend(int processId) { Suspended.Add(processId); return true; }
         public bool Resume(int processId) { Resumed.Add(processId); return true; }
@@ -151,6 +157,18 @@ public class SessionSuspendProcessTests
         Assert.Equal(FreezeState.Running, rows.Single(r => r.ProcessId == 100).State);
         Assert.Equal(FreezeState.KeptRunning, rows.Single(r => r.ProcessId == 101).State);
         Assert.Equal("Unity", rows.Single(r => r.ProcessId == 101).AppName);
+    }
+
+    [Fact]
+    public void Rows_show_only_processes_that_own_a_window_when_the_suspender_can_tell()
+    {
+        var (svc, fake) = Build();
+        fake.WindowOwners = new HashSet<int> { 100, 200 }; // 101 is a window-less Unity helper
+
+        var rows = svc.GetProcessRows();
+
+        Assert.Equal(new[] { 200, 100 }, rows.Select(r => r.ProcessId)); // 101 left out
+        Assert.DoesNotContain(rows, r => r.ProcessId == 101);
     }
 
     [Fact]

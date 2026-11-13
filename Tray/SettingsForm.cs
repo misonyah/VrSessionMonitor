@@ -92,7 +92,7 @@ public sealed class SettingsForm : Form
     private readonly Dictionary<Label, PictureBox> _rowDots = new();
     private readonly ScrollWheelValueGuard _wheelGuard = new();
     private FlowLayoutPanel? _bluetoothStatusPanel;
-    private FlowLayoutPanel? _frozenAppsPanel;
+    private BufferedFlowLayoutPanel? _frozenAppsPanel;
     private string _frozenRowSignature = "";
     private int _freezeRefreshRunning;
     private readonly Dictionary<string, FreezeTableRow> _freezeRows = new(StringComparer.OrdinalIgnoreCase);
@@ -301,7 +301,7 @@ public sealed class SettingsForm : Form
         // One row per app that may be frozen this session, each with a toggle. A frozen editor is
         // exactly what you want back for a minute mid-session, and it otherwise looks hung with no
         // visible cause - so the state and the way to undo it belong in the same place.
-        _frozenAppsPanel = new FlowLayoutPanel
+        _frozenAppsPanel = new BufferedFlowLayoutPanel
         {
             FlowDirection = FlowDirection.TopDown,
             AutoSize = true,

@@ -417,17 +417,20 @@ public sealed class SessionSuspendService : IDisposable
     }
 
     /// <summary>
-    /// One row per running process of every opted-in app, for the Status tab's process table:
-    /// apps ordered by total memory, biggest first, and processes within an app the same way.
-    /// Frozen rows report the memory held when frozen (see _heldBytes).
+    /// One row per running process of every opted-in app that owns a visible window, for the Status
+    /// tab's process table: apps ordered by total memory, biggest first, and processes within an app
+    /// the same way. Window-less helper processes of an app are left out so the table shows only the
+    /// windows the user recognises. Frozen rows report the memory held when frozen (see _heldBytes).
     /// </summary>
     public IReadOnlyList<FreezeProcessRow> GetProcessRows()
     {
+        var windowed = _suspender.GetWindowOwningProcessIds();
         var rows = new List<FreezeProcessRow>();
         foreach (var app in _config.ManagedApps.Where(a => a.SuspendDuringSession && !string.IsNullOrWhiteSpace(a.ProcessName)))
         {
             foreach (var pid in _suspender.GetProcessIds(app.ProcessName))
             {
+                if (windowed is not null && !windowed.Contains(pid)) continue; // a window-less helper
                 FreezeState state;
                 long? held;
                 lock (_lock)

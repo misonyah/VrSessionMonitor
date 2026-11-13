@@ -30,6 +30,12 @@ public interface IProcessSuspender
     /// Tells apart processes of one app in the Status tab's freeze table (one Unity editor per
     /// project, for instance).</summary>
     string GetMainWindowTitle(int processId) => "";
+
+    /// <summary>PIDs that own a visible top-level window, gathered in a single pass. The Status
+    /// tab's freeze table shows only these, so an app's window-less helper processes don't crowd
+    /// it. null means the implementation can't tell, and then the table shows every matching
+    /// process.</summary>
+    IReadOnlySet<int>? GetWindowOwningProcessIds() => null;
 }
 
 public sealed class ProcessSuspender : IProcessSuspender
@@ -54,6 +60,20 @@ public sealed class ProcessSuspender : IProcessSuspender
 
     [DllImport("psapi.dll", SetLastError = true)]
     private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextLength(IntPtr hWnd);
 
     public IReadOnlyList<int> GetProcessIds(string processName)
     {
@@ -111,6 +131,32 @@ public sealed class ProcessSuspender : IProcessSuspender
     {
         try { using var p = Process.GetProcessById(processId); return p.MainWindowTitle ?? ""; }
         catch { return ""; }
+    }
+
+    /// <summary>One EnumWindows pass over every top-level window, keeping the owning PID of each
+    /// that is visible and has a caption. That is what reads as "a window" to the user, and it
+    /// costs one pass rather than a MainWindowHandle enumeration per candidate process.</summary>
+    public IReadOnlySet<int>? GetWindowOwningProcessIds()
+    {
+        var owners = new HashSet<int>();
+        try
+        {
+            EnumWindows((hWnd, _) =>
+            {
+                if (IsWindowVisible(hWnd) && GetWindowTextLength(hWnd) > 0
+                    && GetWindowThreadProcessId(hWnd, out var pid) != 0 && pid != 0)
+                {
+                    owners.Add((int)pid);
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("Suspend", $"Enumerating windows failed: {ex.Message}");
+            return null; // can't tell — the table falls back to showing every matching process
+        }
+        return owners;
     }
 
     public bool TrimWorkingSet(int processId)
