@@ -95,6 +95,8 @@ public sealed class SettingsForm : Form
     private BufferedFlowLayoutPanel? _frozenAppsPanel;
     private string _frozenRowSignature = "";
     private int _freezeRefreshRunning;
+    private int _warningsRefreshRunning;
+    private int _autostartRefreshRunning;
     private readonly Dictionary<string, FreezeTableRow> _freezeRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, BluetoothStatusRow> _bluetoothRows = new(StringComparer.OrdinalIgnoreCase);
     private string _bluetoothRowSignature = "";
@@ -492,10 +494,34 @@ public sealed class SettingsForm : Form
     /// wide-open avatar limits — so they are visible before a session rather than discovered
     /// mid-session at 20 FPS. Advisory only; nothing here changes a setting.
     /// </summary>
+    /// <summary>Gathering the warnings runs a WMI pagefile query and reads VRChat's registry keys,
+    /// either of which can stall for a moment, so it runs off the UI thread and the text is applied
+    /// on it — the same discipline as the freeze table. The guard drops a tick that lands while the
+    /// previous gather is still running rather than piling them up.</summary>
     private void RefreshWarnings()
     {
-        var warnings = _owner.CurrentSessionWarnings();
+        if (Interlocked.Exchange(ref _warningsRefreshRunning, 1) == 1) return;
+        Task.Run(() =>
+        {
+            try { return _owner.CurrentSessionWarnings(); }
+            catch (Exception ex)
+            {
+                Log.Debug("SettingsForm", $"Reading session warnings failed: {ex.Message}");
+                return (IReadOnlyList<SessionWarning>)Array.Empty<SessionWarning>();
+            }
+        }).ContinueWith(t =>
+        {
+            if (IsDisposed) return;
+            UiDispatch.WhenHandleReady(this, () =>
+            {
+                try { if (!IsDisposed) ApplyWarnings(t.Result); }
+                finally { Interlocked.Exchange(ref _warningsRefreshRunning, 0); }
+            });
+        }, TaskScheduler.Default);
+    }
 
+    private void ApplyWarnings(IReadOnlyList<SessionWarning> warnings)
+    {
         if (warnings.Count == 0)
         {
             _warningLabel.Text = "none";
@@ -1119,10 +1145,43 @@ public sealed class SettingsForm : Form
     /// <summary>Apps SteamVR itself starts on every launch ("startup overlay apps"). They bypass the
     /// per-headset logic (e.g. the VIVE eye-calibration dashboard drags SRanipal and its UAC prompt into
     /// a Steam Frame session), so VrSessionMonitor should own all auto-starts.</summary>
+    /// <summary>Reads SteamVR's auto-launch config files from disk, so it runs off the UI thread and
+    /// applies on it. The app list is snapshotted on the UI thread first, then only read in the
+    /// background. The guard drops a tick that lands mid-read.</summary>
     private void RefreshSteamVrAutostarts()
     {
-        var dir = SteamVrAutolaunchStore.DefaultDir();
-        if (dir is null)
+        if (Interlocked.Exchange(ref _autostartRefreshRunning, 1) == 1) return;
+        var apps = _config.ManagedApps.ToArray(); // snapshot on the UI thread; only read below
+        Task.Run(() =>
+        {
+            try
+            {
+                var dir = SteamVrAutolaunchStore.DefaultDir();
+                if (dir is null) return (ConfigFound: false, Names: (IReadOnlyList<string>)Array.Empty<string>());
+                var on = new SteamVrAutolaunchStore(dir).ReadAll().Where(e => e.Autolaunch).ToList();
+                var names = on.Select(e => apps.FirstOrDefault(a => a.SteamVrAppKeys.Contains(e.AppKey, StringComparer.OrdinalIgnoreCase))?.DisplayName ?? e.AppKey)
+                              .Distinct().ToList();
+                return (ConfigFound: true, Names: (IReadOnlyList<string>)names);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("SettingsForm", $"Reading SteamVR auto-starts failed: {ex.Message}");
+                return (ConfigFound: true, Names: (IReadOnlyList<string>)Array.Empty<string>());
+            }
+        }).ContinueWith(t =>
+        {
+            if (IsDisposed) return;
+            UiDispatch.WhenHandleReady(this, () =>
+            {
+                try { if (!IsDisposed) ApplySteamVrAutostarts(t.Result.ConfigFound, t.Result.Names); }
+                finally { Interlocked.Exchange(ref _autostartRefreshRunning, 0); }
+            });
+        }, TaskScheduler.Default);
+    }
+
+    private void ApplySteamVrAutostarts(bool configFound, IReadOnlyList<string> names)
+    {
+        if (!configFound)
         {
             _steamVrAutostartLabel.Text = "SteamVR config not found";
             SetRowStatus(_steamVrAutostartLabel, StatusLevel.Unknown);
@@ -1130,18 +1189,14 @@ public sealed class SettingsForm : Form
             return;
         }
 
-        var on = new SteamVrAutolaunchStore(dir).ReadAll().Where(e => e.Autolaunch).ToList();
-        _steamVrAutostartFixButton.Visible = on.Count > 0;
-        if (on.Count == 0)
+        _steamVrAutostartFixButton.Visible = names.Count > 0;
+        if (names.Count == 0)
         {
             _steamVrAutostartLabel.Text = "none — VrSessionMonitor starts everything";
             SetRowStatus(_steamVrAutostartLabel, StatusLevel.Good);
             return;
         }
 
-        var apps = _config.ManagedApps.ToArray();
-        var names = on.Select(e => apps.FirstOrDefault(a => a.SteamVrAppKeys.Contains(e.AppKey, StringComparer.OrdinalIgnoreCase))?.DisplayName ?? e.AppKey)
-                      .Distinct();
         _steamVrAutostartLabel.Text = $"starts itself: {string.Join(", ", names)}";
         SetRowStatus(_steamVrAutostartLabel, StatusLevel.Warning);
     }
