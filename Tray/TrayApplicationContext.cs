@@ -273,6 +273,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         _heartrate = new HeartrateMonitor(_config);
         _sessionPriority = new SessionPriorityService(_config, new ProcessPriorityController());
         _sessionSuspend = new Modules.Suspend.SessionSuspendService(_config, new Modules.Suspend.ProcessSuspender());
+        // A previous instance killed or crashed mid-session never ran its resume path, leaving its
+        // frozen apps stranded. Resume any opted-in app found already frozen before doing anything else.
+        _sessionSuspend.ResumeOrphanedFreezes();
         _sessionAudio = new Modules.Audio.SessionAudioService(_config, new Modules.Audio.AudioDeviceController());
 
         // Battery levels can only be read WHILE a session runs; once SteamVR stops the devices are

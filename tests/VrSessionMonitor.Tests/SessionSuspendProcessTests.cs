@@ -21,6 +21,7 @@ public class SessionSuspendProcessTests
         public readonly HashSet<int> Alive = new();
         public readonly List<int> Suspended = new();
         public readonly List<int> Resumed = new();
+        public readonly HashSet<int> FrozenPids = new(); // pids IsSuspended should report as frozen
         public readonly Dictionary<int, long> WorkingSet = new();
         public readonly Dictionary<int, string> Titles = new();
 
@@ -34,7 +35,8 @@ public class SessionSuspendProcessTests
         public IReadOnlySet<int>? GetWindowOwningProcessIds() => WindowOwners;
 
         public bool Suspend(int processId) { Suspended.Add(processId); return true; }
-        public bool Resume(int processId) { Resumed.Add(processId); return true; }
+        public bool Resume(int processId) { Resumed.Add(processId); FrozenPids.Remove(processId); return true; }
+        public bool IsSuspended(int processId) => FrozenPids.Contains(processId);
         public bool TrimWorkingSet(int processId) { WorkingSet[processId] = 0; return true; }
         public bool IsRunning(int processId) => Alive.Contains(processId);
         public long GetWorkingSetBytes(int processId) => WorkingSet.TryGetValue(processId, out var b) ? b : 0;
@@ -157,6 +159,22 @@ public class SessionSuspendProcessTests
         Assert.Equal(FreezeState.Running, rows.Single(r => r.ProcessId == 100).State);
         Assert.Equal(FreezeState.KeptRunning, rows.Single(r => r.ProcessId == 101).State);
         Assert.Equal("Unity", rows.Single(r => r.ProcessId == 101).AppName);
+    }
+
+    [Fact]
+    public void Startup_resumes_opted_in_apps_left_frozen_and_touches_nothing_else()
+    {
+        var (svc, fake) = Build();
+        fake.FrozenPids.Add(100);   // Unity, opted in, stranded frozen by a killed prior run
+        fake.FrozenPids.Add(200);   // Blender, opted in, also stranded
+        fake.FrozenPids.Add(300);   // Notes, NOT opted in — must be left alone
+        // 101 (Unity) is running normally, not frozen
+
+        svc.ResumeOrphanedFreezes();
+
+        Assert.Equal(new[] { 100, 200 }, fake.Resumed.OrderBy(x => x));
+        Assert.DoesNotContain(300, fake.Resumed);   // opted-out app never touched
+        Assert.DoesNotContain(101, fake.Resumed);   // a running process is not resumed
     }
 
     [Fact]

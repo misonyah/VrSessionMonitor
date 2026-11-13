@@ -89,6 +89,31 @@ public sealed class SessionSuspendService : IDisposable
         _hardFaultsPerSecond = hardFaultsPerSecond ?? SystemMemory.HardFaultsPerSecond;
     }
 
+    /// <summary>
+    /// At startup, resume any opted-in freeze app found already frozen. A previous instance that was
+    /// killed or crashed mid-session (or force-killed for a rebuild) never ran its resume path, so
+    /// its frozen processes are stranded — nothing else resumes them and they look hung with no
+    /// visible cause. No session is active at startup, so an opted-in app that is suspended can only
+    /// be one of these orphans. State is read from the live OS, not a saved file, so a reused PID is
+    /// never a hazard: a process is touched only when it is both one of the named freeze apps and
+    /// actually suspended now.
+    /// </summary>
+    public void ResumeOrphanedFreezes()
+    {
+        foreach (var app in _config.ManagedApps.Where(a => a.SuspendDuringSession && !string.IsNullOrWhiteSpace(a.ProcessName)))
+        {
+            foreach (var pid in _suspender.GetProcessIds(app.ProcessName))
+            {
+                if (!SuspendSafety.MaySuspend(app.ProcessName, pid, _currentProcessId)) continue;
+                if (!_suspender.IsSuspended(pid)) continue;
+                if (_suspender.Resume(pid))
+                    Log.Info("Suspend", $"Resumed {app.DisplayName} (PID {pid}), left frozen by a previous run.");
+                else
+                    Log.Debug("Suspend", $"Could not resume {app.DisplayName} (PID {pid}) found frozen at startup.");
+            }
+        }
+    }
+
     /// <summary>Test seam: pretend the session started long enough ago that the grace period has
     /// passed, so a test does not have to wait 90 seconds.</summary>
     internal void SkipGracePeriodForTests()

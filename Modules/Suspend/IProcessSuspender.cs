@@ -10,6 +10,11 @@ public interface IProcessSuspender
 {
     IReadOnlyList<int> GetProcessIds(string processName);
 
+    /// <summary>True when the process has threads and every one of them is suspended — i.e. it is
+    /// frozen. Lets startup find processes a previous, killed instance left frozen and resume them.
+    /// Defaults to false so a fake that does not model it reports nothing frozen.</summary>
+    bool IsSuspended(int processId) => false;
+
     /// <summary>Suspends every thread. Returns false if nothing could be suspended.</summary>
     bool Suspend(int processId);
 
@@ -94,6 +99,29 @@ public sealed class ProcessSuspender : IProcessSuspender
     {
         try { using var p = Process.GetProcessById(processId); return !p.HasExited; }
         catch { return false; }
+    }
+
+    /// <summary>Frozen means every thread is suspended. Reads each thread's wait reason rather than
+    /// suspend count (which has no managed or documented API from outside the process); a thread we
+    /// suspended sits in Wait with reason Suspended. Requires at least one thread so a process caught
+    /// mid-exit, with none, does not read as frozen.</summary>
+    public bool IsSuspended(int processId)
+    {
+        try
+        {
+            using var p = Process.GetProcessById(processId);
+            var threads = p.Threads;
+            if (threads.Count == 0) return false;
+            foreach (ProcessThread t in threads)
+                if (t.ThreadState != System.Diagnostics.ThreadState.Wait || t.WaitReason != ThreadWaitReason.Suspended)
+                    return false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("Suspend", $"Reading suspend state of PID {processId} failed: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
